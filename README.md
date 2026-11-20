@@ -37,10 +37,12 @@ SDL_VIDEO_DRIVER=offscreen zig-out/bin/chemviewer traj.traj \
 | Input | Action |
 |---|---|
 | Left drag | rotate |
-| Right drag / Shift + left drag | pan |
+| Right drag ← → | rotate about the viewing axis |
+| Right drag ↑ ↓ | zoom (up = closer) |
+| Middle drag / Shift + left drag | translate |
 | Wheel | zoom |
 | Space | play / pause |
-| ← → or , . | previous / next frame |
+| ← → keys or , . | previous / next frame |
 | PgUp / PgDn | jump 5% |
 | Home / End | first / last frame |
 | F | fit to view |

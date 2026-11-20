@@ -33,6 +33,18 @@ pub fn orbit(c: *Camera, dx: f32, dy: f32) void {
     c.rotation = qy.mul(qx).mul(c.rotation).normalized();
 }
 
+/// Rotate about the viewing axis; dragging right turns the scene clockwise.
+pub fn roll(c: *Camera, dx: f32) void {
+    const q = Quat.fromAxisAngle(.{ 0, 0, 1 }, -dx * 0.008);
+    c.rotation = q.mul(c.rotation).normalized();
+}
+
+/// Zoom from a vertical drag: dragging up moves closer.
+pub fn dragZoom(c: *Camera, dy: f32) void {
+    c.distance *= @exp(dy * 0.006);
+    c.distance = std.math.clamp(c.distance, 0.5, 1e5);
+}
+
 /// Pan by a drag of (dx, dy) pixels given the viewport height.
 pub fn pan(c: *Camera, dx: f32, dy: f32, viewport_h: f32) void {
     const world_per_px = 2 * c.distance * @tan(c.fovy / 2) / @max(viewport_h, 1);

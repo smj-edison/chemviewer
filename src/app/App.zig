@@ -307,15 +307,21 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
         c.SDL_EVENT_MOUSE_MOTION => {
             if (want_mouse) return;
             const m = ev.motion;
+            // GaussView-style: left = rotate, right = roll (horizontal) and
+            // zoom (vertical), middle or Shift+left = translate.
             const shift = (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0;
             const left = (m.state & c.SDL_BUTTON_LMASK) != 0;
-            const pan = (m.state & (c.SDL_BUTTON_RMASK | c.SDL_BUTTON_MMASK)) != 0 or (left and shift);
-            if (pan) {
+            const right = (m.state & c.SDL_BUTTON_RMASK) != 0;
+            const middle = (m.state & c.SDL_BUTTON_MMASK) != 0;
+            if (middle or (left and shift)) {
                 var h: c_int = 0;
                 _ = c.SDL_GetWindowSize(app.window, null, &h);
                 app.camera.pan(m.xrel, m.yrel, @floatFromInt(h));
             } else if (left) {
                 app.camera.orbit(m.xrel, m.yrel);
+            } else if (right) {
+                app.camera.roll(m.xrel);
+                app.camera.dragZoom(m.yrel);
             }
         },
         c.SDL_EVENT_MOUSE_WHEEL => if (!want_mouse) app.camera.zoom(ev.wheel.y),
@@ -451,7 +457,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
 
     c.igSeparatorText("Controls");
-    ui.textWrapped("Left drag: rotate. Right or Shift+drag: pan. Wheel: zoom. Space: play. Left/Right: step. F: fit.", .{});
+    ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle or Shift+left drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit.", .{});
 }
 
 fn composition(app: *App, f: Frame) void {
