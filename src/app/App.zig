@@ -225,7 +225,17 @@ fn advancePlayback(app: *App) void {
 pub fn fitCamera(app: *App) void {
     const d = app.doc orelse return;
     const f = d.shown orelse return;
-    const b = f.bounds();
+    var b = f.bounds();
+    if (app.style.show_cell) if (f.cell) |cell| {
+        for (0..8) |i| {
+            var corner: Vec3 = @splat(0);
+            for (0..3) |k| if (i & (@as(usize, 1) << @intCast(k)) != 0) {
+                corner += cell[k];
+            };
+            b.min = @min(b.min, corner);
+            b.max = @max(b.max, corner);
+        }
+    };
     const center = (b.min + b.max) * cv.math.splat(0.5);
     const radius = cv.math.length(b.max - b.min) * 0.5 + 1.5;
     app.scene_radius = radius;
