@@ -67,7 +67,7 @@ pub fn parseComment(comment: []const u8) CommentMeta {
     var meta: CommentMeta = .{};
     if (findKey(comment, "lattice=")) |rest| {
         const inner = if (rest.len > 0 and rest[0] == '"')
-            rest[1 .. (std.mem.indexOfScalarPos(u8, rest, 1, '"') orelse rest.len)]
+            rest[1..(std.mem.indexOfScalarPos(u8, rest, 1, '"') orelse rest.len)]
         else
             rest;
         var it = text.tokens(inner);

@@ -255,7 +255,7 @@ test "H only has single" {
 test "find bonds in ethylene-like geometry" {
     const gpa = std.testing.allocator;
     const pos = [_]Vec3{
-        .{ 0, 0, 0 },     .{ 1.34, 0, 0 }, // C=C
+        .{ 0, 0, 0 }, .{ 1.34, 0, 0 }, // C=C
         .{ -0.55, 0.93, 0 }, .{ -0.55, -0.93, 0 }, // H on C0
         .{ 10, 10, 10 }, // far-away He
     };

@@ -36,9 +36,9 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(bonds);
 
         try out.print("{s}\n  format {s}{s}, {d} frames, {d} atoms, {d} candidate bonds (last frame)\n", .{
-            path,                           opened.format.label(),
+            path,                                                  opened.format.label(),
             if (opened.source.isStreamed()) " (streamed)" else "", n,
-            last.len(),                     bonds.len,
+            last.len(),                                            bonds.len,
         });
         try out.print("  open {f}, load last frame {f}\n", .{ t_open, t_last });
         if (first.energy) |e| try out.print("  E(first) = {d}\n", .{e});
