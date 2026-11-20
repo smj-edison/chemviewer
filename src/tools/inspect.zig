@@ -44,6 +44,14 @@ pub fn main(init: std.process.Init) !void {
         if (first.energy) |e| try out.print("  E(first) = {d}\n", .{e});
         if (last.energy) |e| try out.print("  E(last)  = {d}\n", .{e});
         if (last.cell != null) try out.print("  periodic cell\n", .{});
+        if (opened.source.isStreamed()) {
+            const t2 = Io.Timestamp.now(io, .awake);
+            var with_energy: usize = 0;
+            for (0..n) |i| {
+                if (try opened.source.loadEnergy(io, gpa, i)) |_| with_energy += 1;
+            }
+            try out.print("  energy scan: {d}/{d} frames in {f}\n", .{ with_energy, n, t2.untilNow(io, .awake) });
+        }
         var counts: [256]u32 = @splat(0);
         for (last.numbers) |z| counts[z] += 1;
         try out.print("  composition:", .{});

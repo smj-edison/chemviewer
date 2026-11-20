@@ -56,6 +56,8 @@ pub fn build(b: *std.Build) void {
             "-fno-rtti",
         },
     });
+    imgui_mod.addIncludePath(b.path("src/cshim"));
+    imgui_mod.addCSourceFiles(.{ .root = b.path("src/cshim"), .files = &.{"imgui_shim.c"} });
     imgui_mod.linkSystemLibrary("SDL3", .{});
     const imgui_lib = b.addLibrary(.{ .name = "cimgui", .root_module = imgui_mod });
 
@@ -66,6 +68,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     c_translate.addIncludePath(imgui_root);
+    c_translate.addIncludePath(b.path("src/cshim"));
     c_translate.linkSystemLibrary("SDL3", .{});
     const c_mod = c_translate.createModule();
 
