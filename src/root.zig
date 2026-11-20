@@ -4,6 +4,7 @@ const std = @import("std");
 
 pub const math = @import("core/math.zig");
 pub const elements = @import("core/elements.zig");
+pub const color = @import("core/color.zig");
 pub const structure = @import("core/structure.zig");
 pub const bonds = @import("core/bonds.zig");
 pub const align_ = @import("core/align.zig");

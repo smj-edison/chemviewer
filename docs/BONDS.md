@@ -54,11 +54,40 @@ change colour smoothly too.
 
 ## Display
 
-`b` indexes a colour gradient (default: a faint grey at 0, then neutral at 1,
-then increasingly saturated toward 3). Opacity and radius also scale with `b`
-below 1, so weak contacts fade out instead of popping. A "half-bond" mode
-(element colours on each half, with the gradient only on the radius) is also
-available.
+Colours are defined in **OKLCh** (the polar form of Ottosson's OKLab), so
+lightness is *perceived* lightness. The palette (`src/core/color.zig`) is
+built so that lightness strictly increases with bond character:
+
+| character | L (OKLab) | look |
+|---|---|---|
+| 0 | 0.24 | ≈ viewport background, fully transparent |
+| 1 | 0.62 | neutral grey (single) |
+| 2 | 0.78 | blue (double) |
+| 3 | 0.93 | bright pale gold (triple) |
+
+Weak contacts fade *into* the background, both in lightness and in opacity, and
+higher bond orders always look more intense. Interpolation happens in OKLCh,
+taking the short way around the hue circle. Colours outside the sRGB gamut lose
+chroma, never lightness, so the lightness ramp survives gamut mapping. A unit
+test checks that rendered lightness is monotonic in bond character.
+
+### Snapping
+
+Before colouring, bond character passes through a soft staircase:
+
+```
+snap(b) = n + x + k · (smoothstep(x) − x),   n = ⌊b⌋, x = b − n
+```
+
+With `k = 0` this is linear. With `k = 1` it has flat plateaus at whole bond
+orders. The default `k = 0.7` gives a gentle slope near each integer (0.3× the
+linear slope) and a steeper one in between. Bonds near a whole order read as
+that order, while genuinely intermediate bonds (aromatic C–C ≈ 1.7, stretched
+TS bonds) still look different. The same snapped value drives opacity and
+thinning below single-bond character. `k` is the "Snap" slider in the inspector.
+
+"Element" colouring (CPK colours on each half) is also available. It keeps
+opacity and thinning from the snapped character.
 
 ## Neighbour search
 

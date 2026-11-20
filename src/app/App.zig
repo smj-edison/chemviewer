@@ -437,7 +437,9 @@ fn inspector(app: *App, timeline_h: f32) void {
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Element", &coloring, 1)) app.scene_dirty = true;
     app.style.bond_coloring = @fromBackingInt(@intCast(coloring));
-    ui.gradientLegend();
+    ui.gradientLegend(app.style.snap);
+    if (c.igSliderFloat("Snap", &app.style.snap, 0, 1, "%.2f", 0)) app.scene_dirty = true;
+    ui.tooltip("How strongly colours settle on whole bond orders. 0 = linear in bond character, 1 = flat plateaus at single/double/triple.");
     if (c.igSliderFloat("Cut-off x r1", &app.bond_params.cutoff_factor, 1.0, 1.8, "%.2f", 0)) app.bonds_dirty = true;
     ui.tooltip("Pairs closer than this multiple of their single-bond length get a link.");
     if (c.igSliderFloat("Hide below", &app.style.min_character, 0, 3, "%.2f", 0)) app.scene_dirty = true;

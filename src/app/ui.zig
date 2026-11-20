@@ -46,29 +46,33 @@ pub fn rgba(r: f32, g: f32, b: f32, a: f32) u32 {
     return c.igGetColorU32_Vec4(.{ .x = r, .y = g, .z = b, .w = a });
 }
 
-/// Horizontal bar showing the bond-character gradient with 0..3 ticks.
-pub fn gradientLegend() void {
+/// Horizontal bar showing the bond-character gradient with 0..3 ticks,
+/// sampled finely so the snap curve and OKLCh interpolation show as rendered.
+pub fn gradientLegend(snap_strength: f32) void {
     const dl = c.igGetWindowDrawList();
     const p = c.igGetCursorScreenPos();
     const w = c.igGetContentRegionAvail().x;
-    const h: f32 = 12;
-    const stops = Renderer.gradient_stops;
+    const h: f32 = c.igGetFontSize() * 0.9;
     const bg = Renderer.background;
-    for (stops[0 .. stops.len - 1], stops[1..]) |a, b| {
-        const x0 = p.x + a.at / 3 * w;
-        const x1 = p.x + b.at / 3 * w;
+    const segments = 96;
+    var prev_col: u32 = 0;
+    for (0..segments + 1) |i| {
+        const t = @as(f32, @floatFromInt(i)) / segments;
         // Pre-blend alpha against the viewport background so it reads like the 3D view.
-        const ca = blend(a.rgba, bg);
-        const cb = blend(b.rgba, bg);
-        c.ImDrawList_AddRectFilledMultiColor(dl, v2(x0, p.y), v2(x1, p.y + h), ca, cb, cb, ca);
+        const col = blend(Renderer.gradientColor(t * 3, snap_strength), bg);
+        if (i > 0) {
+            const x0 = p.x + (t - 1.0 / @as(f32, segments)) * w;
+            c.ImDrawList_AddRectFilledMultiColor(dl, v2(x0, p.y), v2(p.x + t * w + 0.5, p.y + h), prev_col, col, col, prev_col);
+        }
+        prev_col = col;
     }
     const labels = [_][:0]const u8{ "0", "single", "double", "triple" };
-    const col = c.igGetColorU32_Col(c.ImGuiCol_TextDisabled, 1);
+    const tcol = c.igGetColorU32_Col(c.ImGuiCol_TextDisabled, 1);
     for (labels, 0..) |l, i| {
         const fi: f32 = @floatFromInt(i);
         const tw = c.igCalcTextSize(l.ptr, null, false, -1).x;
         const x = std.math.clamp(p.x + fi / 3 * w - tw / 2, p.x, p.x + w - tw);
-        c.ImDrawList_AddText_Vec2(dl, v2(x, p.y + h + 2), col, l.ptr, null);
+        c.ImDrawList_AddText_Vec2(dl, v2(x, p.y + h + 2), tcol, l.ptr, null);
     }
     c.igDummy(v2(w, h + c.igGetFontSize() + 4));
 }

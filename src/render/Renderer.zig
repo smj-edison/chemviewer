@@ -28,6 +28,9 @@ pub const Style = struct {
     bond_coloring: BondColoring = .gradient,
     /// Bonds with a character below this are not drawn.
     min_character: f32 = 0.0,
+    /// How strongly bond character snaps toward whole bond orders before
+    /// colouring (0 = linear, 1 = flat plateaus). See `cv.color.snap`.
+    snap: f32 = 0.7,
     show_cell: bool = true,
 };
 
@@ -37,29 +40,11 @@ pub const Tint = struct {
     amount: f32 = 0.65,
 };
 
-/// Default gradient over bond character 0..3.
-pub const gradient_stops = [_]struct { at: f32, rgba: [4]f32 }{
-    .{ .at = 0.00, .rgba = .{ 0.40, 0.42, 0.48, 0.10 } }, // vanishing contact
-    .{ .at = 0.70, .rgba = .{ 0.55, 0.57, 0.62, 0.55 } }, // stretched
-    .{ .at = 1.00, .rgba = .{ 0.82, 0.82, 0.82, 1.00 } }, // single
-    .{ .at = 1.50, .rgba = .{ 0.45, 0.80, 0.85, 1.00 } }, // aromatic / 1.5
-    .{ .at = 2.00, .rgba = .{ 0.30, 0.55, 1.00, 1.00 } }, // double
-    .{ .at = 3.00, .rgba = .{ 0.85, 0.35, 0.95, 1.00 } }, // triple
-};
-
-pub fn gradientColor(character: f32) [4]f32 {
-    const stops = gradient_stops;
-    if (character <= stops[0].at) return stops[0].rgba;
-    for (stops[1..], 1..) |s, i| {
-        if (character <= s.at) {
-            const p = stops[i - 1];
-            const t = (character - p.at) / (s.at - p.at);
-            var out: [4]f32 = undefined;
-            for (0..4) |k| out[k] = p.rgba[k] + (s.rgba[k] - p.rgba[k]) * t;
-            return out;
-        }
-    }
-    return stops[stops.len - 1].rgba;
+/// Bond colour from its character: the perceptual OKLCh palette in
+/// `cv.color`, shaped by the snap curve. Returns sRGB + opacity.
+pub fn gradientColor(character: f32, snap_strength: f32) [4]f32 {
+    const bc = cv.color.bondColor(character, snap_strength);
+    return .{ bc.rgb[0], bc.rgb[1], bc.rgb[2], bc.alpha };
 }
 
 const AtomInstance = extern struct { center: [3]f32, radius: f32, color: [4]f32 };
@@ -224,20 +209,22 @@ pub fn addStructure(
     }
     for (bonds) |b| {
         if (b.character < style.min_character) continue;
-        const ch = b.character;
+        if (cv.color.snap(b.character, style.snap) < 0.02) continue; // invisible anyway
+        // Snapped character drives colour, opacity and thinning alike.
+        const ch = cv.color.snap(b.character, style.snap);
         // Below single-bond character, thin the bond out as it fades.
         const thin = if (ch < 1) 0.35 + 0.65 * ch else 1.0;
         var ca: [4]f32 = undefined;
         var cb: [4]f32 = undefined;
         switch (style.bond_coloring) {
             .gradient => {
-                const g = gradientColor(ch);
+                const g = gradientColor(b.character, style.snap);
                 const rgb = tinted(.{ g[0], g[1], g[2] }, tint);
                 ca = .{ rgb[0], rgb[1], rgb[2], g[3] };
                 cb = ca;
             },
             .element => {
-                const alpha = if (ch < 1) @max(0.1, ch) else 1.0;
+                const alpha = @min(ch, 1.0);
                 const ra = tinted(cv.elements.colorRgb(numbers[b.a]), tint);
                 const rb = tinted(cv.elements.colorRgb(numbers[b.b]), tint);
                 ca = .{ ra[0], ra[1], ra[2], alpha };
