@@ -5,11 +5,14 @@ const c = @import("c");
 const ui = @import("ui.zig");
 const App = @import("App.zig");
 
-const plot_height: f32 = 56;
+/// Energy plot height, in multiples of the font size.
+fn plotHeight() f32 {
+    return c.igGetFontSize() * 4.3;
+}
 
 pub fn height() f32 {
     const style = c.igGetStyle();
-    return c.igGetFrameHeightWithSpacing() + plot_height + style.*.WindowPadding.y * 2 + style.*.ItemSpacing.y;
+    return c.igGetFrameHeightWithSpacing() + plotHeight() + style.*.WindowPadding.y * 2 + style.*.ItemSpacing.y;
 }
 
 pub fn draw(app: *App, h: f32) void {
@@ -32,7 +35,7 @@ pub fn draw(app: *App, h: f32) void {
     c.igSameLine(0, -1);
     if (c.igButton("<", ui.v2(0, 0))) app.setFrame(d.current -| 1);
     c.igSameLine(0, -1);
-    if (c.igButton(if (app.playing) "Pause" else " Play", ui.v2(60, 0))) app.togglePlay();
+    if (c.igButton(if (app.playing) "Pause" else " Play", ui.v2(c.igGetFontSize() * 4.6, 0))) app.togglePlay();
     c.igSameLine(0, -1);
     if (c.igButton(">", ui.v2(0, 0))) app.setFrame(d.current + 1);
     c.igSameLine(0, -1);
@@ -40,7 +43,7 @@ pub fn draw(app: *App, h: f32) void {
     c.igSameLine(0, -1);
 
     // Frame slider fills the space left of the playback options.
-    const right_w: f32 = 260;
+    const right_w: f32 = c.igGetFontSize() * 20;
     c.igSetNextItemWidth(@max(80, c.igGetContentRegionAvail().x - right_w));
     var cur: c_int = @intCast(d.current + 1);
     var fmt_buf: [64]u8 = undefined;
@@ -49,7 +52,7 @@ pub fn draw(app: *App, h: f32) void {
         app.setFrame(@intCast(cur - 1));
     }
     c.igSameLine(0, -1);
-    c.igSetNextItemWidth(130);
+    c.igSetNextItemWidth(c.igGetFontSize() * 10);
     _ = c.igSliderFloat("##fps", &app.fps, 1, 240, "%.0f fps", c.ImGuiSliderFlags_Logarithmic);
     c.igSameLine(0, -1);
     _ = c.igCheckbox("Loop", &app.loop_playback);
@@ -62,7 +65,7 @@ fn energyPlot(app: *App, d: *App.Document) void {
     const dl = c.igGetWindowDrawList();
     const p0 = c.igGetCursorScreenPos();
     const w = c.igGetContentRegionAvail().x;
-    const h = plot_height;
+    const h = plotHeight();
     const p1 = ui.v2(p0.x + w, p0.y + h);
     _ = c.igInvisibleButton("##energy", ui.v2(w, h), 0);
     const hovered = c.igIsItemHovered(0);

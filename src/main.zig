@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, GL context, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X]
 //!
 //! `--screenshot` renders once the requested frame is loaded, writes a PNG and
 //! exits. It works headless with SDL_VIDEO_DRIVER=offscreen.
@@ -18,6 +18,7 @@ const Args = struct {
     screenshot: ?[]const u8 = null,
     width: c_int = 1400,
     height: c_int = 900,
+    ui_scale: ?f32 = null,
 };
 
 fn parseArgs(argv: []const []const u8) !Args {
@@ -26,7 +27,7 @@ fn parseArgs(argv: []const []const u8) !Args {
     while (i < argv.len) : (i += 1) {
         const arg = argv[i];
         const eql = std.mem.eql;
-        if (eql(u8, arg, "--frame") or eql(u8, arg, "--diff-ref") or eql(u8, arg, "--screenshot") or eql(u8, arg, "--size")) {
+        if (eql(u8, arg, "--frame") or eql(u8, arg, "--diff-ref") or eql(u8, arg, "--screenshot") or eql(u8, arg, "--size") or eql(u8, arg, "--ui-scale")) {
             i += 1;
             if (i >= argv.len) return error.MissingArgumentValue;
             const v = argv[i];
@@ -36,6 +37,8 @@ fn parseArgs(argv: []const []const u8) !Args {
                 a.diff_ref = (try std.fmt.parseInt(usize, v, 10)) -| 1;
             } else if (eql(u8, arg, "--screenshot")) {
                 a.screenshot = v;
+            } else if (eql(u8, arg, "--ui-scale")) {
+                a.ui_scale = try std.fmt.parseFloat(f32, v);
             } else {
                 var it = std.mem.splitScalar(u8, v, 'x');
                 a.width = try std.fmt.parseInt(c_int, it.next() orelse return error.BadSize, 10);
@@ -65,7 +68,7 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
-            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
+            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH] [--ui-scale X]
             \\
         , .{});
         if (e == error.Help) return;
@@ -107,11 +110,7 @@ pub fn main(init: std.process.Init) !void {
     const style = c.igGetStyle();
     style.*.WindowRounding = 4;
     style.*.FrameRounding = 3;
-    const scale = c.SDL_GetWindowDisplayScale(window);
-    if (scale > 0 and scale != 1) {
-        c.ImGuiStyle_ScaleAllSizes(style, scale);
-        style.*.FontScaleDpi = scale;
-    }
+    var ui_scale: UiScale = .{ .base = style.* };
     if (!c.ImGui_ImplSDL3_InitForOpenGL(window, gl_ctx)) return error.ImGuiInit;
     defer c.ImGui_ImplSDL3_Shutdown();
     if (!c.ImGui_ImplOpenGL3_Init("#version 330")) return error.ImGuiInit;
@@ -120,6 +119,7 @@ pub fn main(init: std.process.Init) !void {
     // ---- App
     var app = try App.init(io, gpa, window);
     defer app.deinit();
+    if (args.ui_scale) |u| app.ui_scale = u;
     if (args.file) |f| app.openFile(f);
 
     var shot: Screenshot = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };
@@ -134,6 +134,7 @@ pub fn main(init: std.process.Init) !void {
         while (c.SDL_PollEvent(&ev)) handleEvent(&app, &ev);
 
         app.update();
+        ui_scale.apply(window, app.ui_scale);
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplSDL3_NewFrame();
@@ -154,6 +155,36 @@ pub fn main(init: std.process.Init) !void {
         _ = c.SDL_GL_SwapWindow(window);
     }
 }
+
+/// Keeps ImGui's style and font scale in sync with the monitor's content
+/// scale times the user's preference.
+///
+/// SDL's display scale = pixel density × content scale. The ImGui SDL3 backend
+/// already handles pixel density (framebuffer scale, fonts rasterised at full
+/// resolution), so only the content scale is applied here. On Wayland at 150%
+/// with high-pixel-density windows, density is 1.5 and content scale is 1.0;
+/// on Windows at 150%, density is 1.0 and content scale is 1.5.
+const UiScale = struct {
+    base: c.ImGuiStyle,
+    current: f32 = 0,
+
+    fn contentScale(window: *c.SDL_Window) f32 {
+        const display = c.SDL_GetWindowDisplayScale(window);
+        const density = c.SDL_GetWindowPixelDensity(window);
+        if (display <= 0 or density <= 0) return 1;
+        return display / density;
+    }
+
+    fn apply(u: *UiScale, window: *c.SDL_Window, user: f32) void {
+        const s = std.math.clamp(contentScale(window) * user, 0.5, 4);
+        if (@abs(s - u.current) < 1e-3) return;
+        u.current = s;
+        const style = c.igGetStyle();
+        style.* = u.base;
+        c.ImGuiStyle_ScaleAllSizes(style, s);
+        style.*.FontScaleDpi = s;
+    }
+};
 
 fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
     _ = c.ImGui_ImplSDL3_ProcessEvent(ev);

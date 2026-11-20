@@ -64,3 +64,17 @@ API is used directly. Revisit when translate-c handles this.
 and writes a PNG via SDL's encoder and `Io.Dir.writeFile`. With
 `SDL_VIDEO_DRIVER=offscreen` this needs no display, so rendering can be
 checked from CI or a sandbox.
+
+### D11 — UI scale = content scale only
+SDL's display scale is pixel density × content scale. The ImGui SDL3 backend
+already handles pixel density (framebuffer scale, fonts rasterised at full
+resolution), so the style and fonts are scaled by the content scale only, times
+a user "UI scale" from the View menu. Scaling by the full display scale made
+the UI 1.5× too large on Wayland at 150%. Panel sizes are in multiples of the
+font size, and panels are re-placed when the scale changes.
+
+### D12 — Perceptual bond palette (OKLCh) with snapping
+Bond colours are interpolated in OKLCh, with lightness strictly increasing in
+bond character, from the background (transparent) to bright triple bonds. A soft
+staircase (`color.snap`) pulls colours toward whole bond orders without making
+the mapping discrete. See docs/BONDS.md.

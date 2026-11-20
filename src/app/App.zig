@@ -67,6 +67,11 @@ scene_radius: f32 = 10,
 show_inspector: bool = true,
 show_diff: bool = false,
 show_demo: bool = false,
+/// User multiplier on top of the monitor's content scale (View menu).
+ui_scale: f32 = 1.0,
+/// Font size the panel layout was last placed for; when it changes the
+/// panels are re-placed so they scale with the UI.
+layout_font_size: f32 = 0,
 quit_requested: bool = false,
 
 status_buf: [512]u8 = undefined,
@@ -373,7 +378,13 @@ fn dialogCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filte
 
 // ------------------------------------------------------------ UI
 
+/// Window placement condition: re-place panels when the UI scale changes.
+fn layoutCond(app: *App) c_int {
+    return if (c.igGetFontSize() != app.layout_font_size) c.ImGuiCond_Always else c.ImGuiCond_FirstUseEver;
+}
+
 pub fn drawUi(app: *App) void {
+    defer app.layout_font_size = c.igGetFontSize();
     app.menuBar();
     const timeline_h = timeline.height();
     timeline.draw(app, timeline_h);
@@ -401,6 +412,9 @@ fn menuBar(app: *App) void {
         if (c.igMenuItem_BoolPtr("Unit cell", null, &app.style.show_cell, true)) app.scene_dirty = true;
         if (c.igMenuItem_Bool("Fit to view", "F", false, app.doc != null)) app.fitCamera();
         c.igSeparator();
+        c.igSetNextItemWidth(c.igGetFontSize() * 8);
+        _ = c.igSliderFloat("UI scale", &app.ui_scale, 0.5, 2.0, "%.2fx", 0);
+        c.igSeparator();
         _ = c.igMenuItem_BoolPtr("ImGui demo", null, &app.show_demo, true);
         c.igEndMenu();
     }
@@ -412,11 +426,12 @@ fn menuBar(app: *App) void {
 
 fn inspector(app: *App, timeline_h: f32) void {
     const vp = c.igGetMainViewport();
-    const w: f32 = 300;
+    const w: f32 = c.igGetFontSize() * 23;
+    const cond = app.layoutCond();
     // WorkPos only accounts for the menu bar from the next frame on, so offset explicitly.
     const top = vp.*.Pos.y + c.igGetFrameHeight() + 8;
-    c.igSetNextWindowPos(ui.v2(vp.*.WorkPos.x + 8, top), c.ImGuiCond_FirstUseEver, ui.v2(0, 0));
-    c.igSetNextWindowSize(ui.v2(w, @max(200, vp.*.Size.y - (top - vp.*.Pos.y) - timeline_h - 8)), c.ImGuiCond_FirstUseEver);
+    c.igSetNextWindowPos(ui.v2(vp.*.WorkPos.x + 8, top), cond, ui.v2(0, 0));
+    c.igSetNextWindowSize(ui.v2(w, @max(200, vp.*.Size.y - (top - vp.*.Pos.y) - timeline_h - 8)), cond);
     defer c.igEnd();
     if (!c.igBegin("Inspector", &app.show_inspector, 0)) return;
     c.igPushItemWidth(c.igGetContentRegionAvail().x * 0.55);
@@ -456,8 +471,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
 
-    c.igSeparatorText("Controls");
-    ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle or Shift+left drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit.", .{});
+    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle or Shift+left drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit.", .{});
 }
 
 fn composition(app: *App, f: Frame) void {
@@ -489,8 +503,10 @@ fn composition(app: *App, f: Frame) void {
 
 fn diffPanel(app: *App) void {
     const vp = c.igGetMainViewport();
-    c.igSetNextWindowPos(ui.v2(vp.*.WorkPos.x + vp.*.WorkSize.x - 328, vp.*.Pos.y + c.igGetFrameHeight() + 8), c.ImGuiCond_FirstUseEver, ui.v2(0, 0));
-    c.igSetNextWindowSize(ui.v2(320, 0), c.ImGuiCond_FirstUseEver);
+    const fs = c.igGetFontSize();
+    const cond = app.layoutCond();
+    c.igSetNextWindowPos(ui.v2(vp.*.WorkPos.x + vp.*.WorkSize.x - fs * 25 - 8, vp.*.Pos.y + c.igGetFrameHeight() + 8), cond, ui.v2(0, 0));
+    c.igSetNextWindowSize(ui.v2(fs * 25, 0), cond);
     defer c.igEnd();
     if (!c.igBegin("Diff", &app.show_diff, 0)) return;
 
