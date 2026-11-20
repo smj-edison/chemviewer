@@ -3,6 +3,8 @@
 //! Covalent radii (pm) are Pyykkö's additive radii for single (2009),
 //! double (2009) and triple (2005) bonds; 0 means "no value" (that bond order
 //! is not considered for the element). See docs/BONDS.md.
+//! TODO: verify the d/f-block and triple-bond entries against the original
+//! papers; they were transcribed without the tables at hand.
 const std = @import("std");
 
 pub const max_z = 118;

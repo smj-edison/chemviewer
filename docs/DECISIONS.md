@@ -50,3 +50,17 @@ serves, in order: the wanted frame, prefetch in the scrub direction, then a
 background energy scan (`Source.loadEnergy` reads only metadata, e.g. a traj
 item's JSON). Shutdown is `Future.cancel`: the worker's `Condition.wait` is
 the cancelation point.
+
+### D9 — C shim for ImGui context / IO
+translate-c demotes `struct ImGuiContext` to an opaque type (one of its fields
+can't be translated) but still emits `[*c]ImGuiContext` pointers, which Zig
+rejects. Any Zig reference to `igCreateContext`, `igGetIO`, or `ImGuiIO` fails to
+compile. `src/cshim/imgui_shim.c` wraps the few calls we need
+(`cvImGuiCreateContext`, `cvImGuiWantCaptureMouse`, …). The rest of the cimgui
+API is used directly. Revisit when translate-c handles this.
+
+### D10 — Headless screenshots for verification
+`--screenshot` renders the requested frame (optionally with a diff reference)
+and writes a PNG via SDL's encoder and `Io.Dir.writeFile`. With
+`SDL_VIDEO_DRIVER=offscreen` this needs no display, so rendering can be
+checked from CI or a sandbox.

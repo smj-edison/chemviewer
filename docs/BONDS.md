@@ -27,8 +27,13 @@ For a pair A–B, `r_n(A,B) = r_n(A) + r_n(B)` for n = 1, 2, 3. So C–C, C–N 
 C–O each get their own scale. If an element has no double or triple radius
 (e.g. H), the pair simply tops out at the highest order both atoms support.
 
-The table lives in `src/core/elements.zig` and is meant to be edited. A
-per-pair override table (for specific pairs where the additive model is poor,
+The table lives in `src/core/elements.zig` and is meant to be edited.
+**The values were transcribed without the papers at hand.** Main-group
+elements are well established, but the transition-metal, lanthanide and
+actinide entries (and every triple-bond radius) should be checked against the
+original tables.
+
+A per-pair override table (for specific pairs where the additive model is poor,
 e.g. some metal–ligand bonds) is planned.
 
 ## Distance → character
