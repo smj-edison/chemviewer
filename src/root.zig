@@ -8,9 +8,19 @@ pub const structure = @import("core/structure.zig");
 pub const bonds = @import("core/bonds.zig");
 pub const align_ = @import("core/align.zig");
 
+pub const formats = struct {
+    pub const text = @import("formats/text.zig");
+    pub const xyz = @import("formats/xyz.zig");
+    pub const gaussian = @import("formats/gaussian.zig");
+    pub const orca = @import("formats/orca.zig");
+    pub const traj = @import("formats/traj.zig");
+};
+pub const source = @import("source.zig");
+
 pub const Frame = structure.Frame;
 pub const Vec3 = math.Vec3;
 
 test {
     std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(formats);
 }

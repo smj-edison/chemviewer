@@ -92,6 +92,21 @@ pub fn build(b: *std.Build) void {
     run_cmd.addPassthruArgs();
     run_step.dependOn(&run_cmd.step);
 
+    // ------------------------------------------------- headless inspector
+    const inspect = b.addExecutable(.{
+        .name = "chemviewer-inspect",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/inspect.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "chemviewer", .module = core }},
+        }),
+    });
+    b.installArtifact(inspect);
+    const inspect_run = b.addRunArtifact(inspect);
+    inspect_run.addPassthruArgs();
+    b.step("inspect", "Print a summary of structure files (headless)").dependOn(&inspect_run.step);
+
     // ------------------------------------------------------------ tests
     const test_step = b.step("test", "Run core unit tests");
     const core_tests = b.addTest(.{ .root_module = core });
