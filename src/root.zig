@@ -16,6 +16,7 @@ pub const formats = struct {
     pub const traj = @import("formats/traj.zig");
 };
 pub const source = @import("source.zig");
+pub const stream = @import("stream.zig");
 
 pub const Frame = structure.Frame;
 pub const Vec3 = math.Vec3;

@@ -76,11 +76,17 @@ pub const Traj = struct {
         return t.loadFrameInner(io, gpa, index, false);
     }
 
-    fn loadFrameInner(t: *const Traj, io: Io, gpa: Allocator, index: usize, first: bool) !Frame {
+    /// Read only the energy of a frame (no array data). Thread-safe.
+    pub fn loadEnergy(t: *const Traj, io: Io, gpa: Allocator, index: usize) !?f64 {
         var arena_state: std.heap.ArenaAllocator = .init(gpa);
         defer arena_state.deinit();
-        const arena = arena_state.allocator();
+        const obj = try t.readItem(io, arena_state.allocator(), index);
+        const calc = getKey(obj, "calculator") orelse return null;
+        if (calc != .object) return null;
+        return numberOf(calc.object.get("energy") orelse return null);
+    }
 
+    fn readItem(t: *const Traj, io: Io, arena: Allocator, index: usize) !json.ObjectMap {
         const off = t.offsets[index];
         var len_buf: [8]u8 = undefined;
         if (try t.file.readPositionalAll(io, &len_buf, off) != 8) return error.InvalidTraj;
@@ -88,10 +94,17 @@ pub const Traj = struct {
         if (len <= 0 or len > 1 << 30) return error.InvalidTraj;
         const text = try arena.alloc(u8, @intCast(len));
         if (try t.file.readPositionalAll(io, text, off + 8) != text.len) return error.InvalidTraj;
-
         const root = json.parseFromSliceLeaky(json.Value, arena, text, .{}) catch return error.InvalidTraj;
         if (root != .object) return error.InvalidTraj;
-        const obj = root.object;
+        return root.object;
+    }
+
+    fn loadFrameInner(t: *const Traj, io: Io, gpa: Allocator, index: usize, first: bool) !Frame {
+        var arena_state: std.heap.ArenaAllocator = .init(gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        const obj = try t.readItem(io, arena, index);
         const little = if (obj.get("_little_endian")) |v| v != .bool or v.bool else true;
         const ctx: ArrayCtx = .{ .io = io, .file = t.file, .arena = arena, .little = little };
 

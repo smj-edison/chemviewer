@@ -41,3 +41,12 @@ Alignment converts to f64 internally.
 The modern ASE trajectory format is ULM (`- of Ulm` magic). The legacy
 pickle-based `.traj` from ASE < 3.10 is not supported. Frame 0 carries
 `numbers`, `pbc` and `cell`; later frames inherit them unless overridden.
+
+### D8 — Stream requests use a "latest wins" slot, not a queue
+`FrameStream` keeps one `wanted` index under an `Io.Mutex` and wakes the
+worker with an `Io.Condition`. When scrubbing, only the newest position
+matters, and a queue (`Io.Queue`) would pile up stale requests. The worker
+serves, in order: the wanted frame, prefetch in the scrub direction, then a
+background energy scan (`Source.loadEnergy` reads only metadata, e.g. a traj
+item's JSON). Shutdown is `Future.cancel`: the worker's `Condition.wait` is
+the cancelation point.

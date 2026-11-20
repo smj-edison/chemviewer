@@ -53,6 +53,14 @@ pub const Source = union(enum) {
         };
     }
 
+    /// Just the energy of frame `index`, cheaper than a full load. Thread-safe.
+    pub fn loadEnergy(s: *const Source, io: Io, gpa: Allocator, index: usize) !?f64 {
+        return switch (s.*) {
+            .memory => |m| m[index].energy,
+            inline .xyz, .traj => |*x| x.loadEnergy(io, gpa, index),
+        };
+    }
+
     /// True if frames come from disk on demand (so loading may be slow).
     pub fn isStreamed(s: *const Source) bool {
         return s.* != .memory;
@@ -188,4 +196,6 @@ test "indexed xyz matches whole-file parse" {
     defer f1.deinit(gpa);
     try std.testing.expectApproxEqAbs(@as(f32, 0.80), f1.positions[1][2], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f64, -1.5), f1.energy.?, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, -1.5), (try idx.loadEnergy(io, gpa, 1)).?, 1e-9);
+    try std.testing.expectEqual(@as(?f64, null), try idx.loadEnergy(io, gpa, 0));
 }

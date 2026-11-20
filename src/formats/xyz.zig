@@ -161,6 +161,18 @@ pub const Indexed = struct {
         return x.offsets.len - 1;
     }
 
+    /// Energy from the comment line only. Thread-safe.
+    pub fn loadEnergy(x: *const Indexed, io: Io, gpa: Allocator, index: usize) !?f64 {
+        _ = gpa;
+        var buf: [4096]u8 = undefined;
+        const start = x.offsets[index];
+        const len: usize = @intCast(@min(buf.len, x.offsets[index + 1] - start));
+        const got = try x.file.readPositionalAll(io, buf[0..len], start);
+        var lines = text.Lines.init(buf[0..got]);
+        while (lines.next()) |l| if (!text.isBlank(l)) break; // count line
+        return parseComment(lines.next() orelse return null).energy;
+    }
+
     /// Thread-safe: uses positional reads only.
     pub fn loadFrame(x: *const Indexed, io: Io, gpa: Allocator, index: usize) !Frame {
         const start = x.offsets[index];
