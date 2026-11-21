@@ -2,6 +2,7 @@
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
 //!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark]
+//!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
 //!
 //! `--screenshot` renders once the requested frame is loaded, writes a PNG and
 //! exits. It works headless with SDL_VIDEO_DRIVER=offscreen.
@@ -21,6 +22,12 @@ const Args = struct {
     ui_scale: ?f32 = null,
     no_ui: bool = false,
     dark: bool = false,
+    /// Startup script: select atoms (1-based), set their distance (Å) or
+    /// angle/dihedral (degrees), save the frame as XYZ.
+    select: [4]u32 = undefined,
+    select_len: usize = 0,
+    set_value: ?f64 = null,
+    save: ?[]const u8 = null,
 };
 
 fn parseArgs(argv: []const []const u8) !Args {
@@ -29,7 +36,9 @@ fn parseArgs(argv: []const []const u8) !Args {
     while (i < argv.len) : (i += 1) {
         const arg = argv[i];
         const eql = std.mem.eql;
-        if (eql(u8, arg, "--frame") or eql(u8, arg, "--diff-ref") or eql(u8, arg, "--screenshot") or eql(u8, arg, "--size") or eql(u8, arg, "--ui-scale")) {
+        if (eql(u8, arg, "--frame") or eql(u8, arg, "--diff-ref") or eql(u8, arg, "--screenshot") or eql(u8, arg, "--size") or eql(u8, arg, "--ui-scale") or
+            eql(u8, arg, "--select") or eql(u8, arg, "--set") or eql(u8, arg, "--save"))
+        {
             i += 1;
             if (i >= argv.len) return error.MissingArgumentValue;
             const v = argv[i];
@@ -39,6 +48,19 @@ fn parseArgs(argv: []const []const u8) !Args {
                 a.diff_ref = (try std.fmt.parseInt(usize, v, 10)) -| 1;
             } else if (eql(u8, arg, "--screenshot")) {
                 a.screenshot = v;
+            } else if (eql(u8, arg, "--select")) {
+                var it = std.mem.tokenizeAny(u8, v, ", ");
+                while (it.next()) |tok| {
+                    if (a.select_len == a.select.len) return error.TooManyAtoms;
+                    const n = try std.fmt.parseInt(u32, tok, 10);
+                    if (n == 0) return error.AtomIndicesStartAtOne;
+                    a.select[a.select_len] = n - 1;
+                    a.select_len += 1;
+                }
+            } else if (eql(u8, arg, "--set")) {
+                a.set_value = try std.fmt.parseFloat(f64, v);
+            } else if (eql(u8, arg, "--save")) {
+                a.save = v;
             } else if (eql(u8, arg, "--ui-scale")) {
                 a.ui_scale = try std.fmt.parseFloat(f32, v);
             } else {
@@ -74,7 +96,9 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
-            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark]
+            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
+            \\                  [--ui-scale X] [--no-ui] [--dark]
+            \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\
         , .{});
         if (e == error.Help) return;
@@ -130,14 +154,14 @@ pub fn main(init: std.process.Init) !void {
     if (args.dark) app.style.theme = .dark;
     if (args.file) |f| app.openFile(f);
 
-    var shot: Screenshot = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };
+    var startup: Startup = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };
     if (args.file != null) {
         if (args.diff_ref) |r| app.setFrame(r) else if (args.frame) |f| app.setFrame(f);
     }
 
     while (!app.quit_requested) {
         var ev: c.SDL_Event = undefined;
-        const idle = !app.playing and app.isSettled() and args.screenshot == null;
+        const idle = !app.playing and app.isSettled() and startup.phase == .done;
         if (idle and c.SDL_WaitEventTimeout(&ev, 100)) handleEvent(&app, &ev);
         while (c.SDL_PollEvent(&ev)) handleEvent(&app, &ev);
 
@@ -172,9 +196,7 @@ pub fn main(init: std.process.Init) !void {
         });
         if (!args.no_ui) c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
 
-        if (args.screenshot != null) {
-            if (try shot.step(&app, io, w, h)) break;
-        }
+        if (try startup.step(&app, io, w, h)) break;
         _ = c.SDL_GL_SwapWindow(window);
     }
 }
@@ -216,6 +238,8 @@ fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
     if (ev.type == c.SDL_EVENT_KEY_DOWN and (ev.key.mod & c.SDL_KMOD_CTRL) != 0) {
         switch (ev.key.key) {
             c.SDLK_O => return app.openDialog(),
+            c.SDLK_S => return app.saveDialog(),
+            c.SDLK_Z => return app.undo(),
             c.SDLK_Q => {
                 app.quit_requested = true;
                 return;
@@ -226,17 +250,20 @@ fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
     app.handleEvent(ev, c.cvImGuiWantCaptureMouse(), c.cvImGuiWantCaptureKeyboard());
 }
 
-/// Drives `--screenshot`: optionally sets a diff reference, waits for the
-/// target frame, lets the UI settle for a few frames, then saves a PNG.
-const Screenshot = struct {
+/// Startup script: optionally sets a diff reference, waits for the target
+/// frame, applies --select / --set / --save, then (with --screenshot) lets the
+/// UI settle for a few frames, saves a PNG and asks to exit.
+const Startup = struct {
     args: Args,
     start: Io.Timestamp,
-    phase: enum { reference, target, settle } = .reference,
+    phase: enum { reference, target, settle, done } = .reference,
     settle_frames: u32 = 0,
 
-    fn step(s: *Screenshot, app: *App, io: Io, w: c_int, h: c_int) !bool {
+    /// Returns true when the app should exit.
+    fn step(s: *Startup, app: *App, io: Io, w: c_int, h: c_int) !bool {
+        if (s.phase == .done) return false;
         if (s.start.untilNow(io, .awake).toSeconds() > 30) {
-            std.log.err("screenshot: timed out waiting for frame", .{});
+            std.log.err("startup: timed out waiting for frame", .{});
             return error.Timeout;
         }
         if (app.doc == null) {
@@ -254,9 +281,14 @@ const Screenshot = struct {
                 }
             },
             .target => if (app.isSettled()) {
+                try s.script(app);
                 s.phase = .settle;
             },
             .settle => {
+                if (s.args.screenshot == null) {
+                    s.phase = .done;
+                    return false;
+                }
                 // A few frames for ImGui windows to size themselves and the scene to rebuild.
                 s.settle_frames += 1;
                 if (s.settle_frames >= 4) {
@@ -264,8 +296,27 @@ const Screenshot = struct {
                     return true;
                 }
             },
+            .done => {},
         }
         return false;
+    }
+
+    fn script(s: *Startup, app: *App) !void {
+        const sel = s.args.select[0..s.args.select_len];
+        const n = app.doc.?.shown.?.len();
+        for (sel) |i| {
+            if (i >= n) return error.SelectedAtomOutOfRange;
+            app.toggleSelect(i);
+        }
+        if (s.args.set_value) |v| switch (sel.len) {
+            2 => app.applyEdit(.{ .distance = v }),
+            3 => app.applyEdit(.{ .angle = std.math.degreesToRadians(v) }),
+            4 => app.applyEdit(.{ .dihedral = std.math.degreesToRadians(v) }),
+            else => return error.SetNeedsTwoToFourSelectedAtoms,
+        };
+        // Apply the edit (bonds, scene) before saving.
+        app.update();
+        if (s.args.save) |path| app.saveFrame(path);
     }
 };
 
@@ -301,4 +352,8 @@ fn savePng(io: Io, path: []const u8, w: c_int, h: c_int) !void {
         return sdlFail("dynamic memory pointer"));
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = ptr[0..size] });
     std.log.info("wrote {s} ({d}x{d})", .{ path, w, h });
+}
+
+test {
+    _ = @import("render/Camera.zig");
 }

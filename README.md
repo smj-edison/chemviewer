@@ -10,6 +10,10 @@ OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
   Large trajectories are streamed from disk with background prefetch.
 - **Diffing.** Superimpose the current frame onto a reference frame
   (Horn/Kabsch), with a red/green overlay, RMSD and max deviation.
+- **Measure and edit.** Click up to four atoms to get a distance, angle or
+  dihedral in the bottom bar. Copy it, or type a new value (degrees or
+  radians for angles): the attached group moves with it, Chemcraft-style.
+  Edits are per frame, undoable, and can be saved as XYZ.
 - **Formats:** XYZ / extended XYZ, Gaussian input (`.gjf`/`.com`) and output
   (`.log`), ORCA input (`.inp`) and output (`.out`), ASE trajectories (`.traj`).
 
@@ -35,10 +39,20 @@ SDL_VIDEO_DRIVER=offscreen zig-out/bin/chemviewer traj.traj \
 Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`,
 `--ui-scale X`.
 
+Scripted edits (atom numbers are 1-based; values in Å or degrees):
+
+```sh
+# stretch the C1–C2 distance to 1.8 Å and save the result
+zig-out/bin/chemviewer mol.xyz --select 1,2 --set 1.8 --save stretched.xyz
+# set a dihedral, then take a picture
+zig-out/bin/chemviewer mol.xyz --select 3,1,2,6 --set 75 --screenshot dih.png
+```
+
 ## Controls
 
 | Input | Action |
 |---|---|
+| Left click | select / deselect atom (up to 4); click empty space to clear |
 | Left drag | rotate |
 | Right drag ← → | rotate about the viewing axis |
 | Right drag ↑ ↓ | zoom (up = closer) |
@@ -49,6 +63,9 @@ Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`,
 | PgUp / PgDn | jump 5% |
 | Home / End | first / last frame |
 | F | fit to view |
+| Esc | clear selection |
+| Ctrl+Z | undo geometry edit |
+| Ctrl+S | save current frame (with edits) as XYZ |
 | Ctrl+O | open file (or drop a file on the window) |
 
 ## Layout

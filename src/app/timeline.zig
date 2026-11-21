@@ -4,6 +4,7 @@ const std = @import("std");
 const c = @import("c");
 const ui = @import("ui.zig");
 const App = @import("App.zig");
+const measure = @import("measure.zig");
 
 /// Energy plot height, in multiples of the font size.
 fn plotHeight() f32 {
@@ -12,7 +13,7 @@ fn plotHeight() f32 {
 
 pub fn height() f32 {
     const style = c.igGetStyle();
-    return c.igGetFrameHeightWithSpacing() + plotHeight() + style.*.WindowPadding.y * 2 + style.*.ItemSpacing.y;
+    return 2 * c.igGetFrameHeightWithSpacing() + plotHeight() + style.*.WindowPadding.y * 2 + style.*.ItemSpacing.y;
 }
 
 pub fn draw(app: *App, h: f32) void {
@@ -23,6 +24,7 @@ pub fn draw(app: *App, h: f32) void {
         c.ImGuiWindowFlags_NoSavedSettings | c.ImGuiWindowFlags_NoBringToFrontOnFocus;
     defer c.igEnd();
     if (!c.igBegin("##timeline", null, flags)) return;
+    measure.bar(app);
 
     const d = &(app.doc orelse {
         ui.textDisabled("No trajectory loaded", .{});

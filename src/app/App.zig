@@ -8,6 +8,7 @@ const Renderer = @import("../render/Renderer.zig");
 const Camera = @import("../render/Camera.zig");
 const ui = @import("ui.zig");
 const timeline = @import("timeline.zig");
+const measure = @import("measure.zig");
 const Frame = cv.Frame;
 const Vec3 = cv.math.Vec3;
 
@@ -80,12 +81,34 @@ status_len: usize = 0,
 /// Path delivered by the (possibly off-thread) SDL file dialog callback.
 dialog_path: [4096]u8 = undefined,
 dialog_ready: std.atomic.Value(bool) = .init(false),
+save_path: [4096]u8 = undefined,
+save_ready: std.atomic.Value(bool) = .init(false),
+
+/// Selected atoms in click order (indices into the frame), up to 4.
+selection: [4]u32 = undefined,
+sel_len: usize = 0,
+edit_mode: cv.geometry.Mode = .last,
+/// Edited geometries by frame index; they replace the file's frames.
+edits: std.AutoHashMapUnmanaged(usize, Frame) = .empty,
+undo_stack: std.ArrayList(Undo) = .empty,
+/// Left-button press in the viewport, to tell clicks from drags.
+press: ?struct { moved: f32 } = null,
+
+/// Edits are undone by restoring the positions of the edited frame.
+const Undo = struct { index: usize, positions: []Vec3 };
+
+/// Bonds at least this strong count as connections when moving groups.
+const group_min_character = 0.6;
+const max_undo = 200;
 
 pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window) !App {
     return .{ .io = io, .gpa = gpa, .window = window, .renderer = try Renderer.init(gpa) };
 }
 
 pub fn deinit(app: *App) void {
+    app.clearEdits();
+    app.edits.deinit(app.gpa);
+    app.undo_stack.deinit(app.gpa);
     app.clearDiff();
     app.closeDocument();
     app.renderer.deinit();
@@ -140,6 +163,8 @@ fn openFileInner(app: *App, path: []const u8) !void {
 
     app.clearDiff();
     app.closeDocument();
+    app.clearEdits();
+    app.clearSelection();
     app.doc = .{ .path = owned_path, .format = opened.format, .source = src, .stream = stream };
     app.playing = false;
     app.setStatus("Opened {s} ({s}, {d} frame{s})", .{
@@ -171,15 +196,31 @@ pub fn update(app: *App) void {
         app.dialog_ready.store(false, .release);
         app.openFile(copy[0..p.len]);
     }
+    if (app.save_ready.load(.acquire)) {
+        const p = std.mem.sliceTo(&app.save_path, 0);
+        var copy: [4096]u8 = undefined;
+        @memcpy(copy[0..p.len], p);
+        app.save_ready.store(false, .release);
+        app.saveFrame(copy[0..p.len]);
+    }
 
     const d = &(app.doc orelse return);
     app.advancePlayback();
     d.stream.request(d.current);
     if (d.shown == null or d.shown_index != d.current) {
         const got = d.stream.take(app.gpa, d.current) catch null;
-        if (got) |frame| {
+        if (got) |loaded| {
+            var frame = loaded;
+            // Edited frames replace what's in the file.
+            if (app.edits.get(d.current)) |e| {
+                if (e.clone(app.gpa)) |copy| {
+                    frame.deinit(app.gpa);
+                    frame = copy;
+                } else |_| {}
+            }
             if (d.shown) |*old| old.deinit(app.gpa);
             d.shown = frame;
+            for (app.selected()) |i| if (i >= frame.len()) app.clearSelection();
             d.shown_index = d.current;
             app.bonds_dirty = true;
         } else if (d.stream.lastError()) |e| {
@@ -260,11 +301,13 @@ fn rebuildScene(app: *App) !void {
     const d = app.doc orelse return r.upload();
     const f = d.shown orelse return r.upload();
     if (app.diff) |df| if (df.overlay and df.result != null) {
-        try r.addStructure(df.reference.positions, df.reference.numbers, df.ref_bonds.items, app.style, .{ .color = .{ 1.0, 0.25, 0.25 } });
-        try r.addStructure(df.aligned.items, f.numbers, d.bonds.items, app.style, .{ .color = .{ 0.25, 1.0, 0.35 } });
+        _ = try r.addStructure(df.reference.positions, df.reference.numbers, df.ref_bonds.items, app.style, .{ .color = .{ 1.0, 0.25, 0.25 } });
+        const start = try r.addStructure(df.aligned.items, f.numbers, d.bonds.items, app.style, .{ .color = .{ 0.25, 1.0, 0.35 } });
+        r.highlight(start, app.selected());
         return r.upload();
     };
-    try r.addStructure(f.positions, f.numbers, d.bonds.items, app.style, null);
+    const start = try r.addStructure(f.positions, f.numbers, d.bonds.items, app.style, null);
+    r.highlight(start, app.selected());
     if (app.style.show_cell) if (f.cell) |cell| try r.addCell(cell, app.style.theme.cellLine());
     try r.upload();
 }
@@ -316,7 +359,18 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
     switch (ev.type) {
         c.SDL_EVENT_QUIT => app.quit_requested = true,
         c.SDL_EVENT_DROP_FILE => if (ev.drop.data) |p| app.openFile(std.mem.span(p)),
+        c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+            if (!want_mouse and ev.button.button == c.SDL_BUTTON_LEFT) app.press = .{ .moved = 0 };
+        },
+        c.SDL_EVENT_MOUSE_BUTTON_UP => {
+            if (ev.button.button != c.SDL_BUTTON_LEFT) return;
+            const pr = app.press orelse return;
+            app.press = null;
+            // A click (not a rotate-drag) picks an atom.
+            if (pr.moved < 5 and !want_mouse) app.pickAt(ev.button.x, ev.button.y);
+        },
         c.SDL_EVENT_MOUSE_MOTION => {
+            if (app.press) |*pr| pr.moved += @abs(ev.motion.xrel) + @abs(ev.motion.yrel);
             if (want_mouse) return;
             const m = ev.motion;
             // GaussView-style: left = rotate, right = roll (horizontal) and
@@ -342,6 +396,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             const d = &(app.doc orelse return);
             const n = d.frameCount();
             switch (ev.key.key) {
+                c.SDLK_ESCAPE => app.clearSelection(),
                 c.SDLK_SPACE => app.togglePlay(),
                 c.SDLK_RIGHT, c.SDLK_PERIOD => app.setFrame(d.current + 1),
                 c.SDLK_LEFT, c.SDLK_COMMA => app.setFrame(d.current -| 1),
@@ -383,6 +438,237 @@ fn dialogCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filte
     app.dialog_ready.store(true, .release);
 }
 
+// ------------------------------------------------------------ selection
+
+pub fn selected(app: *const App) []const u32 {
+    return app.selection[0..app.sel_len];
+}
+
+pub fn clearSelection(app: *App) void {
+    if (app.sel_len == 0) return;
+    app.sel_len = 0;
+    app.scene_dirty = true;
+}
+
+/// Click on an atom: add it to the selection, or remove it if already
+/// selected. A fifth atom starts a new selection.
+pub fn toggleSelect(app: *App, atom: u32) void {
+    for (app.selected(), 0..) |s, k| if (s == atom) {
+        std.mem.copyForwards(u32, app.selection[k .. app.sel_len - 1], app.selection[k + 1 .. app.sel_len]);
+        app.sel_len -= 1;
+        app.scene_dirty = true;
+        return;
+    };
+    if (app.sel_len == app.selection.len) app.sel_len = 0;
+    app.selection[app.sel_len] = atom;
+    app.sel_len += 1;
+    app.scene_dirty = true;
+}
+
+/// Positions as drawn (aligned onto the reference in diff overlay mode).
+pub fn displayedPositions(app: *const App) ?[]const Vec3 {
+    const d = app.doc orelse return null;
+    const f = d.shown orelse return null;
+    if (app.diff) |df| if (df.overlay and df.result != null) return df.aligned.items;
+    return f.positions;
+}
+
+fn windowSize(app: *const App) [2]f32 {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    _ = c.SDL_GetWindowSize(app.window, &w, &h);
+    return .{ @floatFromInt(@max(w, 1)), @floatFromInt(@max(h, 1)) };
+}
+
+/// Pick the nearest atom under window point (x, y) and toggle it.
+pub fn pickAt(app: *App, x: f32, y: f32) void {
+    const pos = app.displayedPositions() orelse return;
+    const f = app.doc.?.shown.?;
+    const ws = app.windowSize();
+    const r = app.camera.ray(2 * x / ws[0] - 1, 1 - 2 * y / ws[1], ws[0] / ws[1]);
+    var best: ?u32 = null;
+    var best_t: f32 = std.math.inf(f32);
+    for (pos, f.numbers, 0..) |p, z, i| {
+        const rad = cv.elements.displayRadius(z) * app.style.atom_scale * 1.1;
+        const oc = r.origin - p;
+        const b = cv.math.dot(oc, r.dir);
+        const disc = b * b - (cv.math.dot(oc, oc) - rad * rad);
+        if (disc < 0) continue;
+        const t = -b - @sqrt(disc);
+        if (t > 0 and t < best_t) {
+            best_t = t;
+            best = @intCast(i);
+        }
+    }
+    if (best) |i| app.toggleSelect(i) else app.clearSelection();
+}
+
+/// Maps world positions to window points for overlays.
+pub const ScreenProjector = struct {
+    m: cv.math.Mat4,
+    w: f32,
+    h: f32,
+    /// Logical pixels per ImGui unit (for line thickness).
+    scale: f32 = 1,
+
+    pub fn toScreen(sp: ScreenProjector, p: Vec3) ?c.ImVec2_c {
+        var clip: [4]f32 = undefined;
+        for (0..4) |row| clip[row] = sp.m.m[0][row] * p[0] + sp.m.m[1][row] * p[1] + sp.m.m[2][row] * p[2] + sp.m.m[3][row];
+        if (clip[3] <= 1e-6) return null;
+        return .{ .x = (clip[0] / clip[3] + 1) * 0.5 * sp.w, .y = (1 - clip[1] / clip[3]) * 0.5 * sp.h };
+    }
+};
+
+pub fn screenProjector(app: *const App) ScreenProjector {
+    const ws = app.windowSize();
+    const proj = app.camera.projection(ws[0] / ws[1], app.scene_radius);
+    return .{ .m = proj.mul(app.camera.view()), .w = ws[0], .h = ws[1] };
+}
+
+pub fn bondCharacter(app: *const App, a: u32, b: u32) ?f32 {
+    const d = app.doc orelse return null;
+    for (d.bonds.items) |bd| {
+        if ((bd.a == a and bd.b == b) or (bd.a == b and bd.b == a)) return bd.character;
+    }
+    return null;
+}
+
+// ------------------------------------------------------------ editing
+
+pub const Edit = union(enum) {
+    /// Å
+    distance: f64,
+    /// radians
+    angle: f64,
+    /// radians
+    dihedral: f64,
+};
+
+/// Change the selected internal coordinate of the current frame.
+pub fn applyEdit(app: *App, edit: Edit) void {
+    app.applyEditInner(edit) catch |e| app.setStatus("Edit failed: {t}", .{e});
+}
+
+fn applyEditInner(app: *App, edit: Edit) !void {
+    const d = &(app.doc orelse return);
+    const f = &(d.shown orelse return);
+    const sel = app.selected();
+    const gpa = app.gpa;
+    var graph = try cv.geometry.Graph.init(gpa, f.len(), d.bonds.items, group_min_character);
+    defer graph.deinit(gpa);
+
+    const before = try gpa.dupe(Vec3, f.positions);
+    errdefer gpa.free(before);
+    const p = f.positions;
+    switch (edit) {
+        .distance => |v| if (sel.len == 2) try cv.geometry.setDistance(gpa, p, graph, sel[0], sel[1], v, app.edit_mode),
+        .angle => |v| if (sel.len == 3) try cv.geometry.setAngle(gpa, p, graph, sel[0], sel[1], sel[2], v, app.edit_mode),
+        .dihedral => |v| if (sel.len == 4) try cv.geometry.setDihedral(gpa, p, graph, sel[0], sel[1], sel[2], sel[3], v, app.edit_mode),
+    }
+    if (std.mem.eql(u8, std.mem.sliceAsBytes(before), std.mem.sliceAsBytes(p))) {
+        gpa.free(before);
+        return;
+    }
+    // The file's energy no longer describes this geometry.
+    f.energy = null;
+    if (app.undo_stack.items.len >= max_undo) {
+        gpa.free(app.undo_stack.items[0].positions);
+        _ = app.undo_stack.orderedRemove(0);
+    }
+    try app.undo_stack.append(gpa, .{ .index = d.shown_index, .positions = before });
+    try app.storeEdit(d.shown_index, f.*);
+    app.bonds_dirty = true;
+}
+
+fn storeEdit(app: *App, index: usize, f: Frame) !void {
+    const copy = try f.clone(app.gpa);
+    const gop = try app.edits.getOrPut(app.gpa, index);
+    if (gop.found_existing) gop.value_ptr.deinit(app.gpa);
+    gop.value_ptr.* = copy;
+}
+
+pub fn undo(app: *App) void {
+    const u = app.undo_stack.pop() orelse return;
+    defer app.gpa.free(u.positions);
+    const d = &(app.doc orelse return);
+    if (app.edits.getPtr(u.index)) |e| if (e.positions.len == u.positions.len) @memcpy(e.positions, u.positions);
+    if (d.shown) |*f| if (d.shown_index == u.index and f.positions.len == u.positions.len) {
+        @memcpy(f.positions, u.positions);
+        app.bonds_dirty = true;
+    };
+    if (d.current != u.index) app.setFrame(u.index);
+    app.setStatus("Undid edit on frame {d}", .{u.index + 1});
+}
+
+/// Drop the edits of the shown frame and reload it from the file.
+pub fn revertFrame(app: *App) void {
+    const d = &(app.doc orelse return);
+    if (app.edits.fetchRemove(d.shown_index)) |kv| {
+        var f = kv.value;
+        f.deinit(app.gpa);
+    }
+    // Drop undo entries for this frame, and force a reload.
+    var i: usize = 0;
+    while (i < app.undo_stack.items.len) {
+        if (app.undo_stack.items[i].index == d.shown_index) {
+            app.gpa.free(app.undo_stack.orderedRemove(i).positions);
+        } else i += 1;
+    }
+    if (d.shown) |*f| f.deinit(app.gpa);
+    d.shown = null;
+}
+
+fn clearEdits(app: *App) void {
+    var it = app.edits.valueIterator();
+    while (it.next()) |f| f.deinit(app.gpa);
+    app.edits.clearRetainingCapacity();
+    for (app.undo_stack.items) |u| app.gpa.free(u.positions);
+    app.undo_stack.clearRetainingCapacity();
+}
+
+pub fn saveDialog(app: *App) void {
+    const d = app.doc orelse return;
+    if (d.shown == null) return;
+    const filters = [_]c.SDL_DialogFileFilter{.{ .name = "XYZ", .pattern = "xyz" }};
+    // Suggest <name>_frameN.xyz next to the source file.
+    var buf: [4096]u8 = undefined;
+    const stem = std.fs.path.stem(d.path);
+    const dir = std.fs.path.dirname(d.path) orelse ".";
+    const suggestion = ui.printZ(&buf, "{s}/{s}_frame{d}.xyz", .{ dir, stem, d.shown_index + 1 }) catch null;
+    c.SDL_ShowSaveFileDialog(saveCallback, app, app.window, &filters, filters.len, if (suggestion) |s| s.ptr else null);
+}
+
+fn saveCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filter: c_int) callconv(.c) void {
+    _ = filter;
+    const app: *App = @ptrCast(@alignCast(userdata));
+    if (filelist == null or filelist[0] == null) return;
+    const p = std.mem.span(filelist[0]);
+    if (p.len >= app.save_path.len) return;
+    @memcpy(app.save_path[0..p.len], p);
+    app.save_path[p.len] = 0;
+    app.save_ready.store(true, .release);
+}
+
+/// Write the shown frame (including edits) as XYZ, through std.Io.
+pub fn saveFrame(app: *App, path: []const u8) void {
+    app.saveFrameInner(path) catch |e| {
+        app.setStatus("Could not save {s}: {t}", .{ std.fs.path.basename(path), e });
+        return;
+    };
+    app.setStatus("Saved {s}", .{std.fs.path.basename(path)});
+}
+
+fn saveFrameInner(app: *App, path: []const u8) !void {
+    const d = app.doc orelse return error.NothingToSave;
+    const f = d.shown orelse return error.NothingToSave;
+    const file = try Io.Dir.cwd().createFile(app.io, path, .{});
+    defer file.close(app.io);
+    var buf: [64 * 1024]u8 = undefined;
+    var fw = file.writer(app.io, &buf);
+    try cv.formats.xyz.write(&fw.interface, f);
+    try fw.interface.flush();
+}
+
 // ------------------------------------------------------------ UI
 
 /// Window placement condition: re-place panels when the UI scale changes.
@@ -392,6 +678,7 @@ fn layoutCond(app: *App) c_int {
 
 pub fn drawUi(app: *App) void {
     defer app.layout_font_size = c.igGetFontSize();
+    measure.overlay(app);
     app.menuBar();
     const timeline_h = timeline.height();
     timeline.draw(app, timeline_h);
@@ -405,12 +692,22 @@ fn menuBar(app: *App) void {
     defer c.igEndMainMenuBar();
     if (c.igBeginMenu("File", true)) {
         if (c.igMenuItem_Bool("Open...", "Ctrl+O", false, true)) app.openDialog();
+        const has_frame = app.doc != null and app.doc.?.shown != null;
+        if (c.igMenuItem_Bool("Save frame as XYZ...", "Ctrl+S", false, has_frame)) app.saveDialog();
         if (c.igMenuItem_Bool("Close", null, false, app.doc != null)) {
             app.clearDiff();
             app.closeDocument();
         }
         c.igSeparator();
         if (c.igMenuItem_Bool("Quit", "Ctrl+Q", false, true)) app.quit_requested = true;
+        c.igEndMenu();
+    }
+    if (c.igBeginMenu("Edit", true)) {
+        if (c.igMenuItem_Bool("Undo geometry edit", "Ctrl+Z", false, app.undo_stack.items.len > 0)) app.undo();
+        const edited = if (app.doc) |d| app.edits.contains(d.shown_index) else false;
+        if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
+        c.igSeparator();
+        if (c.igMenuItem_Bool("Clear selection", "Esc", false, app.sel_len > 0)) app.clearSelection();
         c.igEndMenu();
     }
     if (c.igBeginMenu("View", true)) {
@@ -449,7 +746,7 @@ fn inspector(app: *App, timeline_h: f32) void {
         ui.textWrapped("{s}", .{std.fs.path.basename(d.path)});
         ui.textDisabled("{s}{s}", .{ d.format.label(), if (d.source.isStreamed()) ", streamed" else "" });
         if (d.shown) |f| {
-            ui.text("Frame {d} / {d}", .{ d.shown_index + 1, d.frameCount() });
+            ui.text("Frame {d} / {d}{s}", .{ d.shown_index + 1, d.frameCount(), if (app.edits.contains(d.shown_index)) "  (edited)" else "" });
             ui.text("{d} atoms, {d} links", .{ f.len(), d.bonds.items.len });
             if (f.energy) |e| ui.text("E = {d:.8}", .{e});
             if (f.comment.len > 0) ui.textWrapped("{s}", .{f.comment[0..@min(f.comment.len, 200)]});

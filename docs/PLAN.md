@@ -128,7 +128,8 @@ bytes (not frame count) evicts old ones. Scrubbing never blocks the render loop.
 ### Phase 2 — Make it pleasant
 - [ ] Interactive smoke test on a real display (so far only verified headless via `--screenshot`)
 - [ ] Move bond search to the worker for big frames (27k atoms is fine on the UI thread; 10⁶ is not)
-- [ ] Atom picking (hover tooltip; click to measure distance, angle, dihedral)
+- [x] Atom picking: click to measure distance, angle, dihedral; edit them Chemcraft-style (group moves), undo, save XYZ
+- [ ] Hover tooltip with atom info; measurement labels in the viewport
 - [ ] Bond gradient editor (colour stops, cut-off, "show only ≥ single"), saved to a config file
 - [ ] Representation presets: ball & stick, licorice, space-filling, wire
 - [ ] Periodic cells: draw images, wrap atoms, bonds across boundaries (minimum image)

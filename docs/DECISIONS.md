@@ -89,3 +89,19 @@ outlines fade in and out with forming and breaking bonds. Outline width is given
 pixels and multiplied by the pixel density. Sphere silhouettes use
 alpha-to-coverage when MSAA is available. Smooth (Blinn-Phong) shading and
 the dark theme remain options.
+
+### D14 — Editing internal coordinates moves groups
+Setting a distance, angle or dihedral moves the moving atom's whole group:
+everything attached to it once the mover–pivot bond is cut (bonds with
+character ≥ 0.6). If the two atoms aren't bonded, the mover's whole molecule
+moves, so pulling two fragments apart is one edit. If the group can't be split
+off (rings, or non-bonded atoms in the same molecule), only the atom moves.
+"Both sides" applies half the change to each side. Dihedrals rotate about the
+B–C axis. The logic lives in `core/geometry.zig` and is unit-tested against
+known geometries.
+
+Edits are stored per frame and replace the file's frame whenever it's shown.
+The frame's energy is dropped, since it no longer describes the geometry. Undo
+restores positions, and edited frames can be saved as XYZ (Ctrl+S). The same
+path can be scripted from the CLI (`--select`, `--set`, `--save`), which is how
+it's verified headlessly.

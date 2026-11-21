@@ -54,6 +54,14 @@ pub const Theme = enum(c_int) {
         return cv.elements.colorRgb(z);
     }
 
+    /// Selection accent (rings, labels, measurement lines).
+    pub fn accent(t: Theme) [3]f32 {
+        return switch (t) {
+            .light => .{ 0.93, 0.45, 0.0 },
+            .dark => .{ 1.0, 0.72, 0.2 },
+        };
+    }
+
     pub fn cellLine(t: Theme) [4]f32 {
         return switch (t) {
             .light => .{ 0.30, 0.32, 0.36, 1 },
@@ -98,7 +106,13 @@ pub fn gradientColor(palette: cv.color.Palette, character: f32, snap_strength: f
     return .{ bc.rgb[0], bc.rgb[1], bc.rgb[2], bc.alpha };
 }
 
-const AtomInstance = extern struct { center: [3]f32, radius: f32, color: [4]f32 };
+const AtomInstance = extern struct {
+    center: [3]f32,
+    radius: f32,
+    color: [4]f32,
+    /// > 0 for selected atoms: drawn with an accent ring.
+    highlight: f32 = 0,
+};
 const BondInstance = extern struct {
     a: [3]f32,
     radius: f32,
@@ -169,6 +183,7 @@ pub fn init(gpa: Allocator) !Renderer {
     f.BindBuffer(gl.ARRAY_BUFFER, r.atom_vbo);
     instanceAttrib(1, 4, @sizeOf(AtomInstance), @offsetOf(AtomInstance, "center"));
     instanceAttrib(2, 4, @sizeOf(AtomInstance), @offsetOf(AtomInstance, "color"));
+    instanceAttrib(3, 1, @sizeOf(AtomInstance), @offsetOf(AtomInstance, "highlight"));
 
     // --- cylinders: side wall mesh, per-instance endpoints/colors
     f.BindVertexArray(r.cylinder_vao);
@@ -249,7 +264,16 @@ pub fn outlineWeight(snapped_character: f32) f32 {
     return t * t * (3 - 2 * t);
 }
 
+/// Mark atoms (indices relative to `start`, as returned by `addStructure`)
+/// as selected.
+pub fn highlight(r: *Renderer, start: usize, atoms: []const u32) void {
+    for (atoms) |i| {
+        if (start + i < r.atoms.items.len) r.atoms.items[start + i].highlight = 1;
+    }
+}
+
 /// Queue one structure. `positions` may differ from the frame's own (e.g. aligned).
+/// Returns the index of its first atom instance (for `highlight`).
 pub fn addStructure(
     r: *Renderer,
     positions: []const Vec3,
@@ -257,7 +281,8 @@ pub fn addStructure(
     bonds: []const Bond,
     style: Style,
     tint: ?Tint,
-) !void {
+) !usize {
+    const start = r.atoms.items.len;
     try r.atoms.ensureUnusedCapacity(r.gpa, positions.len);
     for (positions, numbers) |p, z| {
         const rgb = tinted(style.theme.atomColor(z), tint);
@@ -302,6 +327,7 @@ pub fn addStructure(
         };
         if (ca[3] < 0.99) try r.translucent.append(r.gpa, inst) else try r.bonds.append(r.gpa, inst);
     }
+    return start;
 }
 
 pub fn addCell(r: *Renderer, cell: [3]Vec3, rgba: [4]f32) !void {
@@ -350,6 +376,8 @@ pub const DrawParams = struct {
     /// Physical pixels per logical pixel (HiDPI).
     pixel_density: f32 = 1,
     style: Style,
+    /// Filled in by `draw`: world units per framebuffer pixel at unit depth.
+    world_per_px: f32 = 0,
 };
 
 fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
@@ -362,10 +390,15 @@ fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
     f.Uniform1i(f.GetUniformLocation(prog, "u_outline_pass"), 0);
     const oc = p.style.theme.outline();
     f.Uniform3f(f.GetUniformLocation(prog, "u_outline_color"), oc[0], oc[1], oc[2]);
+    const ac = p.style.theme.accent();
+    f.Uniform3f(f.GetUniformLocation(prog, "u_select_color"), ac[0], ac[1], ac[2]);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_select_k"), 3.5 * p.pixel_density * p.world_per_px);
 }
 
-pub fn draw(r: *Renderer, p: DrawParams) void {
+pub fn draw(r: *Renderer, params: DrawParams) void {
     const f = &gl.f;
+    var p = params;
+    p.world_per_px = 2 * @tan(p.fovy / 2) / @as(f32, @floatFromInt(@max(p.height, 1)));
     const bg = p.style.theme.background();
     f.Viewport(0, 0, p.width, p.height);
     f.ClearColor(bg[0], bg[1], bg[2], 1);
@@ -378,8 +411,7 @@ pub fn draw(r: *Renderer, p: DrawParams) void {
 
     // Outline width in world units per unit of view depth (constant on screen).
     const outlines = p.style.shading == .cel and p.style.outline_px > 0;
-    const world_per_px = 2 * @tan(p.fovy / 2) / @as(f32, @floatFromInt(@max(p.height, 1)));
-    const outline_k: f32 = if (outlines) p.style.outline_px * p.pixel_density * world_per_px else 0;
+    const outline_k: f32 = if (outlines) p.style.outline_px * p.pixel_density * p.world_per_px else 0;
 
     if (r.uploaded_atoms > 0) {
         setCommon(r.sphere_prog, p, outline_k);

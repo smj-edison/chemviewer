@@ -31,10 +31,13 @@ pub const sphere_vs =
     \\layout(location = 0) in vec2 a_corner;
     \\layout(location = 1) in vec4 a_center_radius;
     \\layout(location = 2) in vec4 a_color;
+    \\layout(location = 3) in float a_highlight;
     \\uniform mat4 u_view;
     \\uniform mat4 u_proj;
     \\uniform float u_outline_k;
+    \\uniform float u_select_k;
     \\out vec3 v_view_pos;
+    \\flat out float v_highlight;
     \\flat out vec3 v_center;
     \\flat out float v_radius;
     \\flat out float v_outer;
@@ -43,7 +46,9 @@ pub const sphere_vs =
     \\    vec3 c = (u_view * vec4(a_center_radius.xyz, 1.0)).xyz;
     \\    float r = a_center_radius.w;
     \\    float d = length(c);
-    \\    float ro = r + u_outline_k * d;
+    \\    // Selected atoms get a wider ring (in the accent colour) even without outlines.
+    \\    float ro = r + (a_highlight > 0.0 ? max(u_select_k, u_outline_k) : u_outline_k) * d;
+    \\    v_highlight = a_highlight;
     \\    // Enlarge the quad so the perspective silhouette is always covered.
     \\    float s = ro * 1.3 * d / sqrt(max(d * d - ro * ro, 1e-4));
     \\    v_view_pos = c + vec3(a_corner * s, 0.0);
@@ -62,8 +67,10 @@ pub const sphere_fs =
     \\flat in float v_radius;
     \\flat in float v_outer;
     \\flat in vec4 v_color;
+    \\flat in float v_highlight;
     \\uniform mat4 u_proj;
     \\uniform vec3 u_outline_color;
+    \\uniform vec3 u_select_color;
     \\out vec4 o_color;
     \\
 ++ lighting ++
@@ -86,7 +93,8 @@ pub const sphere_fs =
     \\    gl_FragDepth = clip.z / clip.w * 0.5 + 0.5;
     \\    // Outer edge coverage drives alpha-to-coverage for smooth silhouettes.
     \\    float cover = clamp(disc_o / max(fwidth(disc_o), 1e-9), 0.0, 1.0);
-    \\    o_color = vec4(mix(u_outline_color, body, k), v_color.a * cover);
+    \\    vec3 ring = v_highlight > 0.0 ? u_select_color : u_outline_color;
+    \\    o_color = vec4(mix(ring, body, k), v_color.a * cover);
     \\}
 ;
 

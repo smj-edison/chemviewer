@@ -111,7 +111,10 @@ pub fn build(b: *std.Build) void {
     b.step("inspect", "Print a summary of structure files (headless)").dependOn(&inspect_run.step);
 
     // ------------------------------------------------------------ tests
-    const test_step = b.step("test", "Run core unit tests");
+    const test_step = b.step("test", "Run unit tests (headless)");
     const core_tests = b.addTest(.{ .root_module = core });
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
+    // GUI-side math (camera, picking); links SDL/ImGui but needs no display.
+    const exe_tests = b.addTest(.{ .root_module = exe_mod });
+    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 }

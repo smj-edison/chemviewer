@@ -66,3 +66,37 @@ pub fn fit(c: *Camera, center: Vec3, radius: f32) void {
     c.target = center;
     c.distance = @max(radius, 1.0) / @sin(c.fovy / 2) * 1.12;
 }
+
+pub const Ray = struct { origin: Vec3, dir: Vec3 };
+
+/// World-space ray through a point given in normalised device coordinates
+/// (x, y in [-1, 1], y up). Inverse of `view`: w = Rᵀ(v + (0,0,d)) + target.
+pub fn ray(c: Camera, x_ndc: f32, y_ndc: f32, aspect: f32) Ray {
+    const t = @tan(c.fovy / 2);
+    const dir_view = math.normalize(.{ x_ndc * t * aspect, y_ndc * t, -1 });
+    const rt = c.rotation.toMat3().transpose();
+    return .{
+        .origin = rt.mulVec(.{ 0, 0, c.distance }) + c.target,
+        .dir = rt.mulVec(dir_view),
+    };
+}
+
+test "pick ray passes through projected points" {
+    var cam: Camera = .{ .target = .{ 1, -2, 0.5 }, .distance = 15 };
+    cam.orbit(140, -60);
+    cam.roll(35);
+    const aspect: f32 = 1.6;
+    const vp = cam.projection(aspect, 10).mul(cam.view());
+    const points = [_]Vec3{ .{ 0, 0, 0 }, .{ 3, 1, -2 }, .{ -4, 2.5, 1 } };
+    for (points) |p| {
+        // Project to NDC.
+        var clip: [4]f32 = undefined;
+        for (0..4) |row| clip[row] = vp.m[0][row] * p[0] + vp.m[1][row] * p[1] + vp.m[2][row] * p[2] + vp.m[3][row];
+        const r = cam.ray(clip[0] / clip[3], clip[1] / clip[3], aspect);
+        // Distance from p to the ray.
+        const t = math.dot(p - r.origin, r.dir);
+        const closest = r.origin + r.dir * math.splat(t);
+        try std.testing.expect(math.length(closest - p) < 1e-3);
+        try std.testing.expect(t > 0);
+    }
+}
