@@ -994,26 +994,11 @@ fn beginDragInner(app: *App, kind: drag_mod.Kind, x: f32, y: f32) !void {
         .bond => |pair| pair[1],
     };
 
-    // Which atoms move: an explicit multi-atom selection containing the
-    // grabbed atom; otherwise the grabbed atom's group relative to the base
-    // atom (the single selected atom), or its whole molecule.
-    const sel = app.selected();
-    var pivot: ?u32 = null;
-    var group: []u32 = undefined;
-    if (sel.len >= 2 and std.mem.indexOfScalar(u32, sel, handle) != null) {
-        group = try gpa.dupe(u32, sel);
-    } else {
-        var graph = try app.drawnGraph();
-        defer graph.deinit(gpa);
-        if (sel.len == 1 and sel[0] != handle) {
-            // Everything reachable from the grabbed atom without passing
-            // through the base atom rotates about it.
-            pivot = sel[0];
-            group = try cv.geometry.beyond(graph, gpa, handle, sel[0]);
-        } else {
-            group = (try graph.side(gpa, handle, .{ handle, handle }, &.{})) orelse try gpa.dupe(u32, &.{handle});
-        }
-    }
+    var graph = try app.drawnGraph();
+    defer graph.deinit(gpa);
+    const choice = try drag_mod.chooseGroup(gpa, graph, app.selected(), handle);
+    const pivot = choice.pivot;
+    const group = choice.group;
     errdefer gpa.free(group);
     const start = try gpa.alloc(Vec3, group.len);
     errdefer gpa.free(start);

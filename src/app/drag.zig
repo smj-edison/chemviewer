@@ -57,6 +57,38 @@ pub const Drag = struct {
     }
 };
 
+pub const Choice = struct {
+    /// Atoms to move (owned by the caller).
+    group: []u32,
+    /// Atom to rotate around; null = rotate about the group's centre.
+    pivot: ?u32,
+};
+
+/// Decide what an Alt-drag on `handle` moves. The first selected atom is
+/// always the base (pivot):
+///   - grabbing the base itself moves the selection (or, if the base is all
+///     that is selected, its molecule) about its own centre;
+///   - grabbing a selected atom moves the rest of the selection around the base;
+///   - grabbing anything else moves the branch reachable from it without
+///     passing through the base (`geometry.beyond`);
+///   - with nothing selected, the grabbed atom's molecule moves about its centre.
+pub fn chooseGroup(gpa: Allocator, graph: cv.geometry.Graph, sel: []const u32, handle: u32) !Choice {
+    if (sel.len == 0) return .{ .group = try molecule(gpa, graph, handle), .pivot = null };
+    const base = sel[0];
+    if (handle == base) {
+        if (sel.len >= 2) return .{ .group = try gpa.dupe(u32, sel), .pivot = null };
+        return .{ .group = try molecule(gpa, graph, handle), .pivot = null };
+    }
+    if (std.mem.indexOfScalar(u32, sel, handle) != null) {
+        return .{ .group = try gpa.dupe(u32, sel[1..]), .pivot = base };
+    }
+    return .{ .group = try cv.geometry.beyond(graph, gpa, handle, base), .pivot = base };
+}
+
+fn molecule(gpa: Allocator, graph: cv.geometry.Graph, atom: u32) ![]u32 {
+    return (try graph.side(gpa, atom, .{ atom, atom }, &.{})) orelse try gpa.dupe(u32, &.{atom});
+}
+
 /// Point where the cursor ray meets the sphere (center, radius) on the chosen
 /// side; if the ray misses, the sphere point closest to the ray.
 pub fn spherePoint(origin: Vec3, dir: Vec3, center: Vec3, radius: f32, near_side: bool) Vec3 {
@@ -123,4 +155,39 @@ test "twist keeps the axis atoms fixed" {
     d.apply(&pos, .{ 0, 0, 1 });
     try std.testing.expect(math.length(pos[1] - v0) < 1e-5); // on the axis
     try std.testing.expect(@abs(pos[2][1]) < 1e-5 and @abs(@abs(pos[2][2]) - 1.0) < 1e-5);
+}
+
+test "the first selected atom is always the base" {
+    const gpa = std.testing.allocator;
+    // Chain 0-1-2-3-4 (carbons 1.5 Å apart along x).
+    var pos: [5]Vec3 = undefined;
+    for (&pos, 0..) |*p, i| p.* = .{ 1.5 * @as(f32, @floatFromInt(i)), 0, 0 };
+    const nums = [_]u8{ 6, 6, 6, 6, 6 };
+    const bl = try cv.bonds.find(gpa, &pos, &nums, .{});
+    defer gpa.free(bl);
+    var g = try cv.geometry.Graph.init(gpa, pos.len, bl, 0.6);
+    defer g.deinit(gpa);
+
+    const Case = struct { sel: []const u32, handle: u32, group: []const u32, pivot: ?u32 };
+    const cases = [_]Case{
+        // Base, then a lassoed group: the group (minus the base) swings around it.
+        .{ .sel = &.{ 1, 3, 4 }, .handle = 3, .group = &.{ 3, 4 }, .pivot = 1 },
+        // Lasso included the base: it is still the pivot, not moved.
+        .{ .sel = &.{ 1, 0, 2 }, .handle = 2, .group = &.{ 0, 2 }, .pivot = 1 },
+        // Only the base selected: the branch beyond it.
+        .{ .sel = &.{1}, .handle = 3, .group = &.{ 2, 3, 4 }, .pivot = 1 },
+        // Grabbing an unselected atom with a multi-selection: branch beyond the base.
+        .{ .sel = &.{ 1, 0 }, .handle = 4, .group = &.{ 2, 3, 4 }, .pivot = 1 },
+        // Grabbing the base: the selection about its centre.
+        .{ .sel = &.{ 1, 2 }, .handle = 1, .group = &.{ 1, 2 }, .pivot = null },
+        // Nothing selected: the whole molecule about its centre.
+        .{ .sel = &.{}, .handle = 2, .group = &.{ 0, 1, 2, 3, 4 }, .pivot = null },
+    };
+    for (cases) |cs| {
+        const ch = try chooseGroup(gpa, g, cs.sel, cs.handle);
+        defer gpa.free(ch.group);
+        std.mem.sort(u32, ch.group, {}, std.sort.asc(u32));
+        try std.testing.expectEqualSlices(u32, cs.group, ch.group);
+        try std.testing.expectEqual(cs.pivot, ch.pivot);
+    }
 }

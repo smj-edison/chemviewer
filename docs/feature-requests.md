@@ -18,3 +18,11 @@ something is picked up.
 - [x] Double click on bond to toggle being ignored
   *Double-clicking a bond toggles its cut (same as X). Clicking a bond selects
   only the bond, not its atoms.*
+- [x] Moving a group based on a reference atom should always move relative to the
+  first selected atom (I ran into an issue where I 1. selected an atom, and 2.
+  used a lasso selection, but the lasso selection didn't rotate relative to
+  the first selected atom.)
+  *The first selected atom is now always the base. Alt-dragging an atom of
+  the selection moves the rest of the selection around the base; an
+  unselected atom moves its branch beyond the base; grabbing the base itself
+  moves the selection about its centre.*
