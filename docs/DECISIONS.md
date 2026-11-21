@@ -140,13 +140,15 @@ selects everything.
 ### D17 — Alt turns camera gestures into fragment gestures
 As in GaussView, holding Alt applies the mouse to atoms instead of the camera:
 left drag rotates, right drag twists, middle (or Shift+left) translates. The
-first selected atom is always the base (`drag.chooseGroup`). Grabbing a
-selected atom moves the rest of the selection around the base. Grabbing an
-unselected atom moves everything reachable from it *without passing through*
-the base (`geometry.beyond`). Grabbing the base moves the selection about its
-centre. With nothing selected, the grabbed atom's molecule moves about its
-centre. (Originally a multi-atom selection always rotated about its own centre,
-which ignored a base picked before lassoing the group.)
+moving group (`drag.chooseGroup`): grabbing a selected atom moves the whole
+selection as one rigid body about its centre (a single selected atom brings its
+molecule). With exactly one atom selected (the base), grabbing an unselected
+atom moves everything reachable from it *without passing through* the base
+(`geometry.beyond`), around the base. Otherwise the grabbed atom's molecule
+moves about its centre. An earlier rule made the first selected atom the base
+of any multi-selection. It was dropped because it left that atom behind when
+moving a pasted (fully selected) fragment. Groups that bonds can't separate can
+get an explicit pivot later if needed.
 Blocking the base atom, instead of cutting the base–grabbed bond as the
 coordinate edits do, makes grabbing *any* atom of a branch move the whole
 branch. In rings the rest of the ring swings about the base, with distances to

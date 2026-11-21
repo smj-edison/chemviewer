@@ -18,13 +18,13 @@ OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
   XYZ, with the source in the comment line. Ctrl+V pastes XYZ, bare
   `El x y z` lines, or a Gaussian/ORCA input into the current structure as a
   new fragment (Ctrl+Shift+V opens it as a new structure instead).
-- **Drag fragments (GaussView-style Alt).** The first selected atom is the
-  base. Alt+drag any atom past it and that branch swings around the base,
-  with the grabbed atom following the cursor. Or select the base, then the
-  atoms to move (e.g. with the lasso), and Alt+drag one of them. Alt+right drag
-  twists about the base→grabbed axis; Alt+middle (or Alt+Shift+left) drag
-  translates. With nothing selected the grabbed atom's molecule moves. Each
-  drag is one undoable edit; Esc cancels.
+- **Drag fragments (GaussView-style Alt).** Alt+drag a selected atom to move
+  the whole selection (rotate about its centre, twist, translate). With a
+  single base atom selected, Alt+drag any other atom and the branch beyond the
+  base swings around it, with the grabbed atom following the cursor. Alt+right
+  drag twists; Alt+middle (or Alt+Shift+left) drag translates. With nothing
+  selected the grabbed atom's molecule moves. Each drag is one undoable edit;
+  Esc cancels.
 - **Cut bonds.** Double-click a bond (or click it and press X) to cut it. It stays drawn (thin, red),
   but edits and molecule selection treat the two sides as separate, so you can
   move part of a ring or a ligand freely.
@@ -69,7 +69,7 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Input | Action |
 |---|---|
 | Left click | select / deselect an atom; on a bond: select just the bond; empty space: clear |
-| Alt + left drag on an atom | rotate its group around the first selected atom (or its molecule about its centre) |
+| Alt + left drag | on a selected atom: rotate the selection about its centre; with one base atom selected, on another atom: swing its branch around the base |
 | Alt + right drag | twist the group about the base→grabbed axis |
 | Alt + middle drag / Alt + Shift + left drag | translate the group |
 | Ctrl + left drag | lasso: add atoms inside (including hidden ones) |

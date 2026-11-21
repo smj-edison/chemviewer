@@ -22,7 +22,8 @@ something is picked up.
   first selected atom (I ran into an issue where I 1. selected an atom, and 2.
   used a lasso selection, but the lasso selection didn't rotate relative to
   the first selected atom.)
-  *The first selected atom is now always the base. Alt-dragging an atom of
-  the selection moves the rest of the selection around the base; an
-  unselected atom moves its branch beyond the base; grabbing the base itself
-  moves the selection about its centre.*
+  *Revised after discussion: a single selected atom is the base. Alt-dragging
+  an unselected atom swings its branch around it. Alt-dragging a selected atom
+  moves the whole selection about its centre, so a pasted fragment always
+  moves as one piece. An explicit pivot (e.g. Alt+click) could be added later
+  for groups that bonds can't separate.*

@@ -100,7 +100,7 @@ pub fn bar(app: *App) void {
         return;
     }
     if (sel.len == 0) {
-        ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all. Alt+drag: move a group around the first selected atom. Ctrl+C: copy XYZ.", .{});
+        ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all. Alt+drag: move the selection, or a group around a single selected atom. Ctrl+C: copy XYZ.", .{});
         return;
     }
     if (sel.len > 4) {
