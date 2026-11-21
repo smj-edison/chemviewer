@@ -90,13 +90,18 @@ edit_mode: cv.geometry.Mode = .last,
 /// Edited geometries by frame index; they replace the file's frames.
 edits: std.AutoHashMapUnmanaged(usize, Frame) = .empty,
 undo_stack: std.ArrayList(Undo) = .empty,
+cut_bonds: CutSet = .empty,
 /// Left-button press in the viewport, to tell clicks from drags.
 press: ?struct { moved: f32 } = null,
 
 /// Edits are undone by restoring the positions of the edited frame.
-const Undo = struct { index: usize, positions: []Vec3 };
+/// Undo restores a whole frame snapshot (pastes change the atom count).
+const Undo = struct { index: usize, frame: Frame };
 
-const max_undo = 200;
+/// Bonds the user cut: drawn, but ignored as connections (key = pairKey).
+pub const CutSet = std.AutoHashMapUnmanaged(u64, void);
+
+const max_undo = 100;
 
 pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window) !App {
     return .{ .io = io, .gpa = gpa, .window = window, .renderer = try Renderer.init(gpa) };
@@ -107,6 +112,7 @@ pub fn deinit(app: *App) void {
     app.edits.deinit(app.gpa);
     app.undo_stack.deinit(app.gpa);
     app.selection.deinit(app.gpa);
+    app.cut_bonds.deinit(app.gpa);
     app.clearDiff();
     app.closeDocument();
     app.renderer.deinit();
@@ -169,6 +175,7 @@ fn install(app: *App, opened: cv.source.Opened, path: []const u8) !void {
     app.closeDocument();
     app.clearEdits();
     app.clearSelection();
+    app.cut_bonds.clearRetainingCapacity();
     app.doc = .{ .path = owned_path, .format = opened.format, .source = src, .stream = stream };
     app.playing = false;
     app.setStatus("Opened {s} ({s}, {d} frame{s})", .{
@@ -221,23 +228,83 @@ fn copyXyzInner(app: *App) !void {
     app.setStatus("Copied {d} atom{s} as XYZ", .{ out.len(), if (out.len() == 1) "" else "s" });
 }
 
-/// Open the clipboard's text (XYZ, bare coordinates, or a Gaussian/ORCA
-/// input) as a new structure.
-pub fn pasteXyz(app: *App) void {
-    app.pasteXyzInner() catch |e| app.setStatus("Nothing pasteable on the clipboard ({t})", .{e});
+/// Paste the clipboard (XYZ, bare coordinates, or a Gaussian/ORCA input)
+/// into the current frame as a new fragment; with nothing open, or with
+/// `as_new`, open it as a new structure instead.
+pub fn pasteXyz(app: *App, as_new: bool) void {
+    app.pasteXyzInner(as_new) catch |e| app.setStatus("Nothing pasteable on the clipboard ({t})", .{e});
 }
 
-fn pasteXyzInner(app: *App) !void {
+fn pasteXyzInner(app: *App, as_new: bool) !void {
     if (!c.SDL_HasClipboardText()) return error.Empty;
     const raw = c.SDL_GetClipboardText() orelse return error.Empty;
     defer c.SDL_free(raw);
     const text = std.mem.span(raw);
     var opened = try cv.source.openBytes(app.gpa, text);
     errdefer opened.source.deinit(app.io, app.gpa);
+    const has_frame = if (app.doc) |d| d.shown != null else false;
+    if (!as_new and has_frame) {
+        defer opened.source.deinit(app.io, app.gpa);
+        return app.appendFragment(opened.source.memory[0]);
+    }
     try app.install(opened, "clipboard.xyz");
     app.setStatus("Pasted {d} atom{s} from the clipboard", .{
         opened.source.memory[0].len(), if (opened.source.memory[0].len() == 1) "" else "s",
     });
+}
+
+/// Append `frag` to the shown frame (undoable). If it would overlap the
+/// existing atoms, it is moved beside the structure (to the right on screen).
+/// The new atoms become the selection.
+fn appendFragment(app: *App, frag: Frame) !void {
+    const gpa = app.gpa;
+    const d = &(app.doc orelse return);
+    const f = &(d.shown orelse return);
+    var offset: Vec3 = @splat(0);
+    if (f.len() > 0 and frag.len() > 0 and f.len() * frag.len() <= 50_000_000 and f.minDistance(frag) < 1.0) {
+        const ca = f.centroid();
+        const cb = frag.centroid();
+        var ra: f32 = 0;
+        for (f.positions) |p| ra = @max(ra, cv.math.length(p - ca));
+        var rb: f32 = 0;
+        for (frag.positions) |p| rb = @max(rb, cv.math.length(p - cb));
+        const right = app.camera.rotation.toMat3().transpose().column(0);
+        offset = ca + right * cv.math.splat(ra + rb + 2.5) - cb;
+    }
+    var before = try f.clone(gpa);
+    errdefer before.deinit(gpa);
+    const combined = try f.concat(gpa, frag, offset);
+    const first: u32 = @intCast(f.len());
+    f.deinit(gpa);
+    f.* = combined;
+    try app.commitEdit(before);
+    app.selection.clearRetainingCapacity();
+    for (first..combined.len()) |i| try app.selection.append(gpa, @intCast(i));
+    app.scene_dirty = true;
+    // Re-frame if any pasted atom is off-screen.
+    const sp = app.screenProjector();
+    for (combined.positions[first..]) |p| {
+        const q = sp.toScreen(p) orelse {
+            app.fitCamera();
+            break;
+        };
+        if (q.x < 0 or q.y < 0 or q.x > sp.w or q.y > sp.h) {
+            app.fitCamera();
+            break;
+        }
+    }
+    app.setStatus("Pasted {d} atom{s} as a fragment{s}", .{
+        frag.len(), if (frag.len() == 1) "" else "s", if (offset[0] != 0 or offset[1] != 0 or offset[2] != 0) " (moved beside the structure)" else "",
+    });
+}
+
+/// Append the first frame of a file as a fragment (File > Add fragment).
+pub fn addFragmentFile(app: *App, path: []const u8) !void {
+    var opened = try cv.source.open(app.io, app.gpa, .cwd(), path);
+    defer opened.source.deinit(app.io, app.gpa);
+    var frag = try opened.source.loadFrame(app.io, app.gpa, 0);
+    defer frag.deinit(app.gpa);
+    try app.appendFragment(frag);
 }
 
 pub fn setFrame(app: *App, index: usize) void {
@@ -284,7 +351,7 @@ pub fn update(app: *App) void {
             }
             if (d.shown) |*old| old.deinit(app.gpa);
             d.shown = frame;
-            for (app.selected()) |i| if (i >= frame.len()) app.clearSelection();
+            app.dropInvalidSelection();
             d.shown_index = d.current;
             app.bonds_dirty = true;
         } else if (d.stream.lastError()) |e| {
@@ -365,12 +432,12 @@ fn rebuildScene(app: *App) !void {
     const d = app.doc orelse return r.upload();
     const f = d.shown orelse return r.upload();
     if (app.diff) |df| if (df.overlay and df.result != null) {
-        _ = try r.addStructure(df.reference.positions, df.reference.numbers, df.ref_bonds.items, app.style, .{ .color = .{ 1.0, 0.25, 0.25 } });
-        const start = try r.addStructure(df.aligned.items, f.numbers, d.bonds.items, app.style, .{ .color = .{ 0.25, 1.0, 0.35 } });
+        _ = try r.addStructure(df.reference.positions, df.reference.numbers, df.ref_bonds.items, app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
+        const start = try r.addStructure(df.aligned.items, f.numbers, d.bonds.items, app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.cut_bonds);
         r.highlight(start, app.selected());
         return r.upload();
     };
-    const start = try r.addStructure(f.positions, f.numbers, d.bonds.items, app.style, null);
+    const start = try r.addStructure(f.positions, f.numbers, d.bonds.items, app.style, null, &app.cut_bonds);
     r.highlight(start, app.selected());
     if (app.style.show_cell) if (f.cell) |cell| try r.addCell(cell, app.style.theme.cellLine());
     try r.upload();
@@ -461,6 +528,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             const n = d.frameCount();
             switch (ev.key.key) {
                 c.SDLK_ESCAPE => app.clearSelection(),
+                c.SDLK_X => app.toggleCut(),
                 c.SDLK_SPACE => app.togglePlay(),
                 c.SDLK_RIGHT, c.SDLK_PERIOD => app.setFrame(d.current + 1),
                 c.SDLK_LEFT, c.SDLK_COMMA => app.setFrame(d.current -| 1),
@@ -528,6 +596,49 @@ pub fn toggleSelect(app: *App, atom: u32) void {
     app.scene_dirty = true;
 }
 
+/// Drop selected indices that don't exist in the shown frame.
+fn dropInvalidSelection(app: *App) void {
+    const d = app.doc orelse return;
+    const n = if (d.shown) |f| f.len() else return;
+    var i: usize = 0;
+    while (i < app.selection.items.len) {
+        if (app.selection.items[i] >= n) {
+            _ = app.selection.orderedRemove(i);
+            app.scene_dirty = true;
+        } else i += 1;
+    }
+}
+
+pub fn pairKey(a: u32, b: u32) u64 {
+    return (@as(u64, @min(a, b)) << 32) | @max(a, b);
+}
+
+pub fn isCut(app: *const App, a: u32, b: u32) bool {
+    return app.cut_bonds.contains(pairKey(a, b));
+}
+
+/// Cut (or restore) the bond between the two selected atoms.
+pub fn toggleCut(app: *App) void {
+    const sel = app.selected();
+    if (sel.len != 2) {
+        app.setStatus("Select a bond (or its two atoms) to cut it", .{});
+        return;
+    }
+    const key = pairKey(sel[0], sel[1]);
+    if (app.cut_bonds.remove(key)) {
+        app.setStatus("Restored bond", .{});
+    } else {
+        app.cut_bonds.put(app.gpa, key, {}) catch return;
+        app.setStatus("Cut bond: ignored when moving groups and selecting molecules", .{});
+    }
+    app.scene_dirty = true;
+}
+
+pub fn restoreCuts(app: *App) void {
+    app.cut_bonds.clearRetainingCapacity();
+    app.scene_dirty = true;
+}
+
 pub fn selectAll(app: *App) void {
     const d = app.doc orelse return;
     const f = d.shown orelse return;
@@ -550,13 +661,16 @@ pub fn selectFragment(app: *App, atom: u32) void {
 }
 
 /// Connectivity used for moving groups and selecting molecules: exactly the
-/// bonds that are drawn, so what moves together is what looks connected.
+/// bonds that are drawn, so what moves together is what looks connected,
+/// minus the bonds the user cut.
 pub fn drawnGraph(app: *const App) !cv.geometry.Graph {
     const d = app.doc orelse return error.NoDocument;
     const f = d.shown orelse return error.NoDocument;
     var drawn: std.ArrayList(cv.bonds.Bond) = .empty;
     defer drawn.deinit(app.gpa);
-    for (d.bonds.items) |b| if (Renderer.isDrawn(app.style, b.character)) try drawn.append(app.gpa, b);
+    for (d.bonds.items) |b| {
+        if (Renderer.isDrawn(app.style, b.character) and !app.isCut(b.a, b.b)) try drawn.append(app.gpa, b);
+    }
     return cv.geometry.Graph.init(app.gpa, f.len(), drawn.items, 0);
 }
 
@@ -575,14 +689,16 @@ fn windowSize(app: *const App) [2]f32 {
     return .{ @floatFromInt(@max(w, 1)), @floatFromInt(@max(h, 1)) };
 }
 
-/// The atom under window point (x, y), if any.
-pub fn atomAt(app: *const App, x: f32, y: f32) ?u32 {
+const Hit = struct { t: f32, target: union(enum) { atom: u32, bond: [2]u32 } };
+
+/// The nearest atom or drawn bond under window point (x, y), if any.
+fn hitAt(app: *const App, x: f32, y: f32) ?Hit {
     const pos = app.displayedPositions() orelse return null;
-    const f = app.doc.?.shown.?;
+    const d = app.doc.?;
+    const f = d.shown.?;
     const ws = app.windowSize();
     const r = app.camera.ray(2 * x / ws[0] - 1, 1 - 2 * y / ws[1], ws[0] / ws[1]);
-    var best: ?u32 = null;
-    var best_t: f32 = std.math.inf(f32);
+    var best: ?Hit = null;
     for (pos, f.numbers, 0..) |p, z, i| {
         const rad = cv.elements.displayRadius(z) * app.style.atom_scale * 1.1;
         const oc = r.origin - p;
@@ -590,22 +706,54 @@ pub fn atomAt(app: *const App, x: f32, y: f32) ?u32 {
         const disc = b * b - (cv.math.dot(oc, oc) - rad * rad);
         if (disc < 0) continue;
         const t = -b - @sqrt(disc);
-        if (t > 0 and t < best_t) {
-            best_t = t;
-            best = @intCast(i);
-        }
+        if (t > 0 and (best == null or t < best.?.t)) best = .{ .t = t, .target = .{ .atom = @intCast(i) } };
+    }
+    // Bonds: closest approach between the ray and the bond segment.
+    const grab = @max(app.style.bond_radius * 1.6, 0.12);
+    for (d.bonds.items) |bd| {
+        if (!Renderer.isDrawn(app.style, bd.character)) continue;
+        const p0 = pos[bd.a];
+        const e = pos[bd.b] - p0;
+        const w0 = r.origin - p0;
+        const bb = cv.math.dot(r.dir, e);
+        const cc = cv.math.dot(e, e);
+        const dd = cv.math.dot(r.dir, w0);
+        const ee = cv.math.dot(e, w0);
+        const denom = cc - bb * bb; // |dir| = 1
+        if (denom < 1e-9) continue;
+        const u = std.math.clamp((ee - bb * dd) / denom, 0, 1);
+        const s = cv.math.dot(r.dir, p0 + e * cv.math.splat(u) - r.origin);
+        if (s <= 0) continue;
+        const gap = cv.math.length(r.origin + r.dir * cv.math.splat(s) - (p0 + e * cv.math.splat(u)));
+        if (gap < grab and (best == null or s < best.?.t)) best = .{ .t = s, .target = .{ .bond = .{ bd.a, bd.b } } };
     }
     return best;
 }
 
-/// Single click toggles the atom under the cursor (or clears on empty
-/// space); double click adds the atom's whole molecule.
+/// The atom under window point (x, y), if any.
+pub fn atomAt(app: *const App, x: f32, y: f32) ?u32 {
+    const h = app.hitAt(x, y) orelse return null;
+    return switch (h.target) {
+        .atom => |a| a,
+        .bond => null,
+    };
+}
+
+/// Single click toggles the atom under the cursor, or selects a bond's two
+/// atoms (or clears on empty space); double click adds the whole molecule.
 pub fn clickAt(app: *App, x: f32, y: f32, clicks: u8) void {
-    const atom = app.atomAt(x, y) orelse {
+    const h = app.hitAt(x, y) orelse {
         if (clicks == 1) app.clearSelection();
         return;
     };
-    if (clicks >= 2) app.selectFragment(atom) else app.toggleSelect(atom);
+    switch (h.target) {
+        .atom => |atom| if (clicks >= 2) app.selectFragment(atom) else app.toggleSelect(atom),
+        .bond => |pair| if (clicks >= 2) app.selectFragment(pair[0]) else {
+            app.selection.clearRetainingCapacity();
+            app.selection.appendSlice(app.gpa, &pair) catch return;
+            app.scene_dirty = true;
+        },
+    }
 }
 
 /// Maps world positions to window points for overlays.
@@ -662,26 +810,33 @@ fn applyEditInner(app: *App, edit: Edit) !void {
     var graph = try app.drawnGraph();
     defer graph.deinit(gpa);
 
-    const before = try gpa.dupe(Vec3, f.positions);
-    errdefer gpa.free(before);
+    var before = try f.clone(gpa);
+    errdefer before.deinit(gpa);
     const p = f.positions;
     switch (edit) {
         .distance => |v| if (sel.len == 2) try cv.geometry.setDistance(gpa, p, graph, sel[0], sel[1], v, app.edit_mode),
         .angle => |v| if (sel.len == 3) try cv.geometry.setAngle(gpa, p, graph, sel[0], sel[1], sel[2], v, app.edit_mode),
         .dihedral => |v| if (sel.len == 4) try cv.geometry.setDihedral(gpa, p, graph, sel[0], sel[1], sel[2], sel[3], v, app.edit_mode),
     }
-    if (std.mem.eql(u8, std.mem.sliceAsBytes(before), std.mem.sliceAsBytes(p))) {
-        gpa.free(before);
+    if (std.mem.eql(u8, std.mem.sliceAsBytes(before.positions), std.mem.sliceAsBytes(p))) {
+        before.deinit(gpa);
         return;
     }
     // The file's energy no longer describes this geometry.
     f.energy = null;
+    try app.commitEdit(before);
+}
+
+/// Record `before` for undo and store the shown frame as an edit.
+fn commitEdit(app: *App, before: Frame) !void {
+    const d = &(app.doc orelse return);
+    const f = d.shown orelse return;
     if (app.undo_stack.items.len >= max_undo) {
-        gpa.free(app.undo_stack.items[0].positions);
-        _ = app.undo_stack.orderedRemove(0);
+        var old = app.undo_stack.orderedRemove(0);
+        old.frame.deinit(app.gpa);
     }
-    try app.undo_stack.append(gpa, .{ .index = d.shown_index, .positions = before });
-    try app.storeEdit(d.shown_index, f.*);
+    try app.undo_stack.append(app.gpa, .{ .index = d.shown_index, .frame = before });
+    try app.storeEdit(d.shown_index, f);
     app.bonds_dirty = true;
 }
 
@@ -693,14 +848,16 @@ fn storeEdit(app: *App, index: usize, f: Frame) !void {
 }
 
 pub fn undo(app: *App) void {
-    const u = app.undo_stack.pop() orelse return;
-    defer app.gpa.free(u.positions);
+    var u = app.undo_stack.pop() orelse return;
+    defer u.frame.deinit(app.gpa);
     const d = &(app.doc orelse return);
-    if (app.edits.getPtr(u.index)) |e| if (e.positions.len == u.positions.len) @memcpy(e.positions, u.positions);
-    if (d.shown) |*f| if (d.shown_index == u.index and f.positions.len == u.positions.len) {
-        @memcpy(f.positions, u.positions);
+    app.storeEdit(u.index, u.frame) catch return;
+    if (d.shown_index == u.index) {
+        if (d.shown) |*f| f.deinit(app.gpa);
+        d.shown = u.frame.clone(app.gpa) catch null;
+        app.dropInvalidSelection();
         app.bonds_dirty = true;
-    };
+    }
     if (d.current != u.index) app.setFrame(u.index);
     app.setStatus("Undid edit on frame {d}", .{u.index + 1});
 }
@@ -716,7 +873,8 @@ pub fn revertFrame(app: *App) void {
     var i: usize = 0;
     while (i < app.undo_stack.items.len) {
         if (app.undo_stack.items[i].index == d.shown_index) {
-            app.gpa.free(app.undo_stack.orderedRemove(i).positions);
+            var old = app.undo_stack.orderedRemove(i);
+            old.frame.deinit(app.gpa);
         } else i += 1;
     }
     if (d.shown) |*f| f.deinit(app.gpa);
@@ -727,7 +885,7 @@ fn clearEdits(app: *App) void {
     var it = app.edits.valueIterator();
     while (it.next()) |f| f.deinit(app.gpa);
     app.edits.clearRetainingCapacity();
-    for (app.undo_stack.items) |u| app.gpa.free(u.positions);
+    for (app.undo_stack.items) |*u| u.frame.deinit(app.gpa);
     app.undo_stack.clearRetainingCapacity();
 }
 
@@ -811,8 +969,12 @@ fn menuBar(app: *App) void {
         const edited = if (app.doc) |d| app.edits.contains(d.shown_index) else false;
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
         c.igSeparator();
+        if (c.igMenuItem_Bool("Cut / restore selected bond", "X", false, app.selection.items.len == 2)) app.toggleCut();
+        if (c.igMenuItem_Bool("Restore all cut bonds", null, false, app.cut_bonds.count() > 0)) app.restoreCuts();
+        c.igSeparator();
         if (c.igMenuItem_Bool("Copy as XYZ", "Ctrl+C", false, app.doc != null)) app.copyXyz();
-        if (c.igMenuItem_Bool("Paste XYZ as new structure", "Ctrl+V", false, true)) app.pasteXyz();
+        if (c.igMenuItem_Bool("Paste XYZ as fragment", "Ctrl+V", false, true)) app.pasteXyz(false);
+        if (c.igMenuItem_Bool("Paste XYZ as new structure", "Ctrl+Shift+V", false, true)) app.pasteXyz(true);
         c.igSeparator();
         if (c.igMenuItem_Bool("Select all", "Ctrl+A", false, app.doc != null)) app.selectAll();
         if (c.igMenuItem_Bool("Clear selection", "Esc", false, app.selection.items.len > 0)) app.clearSelection();

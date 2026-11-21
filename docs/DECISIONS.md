@@ -94,7 +94,8 @@ the dark theme remain options.
 Setting a distance, angle or dihedral moves the moving atom's whole group:
 everything attached to it once the mover–pivot bond is cut. Connectivity is
 exactly the set of *drawn* bonds (`Renderer.isDrawn`: "Hide below" and
-"Cut-off"), so what moves together is what looks connected. "Hide below"
+"Cut-off"), minus bonds the user cut (X), so what moves together is what
+looks connected. "Hide below"
 defaults to 0.25 so near-invisible contacts don't tie groups together. If the two atoms aren't bonded, the mover's whole molecule
 moves, so pulling two fragments apart is one edit. If the group can't be split
 off (rings, or non-bonded atoms in the same molecule), only the atom moves.
@@ -114,6 +115,9 @@ holds `key=value` provenance (`source=`, `frame=`, `atoms=` as 1-based ranges,
 `frame_energy=` for partial copies, `edited=T`). The `energy=` key is written
 only for whole frames, so it never misdescribes a fragment. Ctrl+V accepts
 XYZ, bare `El x y z` lines (optionally with Gaussian freeze flags), or
-Gaussian/ORCA inputs, and opens them as a new in-memory structure.
+Gaussian/ORCA inputs. By default it appends them to the current frame as a
+fragment (an undoable edit that becomes the selection; moved beside the
+structure if it would overlap). Ctrl+Shift+V opens them as a new structure.
+Undo therefore snapshots whole frames, since a paste changes the atom count.
 ImGui keyboard navigation is off, and app shortcuts yield only while a text
 field is being edited (`WantTextInput`), so focusing a panel doesn't swallow them.

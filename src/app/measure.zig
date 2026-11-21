@@ -107,6 +107,10 @@ pub fn bar(app: *App) void {
             if (app.bondCharacter(sel[0], sel[1])) |ch| {
                 c.igSameLine(0, fs);
                 ui.textDisabled("bond character {d:.2}", .{ch});
+                c.igSameLine(0, fs);
+                var cut = app.isCut(sel[0], sel[1]);
+                if (c.igCheckbox("cut (X)", &cut)) app.toggleCut();
+                ui.tooltip("A cut bond is still drawn (thin, red) but is ignored when finding what moves together and when double-click selects a molecule.");
             }
             var l2: [16]u8 = undefined;
             modeSelector(app, atomLabel(&l2, f.numbers, sel[1]));

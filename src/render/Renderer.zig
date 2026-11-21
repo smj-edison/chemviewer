@@ -288,6 +288,8 @@ pub fn addStructure(
     bonds: []const Bond,
     style: Style,
     tint: ?Tint,
+    /// Bonds cut by the user (keys from `App.pairKey`): drawn thin and red.
+    cut: ?*const std.AutoHashMapUnmanaged(u64, void),
 ) !usize {
     const start = r.atoms.items.len;
     try r.atoms.ensureUnusedCapacity(r.gpa, positions.len);
@@ -323,10 +325,17 @@ pub fn addStructure(
                 cb = .{ rb[0], rb[1], rb[2], alpha };
             },
         }
+        var radius_scale = thin;
+        if (cut) |set| if (set.contains((@as(u64, @min(b.a, b.b)) << 32) | @max(b.a, b.b))) {
+            const red: [3]f32 = .{ 0.85, 0.15, 0.15 };
+            ca = .{ red[0], red[1], red[2], @max(ca[3], 0.6) };
+            cb = ca;
+            radius_scale = thin * 0.45;
+        };
         const inst: BondInstance = .{
             .a = positions[b.a],
             .b = positions[b.b],
-            .radius = style.bond_radius * thin,
+            .radius = style.bond_radius * radius_scale,
             .outline = outline,
             .color_a = ca,
             .color_b = cb,

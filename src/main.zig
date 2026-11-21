@@ -3,6 +3,7 @@
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
 //!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
+//!                   [--cut I,J]... [--add FRAGMENT_FILE]
 //!
 //! `--screenshot` renders once the requested frame is loaded, writes a PNG and
 //! exits. It works headless with SDL_VIDEO_DRIVER=offscreen.
@@ -28,6 +29,11 @@ const Args = struct {
     select_len: usize = 0,
     set_value: ?f64 = null,
     save: ?[]const u8 = null,
+    /// Bonds to cut before editing (1-based pairs).
+    cuts: [8][2]u32 = undefined,
+    cuts_len: usize = 0,
+    /// Append this file's first frame as a fragment (like paste).
+    add: ?[]const u8 = null,
 };
 
 fn parseArgs(argv: []const []const u8) !Args {
@@ -37,7 +43,8 @@ fn parseArgs(argv: []const []const u8) !Args {
         const arg = argv[i];
         const eql = std.mem.eql;
         if (eql(u8, arg, "--frame") or eql(u8, arg, "--diff-ref") or eql(u8, arg, "--screenshot") or eql(u8, arg, "--size") or eql(u8, arg, "--ui-scale") or
-            eql(u8, arg, "--select") or eql(u8, arg, "--set") or eql(u8, arg, "--save"))
+            eql(u8, arg, "--select") or eql(u8, arg, "--set") or eql(u8, arg, "--save") or
+            eql(u8, arg, "--cut") or eql(u8, arg, "--add"))
         {
             i += 1;
             if (i >= argv.len) return error.MissingArgumentValue;
@@ -61,6 +68,19 @@ fn parseArgs(argv: []const []const u8) !Args {
                 a.set_value = try std.fmt.parseFloat(f64, v);
             } else if (eql(u8, arg, "--save")) {
                 a.save = v;
+            } else if (eql(u8, arg, "--add")) {
+                a.add = v;
+            } else if (eql(u8, arg, "--cut")) {
+                if (a.cuts_len == a.cuts.len) return error.TooManyCuts;
+                var it = std.mem.tokenizeAny(u8, v, ", ");
+                var pair: [2]u32 = undefined;
+                for (&pair) |*x| {
+                    const n = try std.fmt.parseInt(u32, it.next() orelse return error.CutNeedsTwoAtoms, 10);
+                    if (n == 0) return error.AtomIndicesStartAtOne;
+                    x.* = n - 1;
+                }
+                a.cuts[a.cuts_len] = pair;
+                a.cuts_len += 1;
             } else if (eql(u8, arg, "--ui-scale")) {
                 a.ui_scale = try std.fmt.parseFloat(f32, v);
             } else {
@@ -99,6 +119,7 @@ pub fn main(init: std.process.Init) !void {
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
             \\                  [--ui-scale X] [--no-ui] [--dark]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
+            \\                  [--cut I,J]... [--add FRAGMENT_FILE]
             \\
         , .{});
         if (e == error.Help) return;
@@ -240,7 +261,7 @@ fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
     if (ev.type == c.SDL_EVENT_KEY_DOWN and (ev.key.mod & c.SDL_KMOD_CTRL) != 0 and !typing) {
         switch (ev.key.key) {
             c.SDLK_C => return app.copyXyz(),
-            c.SDLK_V => return app.pasteXyz(),
+            c.SDLK_V => return app.pasteXyz((ev.key.mod & c.SDL_KMOD_SHIFT) != 0),
             c.SDLK_A => return app.selectAll(),
             c.SDLK_O => return app.openDialog(),
             c.SDLK_S => return app.saveDialog(),
@@ -307,6 +328,14 @@ const Startup = struct {
     }
 
     fn script(s: *Startup, app: *App) !void {
+        if (s.args.add) |path| try app.addFragmentFile(path);
+        for (s.args.cuts[0..s.args.cuts_len]) |pair| {
+            app.clearSelection();
+            app.toggleSelect(pair[0]);
+            app.toggleSelect(pair[1]);
+            app.toggleCut();
+        }
+        app.clearSelection();
         const sel = s.args.select[0..s.args.select_len];
         const n = app.doc.?.shown.?.len();
         for (sel) |i| {

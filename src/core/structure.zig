@@ -53,6 +53,30 @@ pub const Frame = struct {
         return r;
     }
 
+    /// A new frame with `extra`'s atoms appended (shifted by `offset`).
+    /// Cell and comment come from `f`; the energy is dropped.
+    pub fn concat(f: Frame, gpa: Allocator, extra: Frame, offset: Vec3) !Frame {
+        const n = f.len();
+        var r = try Frame.init(gpa, n + extra.len());
+        errdefer r.deinit(gpa);
+        @memcpy(r.positions[0..n], f.positions);
+        @memcpy(r.numbers[0..n], f.numbers);
+        for (r.positions[n..], extra.positions) |*d, p| d.* = p + offset;
+        @memcpy(r.numbers[n..], extra.numbers);
+        r.cell = f.cell;
+        r.comment = if (f.comment.len > 0) try gpa.dupe(u8, f.comment) else "";
+        return r;
+    }
+
+    /// Smallest distance between any atom of `a` and any atom of `b`.
+    pub fn minDistance(a: Frame, b: Frame) f32 {
+        var best: f32 = std.math.inf(f32);
+        for (a.positions) |p| for (b.positions) |q| {
+            best = @min(best, math.length2(p - q));
+        };
+        return @sqrt(best);
+    }
+
     pub fn len(f: Frame) usize {
         return f.positions.len;
     }
@@ -128,4 +152,24 @@ test "subset" {
     try std.testing.expectEqualSlices(u8, &.{ 8, 1 }, s.numbers);
     try std.testing.expectEqual(@as(f32, 2), s.positions[0][0]);
     try std.testing.expectEqual(@as(?f64, null), s.energy);
+}
+
+test "concat" {
+    const gpa = std.testing.allocator;
+    var a = try Frame.init(gpa, 1);
+    defer a.deinit(gpa);
+    a.positions[0] = .{ 0, 0, 0 };
+    a.numbers[0] = 6;
+    a.energy = -1;
+    var b = try Frame.init(gpa, 2);
+    defer b.deinit(gpa);
+    b.positions[0] = .{ 1, 0, 0 };
+    b.positions[1] = .{ 2, 0, 0 };
+    @memcpy(b.numbers, &[_]u8{ 1, 8 });
+    var c = try a.concat(gpa, b, .{ 0, 5, 0 });
+    defer c.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, &.{ 6, 1, 8 }, c.numbers);
+    try std.testing.expectEqual(math.Vec3{ 2, 5, 0 }, c.positions[2]);
+    try std.testing.expectEqual(@as(?f64, null), c.energy);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), a.minDistance(b), 1e-6);
 }

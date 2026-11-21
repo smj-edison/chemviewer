@@ -15,8 +15,12 @@ OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
   angles) and the attached group moves with it, Chemcraft-style. Edits are per
   frame, undoable, and can be saved as XYZ.
 - **XYZ clipboard.** Ctrl+C copies the selected atoms (or the whole frame) as
-  XYZ, with the source in the comment line. Ctrl+V opens XYZ, bare
-  `El x y z` lines, or a Gaussian/ORCA input from the clipboard.
+  XYZ, with the source in the comment line. Ctrl+V pastes XYZ, bare
+  `El x y z` lines, or a Gaussian/ORCA input into the current structure as a
+  new fragment (Ctrl+Shift+V opens it as a new structure instead).
+- **Cut bonds.** Click a bond and press X to cut it. It stays drawn (thin, red),
+  but edits and molecule selection treat the two sides as separate, so you can
+  move part of a ring or a ligand freely.
 - **Formats:** XYZ / extended XYZ, Gaussian input (`.gjf`/`.com`) and output
   (`.log`), ORCA input (`.inp`) and output (`.out`), ASE trajectories (`.traj`).
 
@@ -49,13 +53,15 @@ Scripted edits (atom numbers are 1-based; values in Å or degrees):
 zig-out/bin/chemviewer mol.xyz --select 1,2 --set 1.8 --save stretched.xyz
 # set a dihedral, then take a picture
 zig-out/bin/chemviewer mol.xyz --select 3,1,2,6 --set 75 --screenshot dih.png
+# add a fragment, cut a ring bond, then stretch: the cut side moves as a group
+zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.0 --save out.xyz
 ```
 
 ## Controls
 
 | Input | Action |
 |---|---|
-| Left click | select / deselect atom; click empty space to clear |
+| Left click | select / deselect atom; on a bond: select its two atoms; empty space: clear |
 | Double click | select the atom's whole molecule |
 | Left drag | rotate |
 | Right drag ← → | rotate about the viewing axis |
@@ -70,7 +76,9 @@ zig-out/bin/chemviewer mol.xyz --select 3,1,2,6 --set 75 --screenshot dih.png
 | Esc | clear selection |
 | Ctrl+A | select all atoms |
 | Ctrl+C | copy selection (or whole frame) as XYZ |
-| Ctrl+V | paste XYZ / coordinates as a new structure |
+| Ctrl+V | paste XYZ / coordinates as a fragment into the current structure |
+| Ctrl+Shift+V | paste as a new structure |
+| X | cut / restore the selected bond (ignored when moving groups) |
 | Ctrl+Z | undo geometry edit |
 | Ctrl+S | save current frame (with edits) as XYZ |
 | Ctrl+O | open file (or drop a file on the window) |
