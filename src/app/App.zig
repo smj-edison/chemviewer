@@ -229,10 +229,47 @@ fn copyXyzInner(app: *App) !void {
     var text: std.Io.Writer.Allocating = .init(gpa);
     defer text.deinit();
     try cv.formats.xyz.write(&text.writer, out);
-    try text.writer.writeByte(0);
-    const z = text.written();
-    if (!c.SDL_SetClipboardText(@ptrCast(z.ptr))) return error.ClipboardUnavailable;
+    try setClipboardText(text.written());
     app.setStatus("Copied {d} atom{s} as XYZ", .{ out.len(), if (out.len() == 1) "" else "s" });
+}
+
+/// Offer `bytes` as text on the clipboard.
+///
+/// On Wayland (and X11) SDL hands the data out lazily, whenever another app
+/// asks for it, so the bytes must stay alive until SDL's cleanup callback
+/// runs. We keep our own copy in a C-allocated block for exactly that long;
+/// it may outlive the App (SDL clears the clipboard during SDL_Quit).
+fn setClipboardText(bytes: []const u8) !void {
+    const Blob = struct {
+        len: usize,
+
+        fn data(b: *@This()) [*]u8 {
+            return @as([*]u8, @ptrCast(b)) + @sizeOf(@This());
+        }
+
+        fn provide(userdata: ?*anyopaque, mime_type: [*c]const u8, size: [*c]usize) callconv(.c) ?*const anyopaque {
+            _ = mime_type; // every offered type is the same UTF-8 text
+            const b: *@This() = @ptrCast(@alignCast(userdata));
+            size.* = b.len;
+            return b.data();
+        }
+
+        fn cleanup(userdata: ?*anyopaque) callconv(.c) void {
+            const b: *@This() = @ptrCast(@alignCast(userdata));
+            const raw: [*]align(@alignOf(@This())) u8 = @ptrCast(b);
+            std.heap.c_allocator.free(raw[0 .. @sizeOf(@This()) + b.len]);
+        }
+    };
+    const raw = try std.heap.c_allocator.alignedAlloc(u8, .of(Blob), @sizeOf(Blob) + bytes.len);
+    const blob: *Blob = @ptrCast(raw.ptr);
+    blob.len = bytes.len;
+    @memcpy(blob.data()[0..bytes.len], bytes);
+    // Same text types SDL_SetClipboardText offers.
+    const mime_types = [_][*:0]const u8{ "text/plain;charset=utf-8", "text/plain", "TEXT", "UTF8_STRING", "STRING" };
+    if (!c.SDL_SetClipboardData(Blob.provide, Blob.cleanup, blob, @ptrCast(&mime_types), mime_types.len)) {
+        Blob.cleanup(blob);
+        return error.ClipboardUnavailable;
+    }
 }
 
 /// Paste the clipboard (XYZ, bare coordinates, or a Gaussian/ORCA input)
