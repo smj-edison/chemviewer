@@ -103,7 +103,8 @@ const BondInstance = extern struct {
     a: [3]f32,
     radius: f32,
     b: [3]f32,
-    _pad: f32 = 0,
+    /// Outline weight 0..1: scales outline width and opacity (see `outlineWeight`).
+    outline: f32,
     color_a: [4]f32,
     color_b: [4]f32,
 };
@@ -240,6 +241,14 @@ fn tinted(rgb: [3]f32, tint: ?Tint) [3]f32 {
     return out;
 }
 
+/// How much outline a bond gets for its (snapped) character: none for
+/// vanishing contacts, easing in so it is fully there by single-bond
+/// character. Smooth, so forming/breaking bonds don't pop an outline on.
+pub fn outlineWeight(snapped_character: f32) f32 {
+    const t = std.math.clamp((snapped_character - 0.3) / (1.0 - 0.3), 0, 1);
+    return t * t * (3 - 2 * t);
+}
+
 /// Queue one structure. `positions` may differ from the frame's own (e.g. aligned).
 pub fn addStructure(
     r: *Renderer,
@@ -265,6 +274,7 @@ pub fn addStructure(
         const ch = cv.color.snap(b.character, style.snap);
         // Below single-bond character, thin the bond out as it fades.
         const thin = if (ch < 1) 0.35 + 0.65 * ch else 1.0;
+        const outline = outlineWeight(ch);
         var ca: [4]f32 = undefined;
         var cb: [4]f32 = undefined;
         switch (style.bond_coloring) {
@@ -286,6 +296,7 @@ pub fn addStructure(
             .a = positions[b.a],
             .b = positions[b.b],
             .radius = style.bond_radius * thin,
+            .outline = outline,
             .color_a = ca,
             .color_b = cb,
         };
@@ -397,20 +408,30 @@ pub fn draw(r: *Renderer, p: DrawParams) void {
         f.DrawArrays(gl.LINES, 0, @intCast(r.uploaded_lines));
     }
     if (r.uploaded_translucent_bonds > 0) {
-        // Faded contacts: blended, no depth writes, no outlines, so they never hide anything.
+        // Faded contacts, blended. Bodies write depth so their own (faint,
+        // partial) outline hull only shows outside the silhouette; they are
+        // drawn after everything opaque, so they never hide solid geometry.
         f.Enable(gl.BLEND);
         f.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        f.DepthMask(gl.FALSE);
-        setCommon(r.cylinder_prog, p, 0);
+        setCommon(r.cylinder_prog, p, outline_k);
         f.BindVertexArray(r.cylinder_vao);
         // Instance attributes start at the first translucent bond.
         const stride = @sizeOf(BondInstance);
         const base = r.uploaded_opaque_bonds * stride;
         f.BindBuffer(gl.ARRAY_BUFFER, r.bond_vbo);
         rebaseBondAttribs(base);
-        f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, @intCast(r.uploaded_translucent_bonds));
+        const n: gl.Sizei = @intCast(r.uploaded_translucent_bonds);
+        f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, n);
+        if (outlines) {
+            f.DepthMask(gl.FALSE);
+            f.Uniform1i(f.GetUniformLocation(r.cylinder_prog, "u_outline_pass"), 1);
+            f.Enable(gl.CULL_FACE);
+            f.CullFace(gl.FRONT);
+            f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, n);
+            f.Disable(gl.CULL_FACE);
+            f.DepthMask(gl.TRUE);
+        }
         rebaseBondAttribs(0);
-        f.DepthMask(gl.TRUE);
         f.Disable(gl.BLEND);
     }
     f.BindVertexArray(0);

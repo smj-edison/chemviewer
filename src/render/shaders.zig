@@ -110,6 +110,7 @@ pub const cylinder_vs =
     \\out float v_t;
     \\flat out vec4 v_ca;
     \\flat out vec4 v_cb;
+    \\flat out float v_outline_a;
     \\void main() {
     \\    vec3 a = a_start_radius.xyz;
     \\    vec3 axis = a_end.xyz - a;
@@ -121,7 +122,8 @@ pub const cylinder_vs =
     \\    float radius = a_start_radius.w;
     \\    if (u_outline_pass == 1) {
     \\        float depth = -(u_view * vec4(a + 0.5 * axis, 1.0)).z;
-    \\        radius += u_outline_k * max(depth, 0.0);
+    \\        // a_end.w = outline weight: scales width here, opacity in the FS.
+    \\        radius += u_outline_k * max(depth, 0.0) * a_end.w;
     \\    }
     \\    vec3 world = a + axis * a_vert.z + n * radius;
     \\    vec4 vp = u_view * vec4(world, 1.0);
@@ -130,6 +132,7 @@ pub const cylinder_vs =
     \\    v_t = a_vert.z;
     \\    v_ca = a_color_a;
     \\    v_cb = a_color_b;
+    \\    v_outline_a = a_end.w * min(a_color_a.a, a_color_b.a);
     \\    gl_Position = u_proj * vp;
     \\}
 ;
@@ -141,6 +144,7 @@ pub const cylinder_fs =
     \\in float v_t;
     \\flat in vec4 v_ca;
     \\flat in vec4 v_cb;
+    \\flat in float v_outline_a;
     \\uniform int u_outline_pass;
     \\uniform vec3 u_outline_color;
     \\out vec4 o_color;
@@ -148,7 +152,8 @@ pub const cylinder_fs =
 ++ lighting ++
     \\void main() {
     \\    if (u_outline_pass == 1) {
-    \\        o_color = vec4(u_outline_color, 1.0);
+    \\        if (v_outline_a <= 0.003) discard;
+    \\        o_color = vec4(u_outline_color, v_outline_a);
     \\        return;
     \\    }
     \\    vec4 c = v_t < 0.5 ? v_ca : v_cb;

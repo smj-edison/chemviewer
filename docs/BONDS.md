@@ -92,6 +92,11 @@ that order, while genuinely intermediate bonds (aromatic C–C ≈ 1.7, stretche
 TS bonds) still look different. The same snapped value drives opacity and
 thinning below single-bond character. `k` is the "Snap" slider in the inspector.
 
+With cel shading, each bond's outline is weighted by
+`smoothstep((s − 0.3) / 0.7)` of its snapped character `s`. The weight scales
+both outline width and outline opacity, so a forming bond's outline grows in
+gradually instead of switching on at single-bond character.
+
 "Element" colouring (CPK colours on each half) is also available. It keeps
 opacity and thinning from the snapped character.
 

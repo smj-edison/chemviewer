@@ -84,7 +84,8 @@ The default look is a light theme with cel shading: three flat lighting bands
 (anti-aliased with `fwidth`), no specular highlights, and dark outlines of
 constant screen width. Sphere outlines are a slightly larger concentric sphere
 ray-cast in the same impostor pass. Bond outlines are an "inverted hull"
-(inflated cylinders, back faces only). Outline width is given in logical
+(inflated cylinders, back faces only), weighted per bond by its character so
+outlines fade in and out with forming and breaking bonds. Outline width is given in logical
 pixels and multiplied by the pixel density. Sphere silhouettes use
 alpha-to-coverage when MSAA is available. Smooth (Blinn-Phong) shading and
 the dark theme remain options.
