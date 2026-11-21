@@ -8,6 +8,7 @@ pub const color = @import("core/color.zig");
 pub const structure = @import("core/structure.zig");
 pub const bonds = @import("core/bonds.zig");
 pub const align_ = @import("core/align.zig");
+pub const geometry = @import("core/geometry.zig");
 
 pub const formats = struct {
     pub const text = @import("formats/text.zig");

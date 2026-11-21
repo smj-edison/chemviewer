@@ -58,6 +58,26 @@ pub fn parseAll(gpa: Allocator, buf: []const u8) Error![]Frame {
     return frames.toOwnedSlice(gpa);
 }
 
+/// Write one frame as XYZ (extended-XYZ Lattice/energy keys when present).
+pub fn write(w: *Io.Writer, frame: Frame) Io.Writer.Error!void {
+    try w.print("{d}\n", .{frame.len()});
+    if (frame.cell) |cell| {
+        try w.print("Lattice=\"", .{});
+        for (cell, 0..) |v, i| {
+            if (i > 0) try w.writeByte(' ');
+            try w.print("{d:.8} {d:.8} {d:.8}", .{ v[0], v[1], v[2] });
+        }
+        try w.print("\" Properties=species:S:1:pos:R:3 ", .{});
+    }
+    if (frame.energy) |e| try w.print("energy={d} ", .{e});
+    // Keep the comment on one line.
+    for (frame.comment) |ch| try w.writeByte(if (ch == '\n' or ch == '\r') ' ' else ch);
+    try w.writeByte('\n');
+    for (frame.positions, frame.numbers) |p, z| {
+        try w.print("{s:<2} {d:>15.8} {d:>15.8} {d:>15.8}\n", .{ elements.symbol(z), p[0], p[1], p[2] });
+    }
+}
+
 pub const CommentMeta = struct { cell: ?[3]Vec3 = null, energy: ?f64 = null };
 
 /// Extract metadata from the comment line. Understands extended-XYZ
@@ -210,6 +230,30 @@ test "parse multi-frame xyz" {
     try std.testing.expectApproxEqAbs(@as(f64, -76.4), frames[0].energy.?, 1e-9);
     try std.testing.expectEqual(@as(u8, 6), frames[1].numbers[0]);
     try std.testing.expectApproxEqAbs(@as(f32, 10), frames[1].cell.?[2][2], 1e-6);
+}
+
+test "write then read back" {
+    const gpa = std.testing.allocator;
+    var f = try Frame.init(gpa, 2);
+    defer f.deinit(gpa);
+    f.positions[0] = .{ 0, 0, 0.1173 };
+    f.positions[1] = .{ -1.25, 0.7572, -0.4692 };
+    f.numbers[0] = 8;
+    f.numbers[1] = 17;
+    f.cell = .{ .{ 10, 0, 0 }, .{ 0, 10, 0 }, .{ 0, 0, 10 } };
+    f.energy = -76.5;
+    var buf: [1024]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try write(&w, f);
+    const frames = try parseAll(gpa, w.buffered());
+    defer {
+        for (frames) |*g| g.deinit(gpa);
+        gpa.free(frames);
+    }
+    try std.testing.expectEqualSlices(u8, f.numbers, frames[0].numbers);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.25), frames[0].positions[1][0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f64, -76.5), frames[0].energy.?, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), frames[0].cell.?[1][1], 1e-6);
 }
 
 test "orca trajectory comment" {
