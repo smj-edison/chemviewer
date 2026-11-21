@@ -121,6 +121,28 @@ pub const Graph = struct {
     }
 };
 
+/// Atoms reachable from `from` without passing through `blocked` (e.g. the
+/// base atom a fragment is rotated around). Caller owns the result.
+pub fn beyond(g: Graph, gpa: Allocator, from: u32, blocked: u32) ![]u32 {
+    const seen = try gpa.alloc(bool, g.atomCount());
+    defer gpa.free(seen);
+    @memset(seen, false);
+    seen[blocked] = true;
+    var out: std.ArrayList(u32) = .empty;
+    errdefer out.deinit(gpa);
+    if (from == blocked) return out.toOwnedSlice(gpa);
+    seen[from] = true;
+    try out.append(gpa, from);
+    var head: usize = 0;
+    while (head < out.items.len) : (head += 1) {
+        for (g.neighbors(out.items[head])) |j| if (!seen[j]) {
+            seen[j] = true;
+            try out.append(gpa, j);
+        };
+    }
+    return out.toOwnedSlice(gpa);
+}
+
 pub const Mode = enum(c_int) {
     /// Both groups move by half the change (the midpoint/centre stays put).
     both,
@@ -132,7 +154,7 @@ pub const Mode = enum(c_int) {
 /// mover–pivot bond is cut (if bonded), or its whole molecule (if not).
 /// Falls back to the single atom if that group would include a `fixed` atom.
 /// Caller owns the result.
-fn group(g: Graph, gpa: Allocator, mover: u32, pivot: u32, fixed: []const u32) ![]u32 {
+pub fn group(g: Graph, gpa: Allocator, mover: u32, pivot: u32, fixed: []const u32) ![]u32 {
     if (try g.side(gpa, mover, .{ mover, pivot }, fixed)) |s| return s;
     const one = try gpa.alloc(u32, 1);
     one[0] = mover;
@@ -333,6 +355,18 @@ test "non-bonded atoms in different molecules move whole molecules" {
     try setDistance(gpa, &p, g, 0, 2, 4.0, .last);
     try testing.expectApproxEqAbs(@as(f64, 4.0), distance(&p, 0, 2), 1e-5);
     try testing.expectApproxEqAbs(@as(f64, 0.74), distance(&p, 2, 3), 1e-5); // partner came along
+}
+
+test "beyond: the branch past a base atom" {
+    const gpa = testing.allocator;
+    const c = chain(); // 0-1-2-3 chain, H4 on 0, H5 on 3
+    var g = try graphOf(gpa, &c.p, &c.nums);
+    defer g.deinit(gpa);
+    // Grab atom 3, base atom 1: atoms 2, 3 and H5 move; 0 and H4 don't.
+    const b = try beyond(g, gpa, 3, 1);
+    defer gpa.free(b);
+    std.mem.sort(u32, b, {}, std.sort.asc(u32));
+    try testing.expectEqualSlices(u32, &.{ 2, 3, 5 }, b);
 }
 
 test "dihedral sign convention" {

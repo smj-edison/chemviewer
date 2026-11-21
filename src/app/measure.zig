@@ -76,8 +76,13 @@ pub fn bar(app: *App) void {
     const sel = app.selected();
     const fs = c.igGetFontSize();
     c.igAlignTextToFramePadding();
+    var hint_buf: [160]u8 = undefined;
+    if (app.dragHint(&hint_buf)) |hint| {
+        ui.text("{s}", .{hint});
+        return;
+    }
     if (sel.len == 0) {
-        ui.textDisabled("Click atoms to select; Ctrl+drag: lasso (Ctrl+Shift: remove); Ctrl+A: molecule, then all. 2 = distance, 3 = angle, 4 = dihedral. Ctrl+C: copy XYZ.", .{});
+        ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all. Alt+drag an atom: move its group (around the selected base atom). Ctrl+C: copy XYZ.", .{});
         return;
     }
     if (sel.len > 4) {

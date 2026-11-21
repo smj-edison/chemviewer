@@ -395,4 +395,5 @@ fn savePng(io: Io, path: []const u8, w: c_int, h: c_int) !void {
 test {
     _ = @import("render/Camera.zig");
     _ = @import("app/lasso.zig");
+    _ = @import("app/drag.zig");
 }

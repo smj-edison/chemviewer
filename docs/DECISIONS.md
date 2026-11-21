@@ -136,3 +136,18 @@ atom centre, so hidden atoms behind others are included. Molecule selection
 is Ctrl+A rather than double-click: it grows the selection to the whole
 molecules of the selected atoms (via drawn, uncut bonds), and a second press
 selects everything.
+
+### D17 — Alt turns camera gestures into fragment gestures
+As in GaussView, holding Alt applies the mouse to atoms instead of the camera:
+left drag rotates, right drag twists, middle (or Shift+left) translates. The
+moving group is: the selection, if several atoms are selected and the
+grabbed atom is one of them; otherwise everything reachable from the grabbed
+atom *without passing through* the single selected base atom
+(`geometry.beyond`), or the grabbed atom's whole molecule if there's no base.
+Blocking the base atom, instead of cutting the base–grabbed bond as the
+coordinate edits do, makes grabbing *any* atom of a branch move the whole
+branch. In rings the rest of the ring swings about the base, with distances to
+the base preserved. With a base atom, the grabbed atom follows the cursor on
+its sphere around the base, keeping to the hemisphere it started on.
+Positions are recomputed from the drag-start snapshot every motion, so there
+is no drift. The whole drag is one undo entry.

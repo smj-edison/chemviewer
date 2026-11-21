@@ -10,6 +10,7 @@ const ui = @import("ui.zig");
 const timeline = @import("timeline.zig");
 const measure = @import("measure.zig");
 const lasso = @import("lasso.zig");
+const drag_mod = @import("drag.zig");
 const Frame = cv.Frame;
 const Vec3 = cv.math.Vec3;
 
@@ -99,6 +100,10 @@ lasso_points: std.ArrayList(lasso.Point) = .empty,
 lasso_active: bool = false,
 /// Ctrl+Shift lasso removes from the selection instead of adding.
 lasso_remove: bool = false,
+/// Active Alt-drag of a fragment, and the frame before it started (for undo).
+drag: ?drag_mod.Drag = null,
+drag_before: ?Frame = null,
+drag_button: u8 = 0,
 
 /// Edits are undone by restoring the positions of the edited frame.
 /// Undo restores a whole frame snapshot (pastes change the atom count).
@@ -119,6 +124,7 @@ pub fn deinit(app: *App) void {
     app.undo_stack.deinit(app.gpa);
     app.selection.deinit(app.gpa);
     app.lasso_points.deinit(app.gpa);
+    app.endDrag(false);
     app.cut_bonds.deinit(app.gpa);
     app.clearDiff();
     app.closeDocument();
@@ -540,7 +546,20 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
         c.SDL_EVENT_QUIT => app.quit_requested = true,
         c.SDL_EVENT_DROP_FILE => if (ev.drop.data) |p| app.openFile(std.mem.span(p)),
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-            if (want_mouse or ev.button.button != c.SDL_BUTTON_LEFT) return;
+            if (want_mouse) return;
+            const mods0 = c.SDL_GetModState();
+            if ((mods0 & c.SDL_KMOD_ALT) != 0 and app.drag == null) {
+                const kind: drag_mod.Kind = switch (ev.button.button) {
+                    c.SDL_BUTTON_LEFT => if ((mods0 & c.SDL_KMOD_SHIFT) != 0) .translate else .rotate,
+                    c.SDL_BUTTON_MIDDLE => .translate,
+                    c.SDL_BUTTON_RIGHT => .twist,
+                    else => return,
+                };
+                app.drag_button = ev.button.button;
+                app.beginDrag(kind, ev.button.x, ev.button.y);
+                return;
+            }
+            if (ev.button.button != c.SDL_BUTTON_LEFT) return;
             app.press = .{ .moved = 0 };
             const mods = c.SDL_GetModState();
             if ((mods & c.SDL_KMOD_CTRL) != 0) {
@@ -551,6 +570,10 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             }
         },
         c.SDL_EVENT_MOUSE_BUTTON_UP => {
+            if (app.drag != null) {
+                if (ev.button.button == app.drag_button) app.endDrag(true);
+                return;
+            }
             if (ev.button.button != c.SDL_BUTTON_LEFT) return;
             const pr = app.press orelse return;
             app.press = null;
@@ -564,6 +587,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             }
         },
         c.SDL_EVENT_MOUSE_MOTION => {
+            if (app.drag != null) return app.dragMotion(ev.motion.x, ev.motion.y, ev.motion.xrel, ev.motion.yrel);
             if (app.press) |*pr| pr.moved += @abs(ev.motion.xrel) + @abs(ev.motion.yrel);
             if (app.lasso_active) {
                 const pts = app.lasso_points.items;
@@ -598,7 +622,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             const d = &(app.doc orelse return);
             const n = d.frameCount();
             switch (ev.key.key) {
-                c.SDLK_ESCAPE => app.clearSelection(),
+                c.SDLK_ESCAPE => if (app.drag != null) app.endDrag(false) else app.clearSelection(),
                 c.SDLK_X => app.toggleCut(),
                 c.SDLK_SPACE => app.togglePlay(),
                 c.SDLK_RIGHT, c.SDLK_PERIOD => app.setFrame(d.current + 1),
@@ -916,6 +940,146 @@ pub fn bondCharacter(app: *const App, a: u32, b: u32) ?f32 {
         if ((bd.a == a and bd.b == b) or (bd.a == b and bd.b == a)) return bd.character;
     }
     return null;
+}
+
+// ------------------------------------------------------------ fragment dragging
+
+/// Camera axes in world space: right, up, and towards the viewer.
+fn cameraAxes(app: *const App) [3]Vec3 {
+    const rt = app.camera.rotation.toMat3().transpose();
+    return .{ rt.column(0), rt.column(1), rt.column(2) };
+}
+
+/// Start an Alt-drag on the atom under (x, y). See drag.zig for the gestures.
+fn beginDrag(app: *App, kind: drag_mod.Kind, x: f32, y: f32) void {
+    app.beginDragInner(kind, x, y) catch |e| app.setStatus("Can't move that: {t}", .{e});
+}
+
+fn beginDragInner(app: *App, kind: drag_mod.Kind, x: f32, y: f32) !void {
+    const gpa = app.gpa;
+    const d = &(app.doc orelse return);
+    const f = &(d.shown orelse return);
+    if (app.diff) |df| if (df.overlay and df.result != null) return error.TurnOffDiffOverlayFirst;
+    const h = app.hitAt(x, y) orelse return;
+    const handle = switch (h.target) {
+        .atom => |a| a,
+        .bond => |pair| pair[1],
+    };
+
+    // Which atoms move: an explicit multi-atom selection containing the
+    // grabbed atom; otherwise the grabbed atom's group relative to the base
+    // atom (the single selected atom), or its whole molecule.
+    const sel = app.selected();
+    var pivot: ?u32 = null;
+    var group: []u32 = undefined;
+    if (sel.len >= 2 and std.mem.indexOfScalar(u32, sel, handle) != null) {
+        group = try gpa.dupe(u32, sel);
+    } else {
+        var graph = try app.drawnGraph();
+        defer graph.deinit(gpa);
+        if (sel.len == 1 and sel[0] != handle) {
+            // Everything reachable from the grabbed atom without passing
+            // through the base atom rotates about it.
+            pivot = sel[0];
+            group = try cv.geometry.beyond(graph, gpa, handle, sel[0]);
+        } else {
+            group = (try graph.side(gpa, handle, .{ handle, handle }, &.{})) orelse try gpa.dupe(u32, &.{handle});
+        }
+    }
+    errdefer gpa.free(group);
+    const start = try gpa.alloc(Vec3, group.len);
+    errdefer gpa.free(start);
+    var centroid: Vec3 = @splat(0);
+    for (group, start) |i, *p| {
+        p.* = f.positions[i];
+        centroid += p.*;
+    }
+    centroid /= cv.math.splat(@floatFromInt(group.len));
+    const center = if (pivot) |pv| f.positions[pv] else centroid;
+    const v0 = f.positions[handle] - center;
+    const axes = app.cameraAxes();
+
+    var before = try f.clone(gpa);
+    errdefer before.deinit(gpa);
+    app.drag = .{
+        .kind = kind,
+        .pivot = pivot,
+        .handle = handle,
+        .group = group,
+        .start = start,
+        .center = center,
+        .v0 = v0,
+        .near_side = cv.math.dot(v0, axes[2]) >= 0,
+    };
+    app.drag_before = before;
+}
+
+fn dragMotion(app: *App, x: f32, y: f32, dx: f32, dy: f32) void {
+    const dr = &(app.drag orelse return);
+    const d = &(app.doc orelse return);
+    const f = &(d.shown orelse return);
+    const axes = app.cameraAxes();
+    const ws = app.windowSize();
+    switch (dr.kind) {
+        .rotate => if (dr.pivot != null and cv.math.length2(dr.v0) > 1e-8) {
+            // The grabbed atom follows the cursor on its sphere around the base atom.
+            const r = app.camera.ray(2 * x / ws[0] - 1, 1 - 2 * y / ws[1], ws[0] / ws[1]);
+            const p = drag_mod.spherePoint(r.origin, r.dir, dr.center, cv.math.length(dr.v0), dr.near_side);
+            dr.rotation = cv.math.Quat.fromTo(dr.v0, p - dr.center);
+        } else {
+            // Trackball about the group centre, same feel as rotating the view.
+            const k = 0.008;
+            const q = cv.math.Quat.fromAxisAngle(axes[1], dx * k).mul(cv.math.Quat.fromAxisAngle(axes[0], dy * k));
+            dr.rotation = q.mul(dr.rotation).normalized();
+        },
+        .twist => dr.twist -= dx * 0.008,
+        .translate => {
+            const r = app.camera.ray(0, 0, ws[0] / ws[1]);
+            const depth = @max(cv.math.dot(dr.center + dr.offset - r.origin, r.dir), 0.1);
+            const wpp = 2 * @tan(app.camera.fovy / 2) * depth / ws[1];
+            dr.offset += axes[0] * cv.math.splat(dx * wpp) - axes[1] * cv.math.splat(dy * wpp);
+        },
+    }
+    dr.moved = true;
+    dr.apply(f.positions, axes[2]);
+    app.bonds_dirty = true;
+}
+
+/// Finish (commit = true: keep as an undoable edit) or cancel the drag.
+fn endDrag(app: *App, commit: bool) void {
+    var dr = app.drag orelse return;
+    app.drag = null;
+    defer dr.deinit(app.gpa);
+    var before = app.drag_before.?;
+    app.drag_before = null;
+    const d = &(app.doc orelse return before.deinit(app.gpa));
+    const f = &(d.shown orelse return before.deinit(app.gpa));
+    if (commit and dr.moved) {
+        f.energy = null;
+        app.commitEdit(before) catch before.deinit(app.gpa);
+        app.setStatus("Moved {d} atom{s} (Ctrl+Z undoes)", .{ dr.group.len, if (dr.group.len == 1) "" else "s" });
+        return;
+    }
+    // Cancel: restore the snapshot.
+    for (dr.group, dr.start) |i, p| f.positions[i] = p;
+    before.deinit(app.gpa);
+    app.bonds_dirty = true;
+}
+
+/// Shown in the measurement bar while dragging.
+pub fn dragHint(app: *const App, buf: []u8) ?[]const u8 {
+    const dr = app.drag orelse return null;
+    const f = app.doc.?.shown.?;
+    const verb = switch (dr.kind) {
+        .rotate => "Rotating",
+        .twist => "Twisting",
+        .translate => "Moving",
+    };
+    const n = dr.group.len;
+    if (dr.pivot) |pv| return std.fmt.bufPrint(buf, "{s} {d} atom{s} about {s}{d}  (release to apply, Esc cancels)", .{
+        verb, n, if (n == 1) "" else "s", cv.elements.symbol(f.numbers[pv]), pv + 1,
+    }) catch null;
+    return std.fmt.bufPrint(buf, "{s} {d} atom{s}  (release to apply, Esc cancels)", .{ verb, n, if (n == 1) "" else "s" }) catch null;
 }
 
 // ------------------------------------------------------------ editing

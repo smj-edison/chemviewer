@@ -158,6 +158,21 @@ pub const Quat = struct {
         return .{ .x = n[0] * s, .y = n[1] * s, .z = n[2] * s, .w = @cos(angle / 2) };
     }
 
+    /// Shortest rotation taking direction `from` onto direction `to`.
+    pub fn fromTo(from: Vec3, to: Vec3) Quat {
+        const a = normalize(from);
+        const b = normalize(to);
+        const d = dot(a, b);
+        if (d < -0.999999) {
+            // Opposite: rotate π about any axis perpendicular to `a`.
+            var axis = cross(.{ 1, 0, 0 }, a);
+            if (length2(axis) < 1e-6) axis = cross(.{ 0, 1, 0 }, a);
+            return fromAxisAngle(axis, std.math.pi);
+        }
+        const cr = cross(a, b);
+        return (Quat{ .x = cr[0], .y = cr[1], .z = cr[2], .w = 1 + d }).normalized();
+    }
+
     pub fn mul(a: Quat, b: Quat) Quat {
         return .{
             .w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
@@ -195,6 +210,19 @@ test "quat rotation matches matrix" {
     const r = q.rotate(vec3(1, 0, 0));
     try std.testing.expectApproxEqAbs(@as(f32, 0), r[0], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 1), r[1], 1e-6);
+}
+
+test "fromTo maps one direction onto another" {
+    const pairs = [_][2]Vec3{
+        .{ .{ 1, 0, 0 }, .{ 0, 1, 0 } },
+        .{ .{ 0.3, -1, 2 }, .{ -2, 0.5, 0.1 } },
+        .{ .{ 0, 0, 1 }, .{ 0, 0, -1 } }, // antiparallel
+        .{ .{ 1, 2, 3 }, .{ 1, 2, 3 } }, // identical
+    };
+    for (pairs) |p| {
+        const r = Quat.fromTo(p[0], p[1]).rotate(normalize(p[0]));
+        try std.testing.expect(length(r - normalize(p[1])) < 1e-5);
+    }
 }
 
 test "mat4 mul identity" {

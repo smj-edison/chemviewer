@@ -18,6 +18,12 @@ OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
   XYZ, with the source in the comment line. Ctrl+V pastes XYZ, bare
   `El x y z` lines, or a Gaussian/ORCA input into the current structure as a
   new fragment (Ctrl+Shift+V opens it as a new structure instead).
+- **Drag fragments (GaussView-style Alt).** Select a base atom, then Alt+drag
+  any atom past it: that branch swings around the base atom, with the grabbed
+  atom following the cursor. Alt+right drag twists it about the base→grabbed
+  axis; Alt+middle (or Alt+Shift+left) drag translates. Without a base atom the
+  grabbed atom's molecule moves; with several atoms selected, the selection
+  moves. Each drag is one undoable edit; Esc cancels.
 - **Cut bonds.** Click a bond and press X to cut it. It stays drawn (thin, red),
   but edits and molecule selection treat the two sides as separate, so you can
   move part of a ring or a ligand freely.
@@ -62,6 +68,9 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Input | Action |
 |---|---|
 | Left click | select / deselect atom; on a bond: select its two atoms; empty space: clear |
+| Alt + left drag on an atom | rotate its group around the selected base atom (or its molecule about its centre) |
+| Alt + right drag | twist the group about the base→grabbed axis |
+| Alt + middle drag / Alt + Shift + left drag | translate the group |
 | Ctrl + left drag | lasso: add atoms inside (including hidden ones) |
 | Ctrl + Shift + left drag | lasso: remove atoms inside |
 | Left drag | rotate |
@@ -74,7 +83,7 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | PgUp / PgDn | jump 5% |
 | Home / End | first / last frame |
 | F | fit to view |
-| Esc | clear selection |
+| Esc | cancel a fragment drag, else clear selection |
 | Ctrl+A | grow selection to whole molecules; again: select all |
 | Ctrl+C | copy selection (or whole frame) as XYZ |
 | Ctrl+V | paste XYZ / coordinates as a fragment into the current structure |
