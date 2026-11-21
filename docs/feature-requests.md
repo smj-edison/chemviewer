@@ -4,8 +4,9 @@ Ideas noted while using the viewer. Status notes in *italics* are added when
 something is picked up.
 
 - [x] Option to show atom numbers
-  *View > Atom numbers or N (`--atom-numbers` on the CLI). 1-based, drawn
-  back to front with a halo; skipped above 5000 atoms.*
+  *View > Atom numbers or N (`--atom-numbers` on the CLI). 1-based, with a
+  halo; labels are hidden by atoms in front of them (fading when partly
+  covered); skipped above 5000 atoms.*
 - [ ] Timeline scrubbing should update immediately instead of waiting for scrubbing to stop
   *Couldn't reproduce headlessly: a scripted scrub updates on the next loop
   iteration for the in-memory IRC log and keeps up with metad.traj. Two

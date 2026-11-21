@@ -400,4 +400,5 @@ test {
     _ = @import("render/Camera.zig");
     _ = @import("app/lasso.zig");
     _ = @import("app/drag.zig");
+    _ = @import("app/occlusion.zig");
 }

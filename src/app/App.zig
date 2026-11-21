@@ -973,7 +973,7 @@ pub fn bondCharacter(app: *const App, a: u32, b: u32) ?f32 {
 // ------------------------------------------------------------ fragment dragging
 
 /// Camera axes in world space: right, up, and towards the viewer.
-fn cameraAxes(app: *const App) [3]Vec3 {
+pub fn cameraAxes(app: *const App) [3]Vec3 {
     const rt = app.camera.rotation.toMat3().transpose();
     return .{ rt.column(0), rt.column(1), rt.column(2) };
 }

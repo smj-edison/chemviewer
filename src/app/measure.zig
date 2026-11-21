@@ -6,6 +6,7 @@ const cv = @import("chemviewer");
 const ui = @import("ui.zig");
 const App = @import("App.zig");
 const geom = cv.geometry;
+const occlusion = @import("occlusion.zig");
 
 /// "C12" style label (1-based index, as in most QM programs).
 fn atomLabel(buf: []u8, numbers: []const u8, i: u32) []const u8 {
@@ -214,36 +215,74 @@ pub fn overlay(app: *App) void {
 }
 
 /// 1-based atom numbers drawn over every atom (View > Atom numbers, N).
-/// Drawn back to front so nearer labels sit on top; skipped for huge frames.
+/// Labels are hidden by spheres in front of them: five sample points per
+/// label are tested against nearer spheres, and the visible fraction sets
+/// the label's opacity, so partly covered labels fade instead of popping.
+/// Drawn back to front; skipped above 5000 atoms.
 pub fn atomNumbers(app: *App) void {
+    atomNumbersInner(app) catch {};
+}
+
+fn atomNumbersInner(app: *App) !void {
     const pos = app.displayedPositions() orelse return;
+    const f = app.doc.?.shown.?;
     const max_labels = 5000;
     if (pos.len > max_labels) return;
     const gpa = app.gpa;
     const proj = app.screenProjector();
-    const Label = struct { i: u32, x: f32, y: f32, depth: f32 };
+    const axes = app.cameraAxes();
+    const forward = -axes[2];
+    const eye = app.camera.ray(0, 0, 1).origin;
+    const focal = (proj.h / 2) / @tan(app.camera.fovy / 2);
+
+    // Every atom's projected disc (also the occluders), indexed like `pos`.
+    const discs = try gpa.alloc(occlusion.Disc, pos.len);
+    defer gpa.free(discs);
+    for (pos, f.numbers, discs) |p, z, *d| {
+        const depth = cv.math.dot(p - eye, forward);
+        const r = cv.elements.displayRadius(z) * app.style.atom_scale;
+        const q = proj.toScreen(p) orelse {
+            d.* = .{ .x = -1e9, .y = -1e9, .rpx = 0, .z = depth, .r = r };
+            continue;
+        };
+        d.* = .{ .x = q.x, .y = q.y, .rpx = if (depth > 1e-3) r * focal / depth else 0, .z = depth, .r = r };
+    }
+    var occ = try occlusion.Occluder.init(gpa, discs, focal, proj.w, proj.h);
+    defer occ.deinit(gpa);
+
+    const Label = struct { i: u32, depth: f32 };
     var labels: std.ArrayList(Label) = .empty;
     defer labels.deinit(gpa);
-    const eye = app.camera.ray(0, 0, 1).origin;
-    for (pos, 0..) |p, i| {
-        const q = proj.toScreen(p) orelse continue;
-        if (q.x < 0 or q.y < 0 or q.x > proj.w or q.y > proj.h) continue;
-        labels.append(gpa, .{ .i = @intCast(i), .x = q.x, .y = q.y, .depth = cv.math.length(p - eye) }) catch return;
+    for (discs, 0..) |d, i| {
+        if (d.rpx <= 0 or d.x < 0 or d.y < 0 or d.x > proj.w or d.y > proj.h) continue;
+        try labels.append(gpa, .{ .i = @intCast(i), .depth = d.z });
     }
     std.mem.sort(Label, labels.items, {}, struct {
         fn farFirst(_: void, a: Label, b: Label) bool {
             return a.depth > b.depth;
         }
     }.farFirst);
+
     const dl = c.igGetBackgroundDrawList_Nil();
     const light = app.style.theme == .light;
-    const fg = if (light) ui.rgba(0.05, 0.05, 0.08, 1) else ui.rgba(1, 1, 1, 1);
-    const halo = if (light) ui.rgba(1, 1, 1, 0.85) else ui.rgba(0, 0, 0, 0.85);
     for (labels.items) |l| {
+        const d = discs[l.i];
         var buf: [12]u8 = undefined;
         const t = ui.printZ(&buf, "{d}", .{l.i + 1}) catch continue;
         const size = c.igCalcTextSize(t.ptr, null, false, -1);
-        const at = ui.v2(l.x - size.x / 2, l.y - size.y / 2);
+        // Centre plus four points inside the label box.
+        const hx = size.x * 0.35;
+        const hy = size.y * 0.3;
+        const samples = [_][2]f32{ .{ 0, 0 }, .{ -hx, -hy }, .{ hx, -hy }, .{ -hx, hy }, .{ hx, hy } };
+        var visible: f32 = 0;
+        for (samples) |o| {
+            if (!occ.hidden(l.i, d.x + o[0], d.y + o[1])) visible += 1;
+        }
+        const alpha = visible / samples.len;
+        if (alpha <= 0) continue;
+        const fg = if (light) ui.rgba(0.05, 0.05, 0.08, alpha) else ui.rgba(1, 1, 1, alpha);
+        const halo = if (light) ui.rgba(1, 1, 1, 0.85 * alpha) else ui.rgba(0, 0, 0, 0.85 * alpha);
+        const at = ui.v2(d.x - size.x / 2, d.y - size.y / 2);
         // A 1-px halo keeps numbers readable on any atom colour.
         for ([_][2]f32{ .{ -1, 0 }, .{ 1, 0 }, .{ 0, -1 }, .{ 0, 1 } }) |o| {
             c.ImDrawList_AddText_Vec2(dl, ui.v2(at.x + o[0], at.y + o[1]), halo, t.ptr, null);
