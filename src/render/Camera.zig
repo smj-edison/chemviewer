@@ -64,5 +64,5 @@ pub fn zoom(c: *Camera, wheel: f32) void {
 /// Center on a bounding sphere and back off so it fills the view.
 pub fn fit(c: *Camera, center: Vec3, radius: f32) void {
     c.target = center;
-    c.distance = @max(radius, 1.0) / @sin(c.fovy / 2) * 1.05;
+    c.distance = @max(radius, 1.0) / @sin(c.fovy / 2) * 1.12;
 }

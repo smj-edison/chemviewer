@@ -78,3 +78,13 @@ Bond colours are interpolated in OKLCh, with lightness strictly increasing in
 bond character, from the background (transparent) to bright triple bonds. A soft
 staircase (`color.snap`) pulls colours toward whole bond orders without making
 the mapping discrete. See docs/BONDS.md.
+
+### D13 — Light theme and cel shading by default
+The default look is a light theme with cel shading: three flat lighting bands
+(anti-aliased with `fwidth`), no specular highlights, and dark outlines of
+constant screen width. Sphere outlines are a slightly larger concentric sphere
+ray-cast in the same impostor pass. Bond outlines are an "inverted hull"
+(inflated cylinders, back faces only). Outline width is given in logical
+pixels and multiplied by the pixel density. Sphere silhouettes use
+alpha-to-coverage when MSAA is available. Smooth (Blinn-Phong) shading and
+the dark theme remain options.

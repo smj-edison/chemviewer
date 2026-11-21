@@ -55,21 +55,27 @@ change colour smoothly too.
 ## Display
 
 Colours are defined in **OKLCh** (the polar form of Ottosson's OKLab), so
-lightness is *perceived* lightness. The palette (`src/core/color.zig`) is
-built so that lightness strictly increases with bond character:
+lightness is *perceived* lightness. Each theme has its own palette
+(`src/core/color.zig`). Contrast against the background, |L − L_bg|, strictly
+increases with bond character, so on the light theme higher orders get darker
+and on the dark theme they get brighter:
 
-| character | L (OKLab) | look |
-|---|---|---|
-| 0 | 0.24 | ≈ viewport background, fully transparent |
-| 1 | 0.62 | neutral grey (single) |
-| 2 | 0.78 | blue (double) |
-| 3 | 0.93 | bright pale gold (triple) |
+| character | light theme L | dark theme L | look |
+|---|---|---|---|
+| 0 | 0.968 (= bg) | 0.228 (= bg) | invisible, fully transparent |
+| 1 | 0.50 | 0.58 | neutral grey (single) |
+| 2 | 0.42 | 0.79 | blue (double) |
+| 3 | 0.32 | 0.93 | deep magenta / bright pale gold (triple) |
+
+Carbon atoms use a lighter grey than the CPK default (L ≈ 0.77 / 0.82), so
+atoms never blend into single bonds.
 
 Weak contacts fade *into* the background, both in lightness and in opacity, and
 higher bond orders always look more intense. Interpolation happens in OKLCh,
 taking the short way around the hue circle. Colours outside the sRGB gamut lose
 chroma, never lightness, so the lightness ramp survives gamut mapping. A unit
-test checks that rendered lightness is monotonic in bond character.
+test checks that rendered contrast is monotonic in bond character for both
+themes.
 
 ### Snapping
 

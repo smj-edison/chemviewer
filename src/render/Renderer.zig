@@ -22,7 +22,58 @@ pub const BondColoring = enum(c_int) {
     element,
 };
 
+pub const Theme = enum(c_int) {
+    light,
+    dark,
+
+    pub fn palette(t: Theme) cv.color.Palette {
+        return switch (t) {
+            .light => cv.color.light_palette,
+            .dark => cv.color.dark_palette,
+        };
+    }
+
+    pub fn background(t: Theme) [3]f32 {
+        return t.palette().background;
+    }
+
+    pub fn outline(t: Theme) [3]f32 {
+        return switch (t) {
+            .light => .{ 0.10, 0.11, 0.13 },
+            .dark => .{ 0.0, 0.0, 0.0 },
+        };
+    }
+
+    /// Element colour, adjusted per theme where the default would blend
+    /// with bonds: carbon is lifted well above the single-bond grey.
+    pub fn atomColor(t: Theme, z: u8) [3]f32 {
+        if (z == 6) return switch (t) {
+            .light => .{ 0.71, 0.71, 0.72 }, // OKLab L ≈ 0.77 vs single bonds 0.50
+            .dark => .{ 0.77, 0.77, 0.78 }, // OKLab L ≈ 0.82 vs single bonds 0.58
+        };
+        return cv.elements.colorRgb(z);
+    }
+
+    pub fn cellLine(t: Theme) [4]f32 {
+        return switch (t) {
+            .light => .{ 0.30, 0.32, 0.36, 1 },
+            .dark => .{ 0.60, 0.60, 0.65, 1 },
+        };
+    }
+};
+
+pub const Shading = enum(c_int) {
+    /// Flat lighting bands and outlines.
+    cel,
+    /// Smooth Blinn-Phong with highlights.
+    smooth,
+};
+
 pub const Style = struct {
+    theme: Theme = .light,
+    shading: Shading = .cel,
+    /// Outline width in screen pixels (logical; scaled by pixel density). 0 = none.
+    outline_px: f32 = 2.0,
     atom_scale: f32 = 1.0,
     bond_radius: f32 = 0.11,
     bond_coloring: BondColoring = .gradient,
@@ -42,8 +93,8 @@ pub const Tint = struct {
 
 /// Bond colour from its character: the perceptual OKLCh palette in
 /// `cv.color`, shaped by the snap curve. Returns sRGB + opacity.
-pub fn gradientColor(character: f32, snap_strength: f32) [4]f32 {
-    const bc = cv.color.bondColor(character, snap_strength);
+pub fn gradientColor(palette: cv.color.Palette, character: f32, snap_strength: f32) [4]f32 {
+    const bc = cv.color.bondColor(palette, character, snap_strength);
     return .{ bc.rgb[0], bc.rgb[1], bc.rgb[2], bc.alpha };
 }
 
@@ -200,7 +251,7 @@ pub fn addStructure(
 ) !void {
     try r.atoms.ensureUnusedCapacity(r.gpa, positions.len);
     for (positions, numbers) |p, z| {
-        const rgb = tinted(cv.elements.colorRgb(z), tint);
+        const rgb = tinted(style.theme.atomColor(z), tint);
         r.atoms.appendAssumeCapacity(.{
             .center = p,
             .radius = cv.elements.displayRadius(z) * style.atom_scale,
@@ -218,15 +269,15 @@ pub fn addStructure(
         var cb: [4]f32 = undefined;
         switch (style.bond_coloring) {
             .gradient => {
-                const g = gradientColor(b.character, style.snap);
+                const g = gradientColor(style.theme.palette(), b.character, style.snap);
                 const rgb = tinted(.{ g[0], g[1], g[2] }, tint);
                 ca = .{ rgb[0], rgb[1], rgb[2], g[3] };
                 cb = ca;
             },
             .element => {
                 const alpha = @min(ch, 1.0);
-                const ra = tinted(cv.elements.colorRgb(numbers[b.a]), tint);
-                const rb = tinted(cv.elements.colorRgb(numbers[b.b]), tint);
+                const ra = tinted(style.theme.atomColor(numbers[b.a]), tint);
+                const rb = tinted(style.theme.atomColor(numbers[b.b]), tint);
                 ca = .{ ra[0], ra[1], ra[2], alpha };
                 cb = .{ rb[0], rb[1], rb[2], alpha };
             },
@@ -277,18 +328,36 @@ pub fn upload(r: *Renderer) !void {
     r.uploaded_lines = r.lines.items.len;
 }
 
-fn setMatrices(prog: gl.Uint, view: Mat4, proj: Mat4) void {
-    gl.f.UseProgram(prog);
-    gl.f.UniformMatrix4fv(gl.f.GetUniformLocation(prog, "u_view"), 1, gl.FALSE, @ptrCast(&view.m));
-    gl.f.UniformMatrix4fv(gl.f.GetUniformLocation(prog, "u_proj"), 1, gl.FALSE, @ptrCast(&proj.m));
+pub const DrawParams = struct {
+    view: Mat4,
+    proj: Mat4,
+    /// Framebuffer size in pixels.
+    width: i32,
+    height: i32,
+    /// Vertical field of view (radians), for converting pixels to world units.
+    fovy: f32,
+    /// Physical pixels per logical pixel (HiDPI).
+    pixel_density: f32 = 1,
+    style: Style,
+};
+
+fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
+    const f = &gl.f;
+    f.UseProgram(prog);
+    f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_view"), 1, gl.FALSE, @ptrCast(&p.view.m));
+    f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_proj"), 1, gl.FALSE, @ptrCast(&p.proj.m));
+    f.Uniform1i(f.GetUniformLocation(prog, "u_cel"), @intFromBool(p.style.shading == .cel));
+    f.Uniform1f(f.GetUniformLocation(prog, "u_outline_k"), outline_k);
+    f.Uniform1i(f.GetUniformLocation(prog, "u_outline_pass"), 0);
+    const oc = p.style.theme.outline();
+    f.Uniform3f(f.GetUniformLocation(prog, "u_outline_color"), oc[0], oc[1], oc[2]);
 }
 
-pub const background = [3]f32{ 0.105, 0.11, 0.13 };
-
-pub fn draw(r: *Renderer, view: Mat4, proj: Mat4, width: i32, height: i32) void {
+pub fn draw(r: *Renderer, p: DrawParams) void {
     const f = &gl.f;
-    f.Viewport(0, 0, width, height);
-    f.ClearColor(background[0], background[1], background[2], 1);
+    const bg = p.style.theme.background();
+    f.Viewport(0, 0, p.width, p.height);
+    f.ClearColor(bg[0], bg[1], bg[2], 1);
     f.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     f.Enable(gl.DEPTH_TEST);
     f.DepthFunc(gl.LESS);
@@ -296,27 +365,43 @@ pub fn draw(r: *Renderer, view: Mat4, proj: Mat4, width: i32, height: i32) void 
     f.Disable(gl.BLEND);
     f.Disable(gl.CULL_FACE);
 
+    // Outline width in world units per unit of view depth (constant on screen).
+    const outlines = p.style.shading == .cel and p.style.outline_px > 0;
+    const world_per_px = 2 * @tan(p.fovy / 2) / @as(f32, @floatFromInt(@max(p.height, 1)));
+    const outline_k: f32 = if (outlines) p.style.outline_px * p.pixel_density * world_per_px else 0;
+
     if (r.uploaded_atoms > 0) {
-        setMatrices(r.sphere_prog, view, proj);
+        setCommon(r.sphere_prog, p, outline_k);
         f.BindVertexArray(r.sphere_vao);
+        // Smooth sphere silhouettes when multisampling is available.
+        f.Enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
         f.DrawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, @intCast(r.uploaded_atoms));
+        f.Disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     }
-    setMatrices(r.cylinder_prog, view, proj);
-    f.BindVertexArray(r.cylinder_vao);
     if (r.uploaded_opaque_bonds > 0) {
+        setCommon(r.cylinder_prog, p, outline_k);
+        f.BindVertexArray(r.cylinder_vao);
         f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, @intCast(r.uploaded_opaque_bonds));
+        if (outlines) {
+            // Inverted hull: inflated cylinders, back faces only, flat outline colour.
+            f.Uniform1i(f.GetUniformLocation(r.cylinder_prog, "u_outline_pass"), 1);
+            f.Enable(gl.CULL_FACE);
+            f.CullFace(gl.FRONT);
+            f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, @intCast(r.uploaded_opaque_bonds));
+            f.Disable(gl.CULL_FACE);
+        }
     }
     if (r.uploaded_lines > 0) {
-        setMatrices(r.line_prog, view, proj);
+        setCommon(r.line_prog, p, 0);
         f.BindVertexArray(r.line_vao);
         f.DrawArrays(gl.LINES, 0, @intCast(r.uploaded_lines));
     }
     if (r.uploaded_translucent_bonds > 0) {
-        // Faded contacts: blended, no depth writes, so they never hide anything.
+        // Faded contacts: blended, no depth writes, no outlines, so they never hide anything.
         f.Enable(gl.BLEND);
         f.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         f.DepthMask(gl.FALSE);
-        setMatrices(r.cylinder_prog, view, proj);
+        setCommon(r.cylinder_prog, p, 0);
         f.BindVertexArray(r.cylinder_vao);
         // Instance attributes start at the first translucent bond.
         const stride = @sizeOf(BondInstance);

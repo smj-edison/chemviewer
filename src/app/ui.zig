@@ -48,18 +48,19 @@ pub fn rgba(r: f32, g: f32, b: f32, a: f32) u32 {
 
 /// Horizontal bar showing the bond-character gradient with 0..3 ticks,
 /// sampled finely so the snap curve and OKLCh interpolation show as rendered.
-pub fn gradientLegend(snap_strength: f32) void {
+pub fn gradientLegend(theme: Renderer.Theme, snap_strength: f32) void {
     const dl = c.igGetWindowDrawList();
     const p = c.igGetCursorScreenPos();
     const w = c.igGetContentRegionAvail().x;
     const h: f32 = c.igGetFontSize() * 0.9;
-    const bg = Renderer.background;
+    const bg = theme.background();
+    const palette = theme.palette();
     const segments = 96;
     var prev_col: u32 = 0;
     for (0..segments + 1) |i| {
         const t = @as(f32, @floatFromInt(i)) / segments;
         // Pre-blend alpha against the viewport background so it reads like the 3D view.
-        const col = blend(Renderer.gradientColor(t * 3, snap_strength), bg);
+        const col = blend(Renderer.gradientColor(palette, t * 3, snap_strength), bg);
         if (i > 0) {
             const x0 = p.x + (t - 1.0 / @as(f32, segments)) * w;
             c.ImDrawList_AddRectFilledMultiColor(dl, v2(x0, p.y), v2(p.x + t * w + 0.5, p.y + h), prev_col, col, col, prev_col);

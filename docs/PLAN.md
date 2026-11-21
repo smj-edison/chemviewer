@@ -132,7 +132,8 @@ bytes (not frame count) evicts old ones. Scrubbing never blocks the render loop.
 - [ ] Bond gradient editor (colour stops, cut-off, "show only ≥ single"), saved to a config file
 - [ ] Representation presets: ball & stick, licorice, space-filling, wire
 - [ ] Periodic cells: draw images, wrap atoms, bonds across boundaries (minimum image)
-- [ ] Depth cueing / SSAO, outlines
+- [x] Outlines (cel shading), light/dark themes
+- [ ] Depth cueing / SSAO
 - [ ] Persist settings (window layout, style) via `Io.Dir` in the platform config dir
 - [x] Drag-and-drop files (SDL drop events)
 

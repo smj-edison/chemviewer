@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, GL context, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark]
 //!
 //! `--screenshot` renders once the requested frame is loaded, writes a PNG and
 //! exits. It works headless with SDL_VIDEO_DRIVER=offscreen.
@@ -19,6 +19,8 @@ const Args = struct {
     width: c_int = 1400,
     height: c_int = 900,
     ui_scale: ?f32 = null,
+    no_ui: bool = false,
+    dark: bool = false,
 };
 
 fn parseArgs(argv: []const []const u8) !Args {
@@ -44,6 +46,10 @@ fn parseArgs(argv: []const []const u8) !Args {
                 a.width = try std.fmt.parseInt(c_int, it.next() orelse return error.BadSize, 10);
                 a.height = try std.fmt.parseInt(c_int, it.next() orelse return error.BadSize, 10);
             }
+        } else if (eql(u8, arg, "--dark")) {
+            a.dark = true;
+        } else if (eql(u8, arg, "--no-ui")) {
+            a.no_ui = true;
         } else if (eql(u8, arg, "-h") or eql(u8, arg, "--help")) {
             return error.Help;
         } else {
@@ -68,7 +74,7 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
-            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH] [--ui-scale X]
+            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark]
             \\
         , .{});
         if (e == error.Help) return;
@@ -111,6 +117,7 @@ pub fn main(init: std.process.Init) !void {
     style.*.WindowRounding = 4;
     style.*.FrameRounding = 3;
     var ui_scale: UiScale = .{ .base = style.* };
+    var applied_theme: ?@import("render/Renderer.zig").Theme = null;
     if (!c.ImGui_ImplSDL3_InitForOpenGL(window, gl_ctx)) return error.ImGuiInit;
     defer c.ImGui_ImplSDL3_Shutdown();
     if (!c.ImGui_ImplOpenGL3_Init("#version 330")) return error.ImGuiInit;
@@ -120,6 +127,7 @@ pub fn main(init: std.process.Init) !void {
     var app = try App.init(io, gpa, window);
     defer app.deinit();
     if (args.ui_scale) |u| app.ui_scale = u;
+    if (args.dark) app.style.theme = .dark;
     if (args.file) |f| app.openFile(f);
 
     var shot: Screenshot = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };
@@ -135,6 +143,13 @@ pub fn main(init: std.process.Init) !void {
 
         app.update();
         ui_scale.apply(window, app.ui_scale);
+        if (applied_theme != app.style.theme) {
+            applied_theme = app.style.theme;
+            switch (app.style.theme) {
+                .light => c.igStyleColorsLight(null),
+                .dark => c.igStyleColorsDark(null),
+            }
+        }
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplSDL3_NewFrame();
@@ -146,8 +161,16 @@ pub fn main(init: std.process.Init) !void {
         var h: c_int = 0;
         _ = c.SDL_GetWindowSizeInPixels(window, &w, &h);
         const aspect = @as(f32, @floatFromInt(w)) / @as(f32, @floatFromInt(@max(h, 1)));
-        app.renderer.draw(app.camera.view(), app.camera.projection(aspect, app.scene_radius), w, h);
-        c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
+        app.renderer.draw(.{
+            .view = app.camera.view(),
+            .proj = app.camera.projection(aspect, app.scene_radius),
+            .width = w,
+            .height = h,
+            .fovy = app.camera.fovy,
+            .pixel_density = @max(c.SDL_GetWindowPixelDensity(window), 1),
+            .style = app.style,
+        });
+        if (!args.no_ui) c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
 
         if (args.screenshot != null) {
             if (try shot.step(&app, io, w, h)) break;
@@ -180,7 +203,9 @@ const UiScale = struct {
         if (@abs(s - u.current) < 1e-3) return;
         u.current = s;
         const style = c.igGetStyle();
+        const colors = style.*.Colors; // theme colours are managed separately
         style.* = u.base;
+        style.*.Colors = colors;
         c.ImGuiStyle_ScaleAllSizes(style, s);
         style.*.FontScaleDpi = s;
     }

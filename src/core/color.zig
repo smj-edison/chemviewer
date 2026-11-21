@@ -107,36 +107,59 @@ pub fn snap(character: f32, strength: f32) f32 {
     return n + x + (smooth - x) * std.math.clamp(strength, 0, 1);
 }
 
-/// Palette stops in OKLCh. Lightness strictly increases with bond character,
-/// starting at the viewport background so weak contacts fade into it.
 pub const PaletteStop = struct { at: f32, lch: Lch };
 
-pub const bond_palette = [_]PaletteStop{
-    .{ .at = 0.0, .lch = .{ .l = 0.24, .c = 0.010, .h = 265 } }, // ~ background
-    .{ .at = 1.0, .lch = .{ .l = 0.62, .c = 0.025, .h = 250 } }, // single: neutral grey
-    .{ .at = 2.0, .lch = .{ .l = 0.78, .c = 0.130, .h = 225 } }, // double: clear blue
-    .{ .at = 3.0, .lch = .{ .l = 0.93, .c = 0.120, .h = 95 } }, // triple: bright pale gold
+/// A bond palette for one background. Stops are in OKLCh. Contrast against
+/// the background (|L - L_bg|) strictly increases with bond character, and
+/// the first stop sits on the background so weak contacts fade into it.
+pub const Palette = struct {
+    /// Viewport background (sRGB) the palette is designed against.
+    background: Rgb,
+    stops: []const PaletteStop,
+
+    pub fn lch(p: Palette, s: f32) Lch {
+        const stops = p.stops;
+        if (s <= stops[0].at) return stops[0].lch;
+        for (stops[1..], 1..) |stop, i| {
+            if (s <= stop.at) {
+                const prev = stops[i - 1];
+                return mixLch(prev.lch, stop.lch, (s - prev.at) / (stop.at - prev.at));
+            }
+        }
+        return stops[stops.len - 1].lch;
+    }
 };
 
-/// Colour (sRGB) and opacity for a bond of the given (raw) character.
-pub fn bondColor(character: f32, snap_strength: f32) struct { rgb: Rgb, alpha: f32 } {
-    const s = snap(std.math.clamp(character, 0, 3), snap_strength);
-    const lch = paletteLch(s);
-    // Below single-bond character, fade opacity out as well as lightness.
-    const alpha: f32 = if (s >= 1) 1 else s;
-    return .{ .rgb = oklchToSrgb(lch), .alpha = alpha };
-}
+/// Light background: higher bond order = darker = more contrast.
+pub const light_palette: Palette = .{
+    .background = .{ 0.955, 0.958, 0.965 }, // OKLab L ≈ 0.97
+    .stops = &.{
+        .{ .at = 0.0, .lch = .{ .l = 0.968, .c = 0.000, .h = 255 } }, // = background
+        .{ .at = 1.0, .lch = .{ .l = 0.50, .c = 0.015, .h = 255 } }, // single: neutral grey
+        .{ .at = 2.0, .lch = .{ .l = 0.42, .c = 0.170, .h = 262 } }, // double: strong blue
+        .{ .at = 3.0, .lch = .{ .l = 0.32, .c = 0.180, .h = 325 } }, // triple: deep magenta
+    },
+};
 
-pub fn paletteLch(s: f32) Lch {
-    const stops = bond_palette;
-    if (s <= stops[0].at) return stops[0].lch;
-    for (stops[1..], 1..) |stop, i| {
-        if (s <= stop.at) {
-            const prev = stops[i - 1];
-            return mixLch(prev.lch, stop.lch, (s - prev.at) / (stop.at - prev.at));
-        }
-    }
-    return stops[stops.len - 1].lch;
+/// Dark background: higher bond order = brighter = more contrast.
+pub const dark_palette: Palette = .{
+    .background = .{ 0.105, 0.11, 0.13 }, // OKLab L ≈ 0.228
+    .stops = &.{
+        .{ .at = 0.0, .lch = .{ .l = 0.228, .c = 0.010, .h = 265 } }, // = background
+        .{ .at = 1.0, .lch = .{ .l = 0.58, .c = 0.020, .h = 250 } }, // single: neutral grey
+        .{ .at = 2.0, .lch = .{ .l = 0.79, .c = 0.130, .h = 225 } }, // double: clear blue
+        .{ .at = 3.0, .lch = .{ .l = 0.93, .c = 0.120, .h = 95 } }, // triple: bright pale gold
+    },
+};
+
+pub const BondColor = struct { rgb: Rgb, alpha: f32 };
+
+/// Colour (sRGB) and opacity for a bond of the given (raw) character.
+pub fn bondColor(palette: Palette, character: f32, snap_strength: f32) BondColor {
+    const s = snap(std.math.clamp(character, 0, 3), snap_strength);
+    // Below single-bond character, fade opacity out as well as contrast.
+    const alpha: f32 = if (s >= 1) 1 else s;
+    return .{ .rgb = oklchToSrgb(palette.lch(s)), .alpha = alpha };
 }
 
 test "oklab reference values" {
@@ -177,14 +200,21 @@ test "snap is monotonic, continuous, and fixes integers" {
     try std.testing.expect(snap(1.05, 0.7) - 1 < 0.05);
 }
 
-test "bond palette lightness rises with bond character" {
-    var prev: f32 = -1;
-    var x: f32 = 0;
-    while (x <= 3) : (x += 0.01) {
-        const c = bondColor(x, 0.7);
-        const l = srgbToOklab(c.rgb).l;
-        try std.testing.expect(l >= prev - 2e-3);
-        prev = l;
+test "bond palette contrast rises with bond character (both themes)" {
+    for ([_]Palette{ light_palette, dark_palette }) |pal| {
+        const bg_l = srgbToOklab(pal.background).l;
+        // The first stop sits on the background.
+        try std.testing.expectApproxEqAbs(bg_l, pal.stops[0].lch.l, 0.02);
+        var prev: f32 = -1;
+        var x: f32 = 0;
+        while (x <= 3) : (x += 0.01) {
+            const col = bondColor(pal, x, 0.7);
+            const contrast = @abs(srgbToOklab(col.rgb).l - bg_l);
+            try std.testing.expect(contrast >= prev - 2e-3);
+            prev = contrast;
+        }
+        // Triple bonds stand well apart from the background.
+        try std.testing.expect(prev > 0.6);
+        try std.testing.expectEqual(@as(f32, 0), bondColor(pal, 0, 0.7).alpha);
     }
-    try std.testing.expectEqual(@as(f32, 0), bondColor(0, 0.7).alpha);
 }

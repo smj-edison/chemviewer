@@ -21,6 +21,9 @@ pub const DEPTH_TEST: Enum = 0x0B71;
 pub const CULL_FACE: Enum = 0x0B44;
 pub const BLEND: Enum = 0x0BE2;
 pub const MULTISAMPLE: Enum = 0x809D;
+pub const SAMPLE_ALPHA_TO_COVERAGE: Enum = 0x809E;
+pub const FRONT: Enum = 0x0404;
+pub const BACK: Enum = 0x0405;
 pub const LEQUAL: Enum = 0x0203;
 pub const LESS: Enum = 0x0201;
 pub const SRC_ALPHA: Enum = 0x0302;
@@ -53,6 +56,7 @@ const Fns = struct {
     DepthMask: *const fn (Boolean) callconv(.c) void,
     BlendFunc: *const fn (Enum, Enum) callconv(.c) void,
     LineWidth: *const fn (Float) callconv(.c) void,
+    CullFace: *const fn (Enum) callconv(.c) void,
     CreateShader: *const fn (Enum) callconv(.c) Uint,
     ShaderSource: *const fn (Uint, Sizei, [*]const [*:0]const u8, ?[*]const Int) callconv(.c) void,
     CompileShader: *const fn (Uint) callconv(.c) void,

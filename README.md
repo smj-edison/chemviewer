@@ -32,6 +32,9 @@ SDL_VIDEO_DRIVER=offscreen zig-out/bin/chemviewer traj.traj \
     --frame 120 --diff-ref 1 --screenshot out.png --size 1400x900
 ```
 
+Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`,
+`--ui-scale X`.
+
 ## Controls
 
 | Input | Action |

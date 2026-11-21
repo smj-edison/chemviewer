@@ -242,7 +242,14 @@ pub fn fitCamera(app: *App) void {
         }
     };
     const center = (b.min + b.max) * cv.math.splat(0.5);
-    const radius = cv.math.length(b.max - b.min) * 0.5 + 1.5;
+    // Bounding sphere around the box centre: farthest atom plus its display radius.
+    var radius: f32 = 0;
+    for (f.positions, f.numbers) |p, z| {
+        radius = @max(radius, cv.math.length(p - center) + cv.elements.displayRadius(z) * app.style.atom_scale);
+    }
+    if (app.style.show_cell) if (f.cell) |_| {
+        radius = @max(radius, cv.math.length(b.max - b.min) * 0.5);
+    };
     app.scene_radius = radius;
     app.camera.fit(center, radius);
 }
@@ -258,7 +265,7 @@ fn rebuildScene(app: *App) !void {
         return r.upload();
     };
     try r.addStructure(f.positions, f.numbers, d.bonds.items, app.style, null);
-    if (app.style.show_cell) if (f.cell) |cell| try r.addCell(cell, .{ 0.6, 0.6, 0.65, 1 });
+    if (app.style.show_cell) if (f.cell) |cell| try r.addCell(cell, app.style.theme.cellLine());
     try r.upload();
 }
 
@@ -458,7 +465,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Element", &coloring, 1)) app.scene_dirty = true;
     app.style.bond_coloring = @fromBackingInt(@intCast(coloring));
-    ui.gradientLegend(app.style.snap);
+    ui.gradientLegend(app.style.theme, app.style.snap);
     if (c.igSliderFloat("Snap", &app.style.snap, 0, 1, "%.2f", 0)) app.scene_dirty = true;
     ui.tooltip("How strongly colours settle on whole bond orders. 0 = linear in bond character, 1 = flat plateaus at single/double/triple.");
     if (c.igSliderFloat("Cut-off x r1", &app.bond_params.cutoff_factor, 1.0, 1.8, "%.2f", 0)) app.bonds_dirty = true;
@@ -467,6 +474,20 @@ fn inspector(app: *App, timeline_h: f32) void {
     ui.tooltip("Hide links whose bond character is below this value (1 = single).");
 
     c.igSeparatorText("Display");
+    var theme: c_int = @backingInt(app.style.theme);
+    if (c.igRadioButton_IntPtr("Light", &theme, 0)) app.scene_dirty = true;
+    c.igSameLine(0, -1);
+    if (c.igRadioButton_IntPtr("Dark", &theme, 1)) app.scene_dirty = true;
+    app.style.theme = @fromBackingInt(@intCast(theme));
+    c.igSameLine(0, c.igGetFontSize() * 1.5);
+    var shading: c_int = @backingInt(app.style.shading);
+    _ = c.igRadioButton_IntPtr("Cel", &shading, 0);
+    c.igSameLine(0, -1);
+    _ = c.igRadioButton_IntPtr("Smooth", &shading, 1);
+    app.style.shading = @fromBackingInt(@intCast(shading));
+    if (app.style.shading == .cel) {
+        _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
+    }
     if (c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0)) app.scene_dirty = true;
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
