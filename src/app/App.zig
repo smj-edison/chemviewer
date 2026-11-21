@@ -9,6 +9,7 @@ const Camera = @import("../render/Camera.zig");
 const ui = @import("ui.zig");
 const timeline = @import("timeline.zig");
 const measure = @import("measure.zig");
+const lasso = @import("lasso.zig");
 const Frame = cv.Frame;
 const Vec3 = cv.math.Vec3;
 
@@ -93,6 +94,11 @@ undo_stack: std.ArrayList(Undo) = .empty,
 cut_bonds: CutSet = .empty,
 /// Left-button press in the viewport, to tell clicks from drags.
 press: ?struct { moved: f32 } = null,
+/// Active lasso (Ctrl+left drag): outline in window points.
+lasso_points: std.ArrayList(lasso.Point) = .empty,
+lasso_active: bool = false,
+/// Ctrl+Shift lasso removes from the selection instead of adding.
+lasso_remove: bool = false,
 
 /// Edits are undone by restoring the positions of the edited frame.
 /// Undo restores a whole frame snapshot (pastes change the atom count).
@@ -112,6 +118,7 @@ pub fn deinit(app: *App) void {
     app.edits.deinit(app.gpa);
     app.undo_stack.deinit(app.gpa);
     app.selection.deinit(app.gpa);
+    app.lasso_points.deinit(app.gpa);
     app.cut_bonds.deinit(app.gpa);
     app.clearDiff();
     app.closeDocument();
@@ -491,17 +498,39 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
         c.SDL_EVENT_QUIT => app.quit_requested = true,
         c.SDL_EVENT_DROP_FILE => if (ev.drop.data) |p| app.openFile(std.mem.span(p)),
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-            if (!want_mouse and ev.button.button == c.SDL_BUTTON_LEFT) app.press = .{ .moved = 0 };
+            if (want_mouse or ev.button.button != c.SDL_BUTTON_LEFT) return;
+            app.press = .{ .moved = 0 };
+            const mods = c.SDL_GetModState();
+            if ((mods & c.SDL_KMOD_CTRL) != 0) {
+                app.lasso_active = true;
+                app.lasso_remove = (mods & c.SDL_KMOD_SHIFT) != 0;
+                app.lasso_points.clearRetainingCapacity();
+                app.lasso_points.append(app.gpa, .{ .x = ev.button.x, .y = ev.button.y }) catch {};
+            }
         },
         c.SDL_EVENT_MOUSE_BUTTON_UP => {
             if (ev.button.button != c.SDL_BUTTON_LEFT) return;
             const pr = app.press orelse return;
             app.press = null;
-            // A click (not a rotate-drag) picks an atom.
-            if (pr.moved < 5 and !want_mouse) app.clickAt(ev.button.x, ev.button.y, ev.button.clicks);
+            const was_lasso = app.lasso_active;
+            app.lasso_active = false;
+            // A click (not a drag) picks an atom or bond.
+            if (pr.moved < 5) {
+                if (!want_mouse) app.clickAt(ev.button.x, ev.button.y);
+            } else if (was_lasso) {
+                app.applyLasso();
+            }
         },
         c.SDL_EVENT_MOUSE_MOTION => {
             if (app.press) |*pr| pr.moved += @abs(ev.motion.xrel) + @abs(ev.motion.yrel);
+            if (app.lasso_active) {
+                const pts = app.lasso_points.items;
+                const last = pts[pts.len - 1];
+                const dx = ev.motion.x - last.x;
+                const dy = ev.motion.y - last.y;
+                if (dx * dx + dy * dy >= 9) app.lasso_points.append(app.gpa, .{ .x = ev.motion.x, .y = ev.motion.y }) catch {};
+                return; // no camera movement while lassoing
+            }
             if (want_mouse) return;
             const m = ev.motion;
             // GaussView-style: left = rotate, right = roll (horizontal) and
@@ -648,16 +677,80 @@ pub fn selectAll(app: *App) void {
     app.scene_dirty = true;
 }
 
-/// Add every atom connected to `atom` through drawn bonds (its molecule).
-pub fn selectFragment(app: *App, atom: u32) void {
+/// Ctrl+A: grow the selection to the whole molecules of the selected atoms;
+/// if that adds nothing (or nothing is selected), select everything.
+pub fn expandSelection(app: *App) void {
     const d = app.doc orelse return;
+    const f = d.shown orelse return;
+    if (app.selection.items.len == 0) return app.selectAll();
+    const gpa = app.gpa;
     var graph = app.drawnGraph() catch return;
-    defer graph.deinit(app.gpa);
-    const group = (graph.side(app.gpa, atom, .{ atom, atom }, &.{}) catch return) orelse return;
-    defer app.gpa.free(group);
-    _ = d;
-    for (group) |i| if (app.isSelected(i) == null) app.selection.append(app.gpa, i) catch return;
+    defer graph.deinit(gpa);
+    const mask = gpa.alloc(bool, f.len()) catch return;
+    defer gpa.free(mask);
+    @memset(mask, false);
+    for (app.selection.items) |i| mask[i] = true;
+    const before = app.selection.items.len;
+    // BFS from the current selection; new atoms are appended in visit order.
+    var head: usize = 0;
+    while (head < app.selection.items.len) : (head += 1) {
+        for (graph.neighbors(app.selection.items[head])) |j| if (!mask[j]) {
+            mask[j] = true;
+            app.selection.append(gpa, j) catch return;
+        };
+    }
+    if (app.selection.items.len == before) return app.selectAll();
     app.scene_dirty = true;
+    app.setStatus("Selected {d} atoms (whole molecules); Ctrl+A again selects all", .{app.selection.items.len});
+}
+
+/// Add (or, with Ctrl+Shift, remove) every atom whose projection lies
+/// inside the lasso, including atoms hidden behind others.
+fn applyLasso(app: *App) void {
+    const pts = app.lasso_points.items;
+    defer app.lasso_points.clearRetainingCapacity();
+    if (pts.len < 3) return;
+    const pos = app.displayedPositions() orelse return;
+    const sp = app.screenProjector();
+    const gpa = app.gpa;
+    const mask = gpa.alloc(bool, pos.len) catch return;
+    defer gpa.free(mask);
+    @memset(mask, false);
+    for (pos, 0..) |p, i| {
+        const q = sp.toScreen(p) orelse continue;
+        mask[i] = lasso.contains(pts, .{ .x = q.x, .y = q.y });
+    }
+    var changed: usize = 0;
+    if (app.lasso_remove) {
+        var i: usize = 0;
+        while (i < app.selection.items.len) {
+            if (mask[app.selection.items[i]]) {
+                _ = app.selection.orderedRemove(i);
+                changed += 1;
+            } else i += 1;
+        }
+    } else {
+        for (app.selection.items) |i| mask[i] = false; // already selected
+        for (mask, 0..) |m, i| if (m) {
+            app.selection.append(gpa, @intCast(i)) catch return;
+            changed += 1;
+        };
+    }
+    app.scene_dirty = true;
+    app.setStatus("{s} {d} atom{s} ({d} selected)", .{
+        if (app.lasso_remove) "Deselected" else "Selected", changed, if (changed == 1) "" else "s", app.selection.items.len,
+    });
+}
+
+/// Draw the lasso outline while dragging.
+pub fn drawLasso(app: *App) void {
+    if (!app.lasso_active or app.lasso_points.items.len < 2) return;
+    const dl = c.igGetForegroundDrawList_Nil();
+    const ac = app.style.theme.accent();
+    const pts: [*]const c.ImVec2_c = @ptrCast(app.lasso_points.items.ptr);
+    const n: c_int = @intCast(app.lasso_points.items.len);
+    if (n >= 3) c.ImDrawList_AddConcavePolyFilled(dl, pts, n, ui.rgba(ac[0], ac[1], ac[2], 0.12));
+    c.ImDrawList_AddPolyline(dl, pts, n, ui.rgba(ac[0], ac[1], ac[2], 0.9), 1.5, c.ImDrawFlags_Closed);
 }
 
 /// Connectivity used for moving groups and selecting molecules: exactly the
@@ -739,16 +832,13 @@ pub fn atomAt(app: *const App, x: f32, y: f32) ?u32 {
     };
 }
 
-/// Single click toggles the atom under the cursor, or selects a bond's two
-/// atoms (or clears on empty space); double click adds the whole molecule.
-pub fn clickAt(app: *App, x: f32, y: f32, clicks: u8) void {
-    const h = app.hitAt(x, y) orelse {
-        if (clicks == 1) app.clearSelection();
-        return;
-    };
+/// A click toggles the atom under the cursor, selects a bond's two atoms,
+/// or clears the selection on empty space.
+pub fn clickAt(app: *App, x: f32, y: f32) void {
+    const h = app.hitAt(x, y) orelse return app.clearSelection();
     switch (h.target) {
-        .atom => |atom| if (clicks >= 2) app.selectFragment(atom) else app.toggleSelect(atom),
-        .bond => |pair| if (clicks >= 2) app.selectFragment(pair[0]) else {
+        .atom => |atom| app.toggleSelect(atom),
+        .bond => |pair| {
             app.selection.clearRetainingCapacity();
             app.selection.appendSlice(app.gpa, &pair) catch return;
             app.scene_dirty = true;
@@ -942,6 +1032,7 @@ fn layoutCond(app: *App) c_int {
 pub fn drawUi(app: *App) void {
     defer app.layout_font_size = c.igGetFontSize();
     measure.overlay(app);
+    app.drawLasso();
     app.menuBar();
     const timeline_h = timeline.height();
     timeline.draw(app, timeline_h);
@@ -976,7 +1067,7 @@ fn menuBar(app: *App) void {
         if (c.igMenuItem_Bool("Paste XYZ as fragment", "Ctrl+V", false, true)) app.pasteXyz(false);
         if (c.igMenuItem_Bool("Paste XYZ as new structure", "Ctrl+Shift+V", false, true)) app.pasteXyz(true);
         c.igSeparator();
-        if (c.igMenuItem_Bool("Select all", "Ctrl+A", false, app.doc != null)) app.selectAll();
+        if (c.igMenuItem_Bool("Select molecule / all", "Ctrl+A", false, app.doc != null)) app.expandSelection();
         if (c.igMenuItem_Bool("Clear selection", "Esc", false, app.selection.items.len > 0)) app.clearSelection();
         c.igEndMenu();
     }

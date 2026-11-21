@@ -262,7 +262,7 @@ fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
         switch (ev.key.key) {
             c.SDLK_C => return app.copyXyz(),
             c.SDLK_V => return app.pasteXyz((ev.key.mod & c.SDL_KMOD_SHIFT) != 0),
-            c.SDLK_A => return app.selectAll(),
+            c.SDLK_A => return app.expandSelection(),
             c.SDLK_O => return app.openDialog(),
             c.SDLK_S => return app.saveDialog(),
             c.SDLK_Z => return app.undo(),
@@ -390,4 +390,5 @@ fn savePng(io: Io, path: []const u8, w: c_int, h: c_int) !void {
 
 test {
     _ = @import("render/Camera.zig");
+    _ = @import("app/lasso.zig");
 }

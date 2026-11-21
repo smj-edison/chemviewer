@@ -62,7 +62,8 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Input | Action |
 |---|---|
 | Left click | select / deselect atom; on a bond: select its two atoms; empty space: clear |
-| Double click | select the atom's whole molecule |
+| Ctrl + left drag | lasso: add atoms inside (including hidden ones) |
+| Ctrl + Shift + left drag | lasso: remove atoms inside |
 | Left drag | rotate |
 | Right drag ← → | rotate about the viewing axis |
 | Right drag ↑ ↓ | zoom (up = closer) |
@@ -74,7 +75,7 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Home / End | first / last frame |
 | F | fit to view |
 | Esc | clear selection |
-| Ctrl+A | select all atoms |
+| Ctrl+A | grow selection to whole molecules; again: select all |
 | Ctrl+C | copy selection (or whole frame) as XYZ |
 | Ctrl+V | paste XYZ / coordinates as a fragment into the current structure |
 | Ctrl+Shift+V | paste as a new structure |

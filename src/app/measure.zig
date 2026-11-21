@@ -77,7 +77,7 @@ pub fn bar(app: *App) void {
     const fs = c.igGetFontSize();
     c.igAlignTextToFramePadding();
     if (sel.len == 0) {
-        ui.textDisabled("Click atoms to select (double-click: whole molecule, Ctrl+A: all). 2 = distance, 3 = angle, 4 = dihedral. Ctrl+C copies as XYZ.", .{});
+        ui.textDisabled("Click atoms to select; Ctrl+drag: lasso (Ctrl+Shift: remove); Ctrl+A: molecule, then all. 2 = distance, 3 = angle, 4 = dihedral. Ctrl+C: copy XYZ.", .{});
         return;
     }
     if (sel.len > 4) {

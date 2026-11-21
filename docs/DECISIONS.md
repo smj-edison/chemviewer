@@ -121,3 +121,11 @@ structure if it would overlap). Ctrl+Shift+V opens them as a new structure.
 Undo therefore snapshots whole frames, since a paste changes the atom count.
 ImGui keyboard navigation is off, and app shortcuts yield only while a text
 field is being edited (`WantTextInput`), so focusing a panel doesn't swallow them.
+
+### D16 — Lasso on Ctrl+drag; Ctrl+A grows the selection
+Left, right and middle drags are taken by the GaussView camera controls, so
+the lasso is Ctrl + left drag (Ctrl+Shift removes). It selects by projected
+atom centre, so hidden atoms behind others are included. Molecule selection
+is Ctrl+A rather than double-click: it grows the selection to the whole
+molecules of the selected atoms (via drawn, uncut bonds), and a second press
+selects everything.
