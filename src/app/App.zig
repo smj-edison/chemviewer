@@ -365,6 +365,8 @@ pub fn addFragmentFile(app: *App, path: []const u8) !void {
 pub fn setFrame(app: *App, index: usize) void {
     const d = &(app.doc orelse return);
     d.current = @min(index, d.frameCount() - 1);
+    // Ask the loader right away (the UI sets frames mid-frame, after update()).
+    d.stream.request(d.current);
 }
 
 /// True when the displayed frame is the requested one.

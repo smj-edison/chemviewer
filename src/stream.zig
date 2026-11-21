@@ -185,7 +185,9 @@ pub const FrameStream = struct {
                 .energy => |start_index| {
                     // Scan a batch outside the lock, then publish.
                     const n = s.frameCount();
-                    const end = @min(n, start_index + 256);
+                    // Small batches so a new scrub request is served within a
+                    // few metadata reads, even in debug builds.
+                    const end = @min(n, start_index + 32);
                     var i = start_index;
                     while (i < end) : (i += 1) {
                         const e = s.source.loadEnergy(io, s.gpa, i) catch |err| switch (err) {
