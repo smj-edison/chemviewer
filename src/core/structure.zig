@@ -53,6 +53,26 @@ pub const Frame = struct {
         return r;
     }
 
+    /// A new frame without the atoms flagged in `remove` (one flag per atom).
+    /// Cell and comment are kept; the energy is dropped.
+    pub fn without(f: Frame, gpa: Allocator, remove: []const bool) !Frame {
+        std.debug.assert(remove.len == f.len());
+        var keep: usize = 0;
+        for (remove) |r| keep += @intFromBool(!r);
+        var r = try Frame.init(gpa, keep);
+        errdefer r.deinit(gpa);
+        var k: usize = 0;
+        for (f.positions, f.numbers, remove) |p, z, rm| {
+            if (rm) continue;
+            r.positions[k] = p;
+            r.numbers[k] = z;
+            k += 1;
+        }
+        r.cell = f.cell;
+        r.comment = if (f.comment.len > 0) try gpa.dupe(u8, f.comment) else "";
+        return r;
+    }
+
     /// A new frame with `extra`'s atoms appended (shifted by `offset`).
     /// Cell and comment come from `f`; the energy is dropped.
     pub fn concat(f: Frame, gpa: Allocator, extra: Frame, offset: Vec3) !Frame {
@@ -172,4 +192,18 @@ test "concat" {
     try std.testing.expectEqual(math.Vec3{ 2, 5, 0 }, c.positions[2]);
     try std.testing.expectEqual(@as(?f64, null), c.energy);
     try std.testing.expectApproxEqAbs(@as(f32, 1), a.minDistance(b), 1e-6);
+}
+
+test "without" {
+    const gpa = std.testing.allocator;
+    var f = try Frame.init(gpa, 4);
+    defer f.deinit(gpa);
+    for (f.positions, 0..) |*p, i| p.* = @splat(@floatFromInt(i));
+    @memcpy(f.numbers, &[_]u8{ 1, 6, 7, 8 });
+    f.energy = -1;
+    var g = try f.without(gpa, &.{ false, true, false, true });
+    defer g.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 7 }, g.numbers);
+    try std.testing.expectEqual(@as(f32, 2), g.positions[1][0]);
+    try std.testing.expectEqual(@as(?f64, null), g.energy);
 }

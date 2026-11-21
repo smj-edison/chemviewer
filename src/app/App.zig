@@ -111,7 +111,17 @@ drag_button: u8 = 0,
 
 /// Edits are undone by restoring the positions of the edited frame.
 /// Undo restores a whole frame snapshot (pastes change the atom count).
-const Undo = struct { index: usize, frame: Frame };
+const Undo = struct {
+    index: usize,
+    frame: Frame,
+    /// Cut bonds before the edit, for edits that renumber atoms (delete).
+    cuts: ?CutSet = null,
+
+    fn deinit(u: *Undo, gpa: Allocator) void {
+        u.frame.deinit(gpa);
+        if (u.cuts) |*cs| cs.deinit(gpa);
+    }
+};
 
 /// Bonds the user cut: drawn, but ignored as connections (key = pairKey).
 pub const CutSet = std.AutoHashMapUnmanaged(u64, void);
@@ -631,6 +641,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             switch (ev.key.key) {
                 c.SDLK_ESCAPE => if (app.drag != null) app.endDrag(false) else app.clearSelection(),
                 c.SDLK_X => app.toggleCut(),
+                c.SDLK_DELETE, c.SDLK_BACKSPACE => app.deleteSelection(),
                 c.SDLK_N => app.show_atom_numbers = !app.show_atom_numbers,
                 c.SDLK_SPACE => app.togglePlay(),
                 c.SDLK_RIGHT, c.SDLK_PERIOD => app.setFrame(d.current + 1),
@@ -1138,15 +1149,83 @@ fn applyEditInner(app: *App, edit: Edit) !void {
 
 /// Record `before` for undo and store the shown frame as an edit.
 fn commitEdit(app: *App, before: Frame) !void {
-    const d = &(app.doc orelse return);
-    const f = d.shown orelse return;
+    return app.commitEditWithCuts(before, null);
+}
+
+/// Like `commitEdit`, also remembering the cut bonds from before the edit.
+/// On success the undo stack owns `before` and `cuts_before`; on error the
+/// caller still owns them (every fallible step happens before the transfer).
+fn commitEditWithCuts(app: *App, before: Frame, cuts_before: ?CutSet) !void {
+    const d = &(app.doc orelse return error.NoDocument);
+    const f = d.shown orelse return error.NoDocument;
+    try app.undo_stack.ensureUnusedCapacity(app.gpa, 1);
+    try app.storeEdit(d.shown_index, f);
     if (app.undo_stack.items.len >= max_undo) {
         var old = app.undo_stack.orderedRemove(0);
-        old.frame.deinit(app.gpa);
+        old.deinit(app.gpa);
     }
-    try app.undo_stack.append(app.gpa, .{ .index = d.shown_index, .frame = before });
-    try app.storeEdit(d.shown_index, f);
+    app.undo_stack.appendAssumeCapacity(.{ .index = d.shown_index, .frame = before, .cuts = cuts_before });
     app.bonds_dirty = true;
+}
+
+/// Delete the selected atoms from the current frame (undoable).
+pub fn deleteSelection(app: *App) void {
+    app.deleteSelectionInner() catch |e| app.setStatus("Delete failed: {t}", .{e});
+}
+
+fn deleteSelectionInner(app: *App) !void {
+    if (app.drag != null) return;
+    const gpa = app.gpa;
+    const d = &(app.doc orelse return);
+    const f = &(d.shown orelse return);
+    const sel = app.selected();
+    if (sel.len == 0) return app.setStatus("Select atoms to delete", .{});
+    if (sel.len >= f.len()) return app.setStatus("Can't delete every atom", .{});
+
+    const remove = try gpa.alloc(bool, f.len());
+    defer gpa.free(remove);
+    @memset(remove, false);
+    for (sel) |i| remove[i] = true;
+    // Old index -> new index (maxInt = deleted), to renumber cut bonds.
+    const new_index = try gpa.alloc(u32, f.len());
+    defer gpa.free(new_index);
+    var next: u32 = 0;
+    for (remove, new_index) |rm, *ni| {
+        ni.* = if (rm) std.math.maxInt(u32) else next;
+        if (!rm) next += 1;
+    }
+    var new_cuts: CutSet = .empty;
+    errdefer new_cuts.deinit(gpa);
+    var it = app.cut_bonds.keyIterator();
+    while (it.next()) |key| {
+        const a: u32 = @intCast(key.* >> 32);
+        const b: u32 = @truncate(key.*);
+        if (a >= new_index.len or b >= new_index.len) continue;
+        const na = new_index[a];
+        const nb = new_index[b];
+        if (na == std.math.maxInt(u32) or nb == std.math.maxInt(u32)) continue;
+        try new_cuts.put(gpa, pairKey(na, nb), {});
+    }
+
+    var before = try f.clone(gpa);
+    errdefer before.deinit(gpa);
+    var after = try f.without(gpa, remove);
+    const n = sel.len;
+    // Swap in the new frame; roll back if the commit fails.
+    var old = f.*;
+    f.* = after;
+    app.commitEditWithCuts(before, app.cut_bonds) catch |e| {
+        f.* = old;
+        after.deinit(gpa);
+        return e;
+    };
+    // Success: the undo entry now owns `before` and the old cut set.
+    old.deinit(gpa);
+    app.cut_bonds = new_cuts;
+    app.selection.clearRetainingCapacity();
+    app.selected_bond = null;
+    app.scene_dirty = true;
+    app.setStatus("Deleted {d} atom{s} (Ctrl+Z undoes)", .{ n, if (n == 1) "" else "s" });
 }
 
 fn storeEdit(app: *App, index: usize, f: Frame) !void {
@@ -1158,8 +1237,14 @@ fn storeEdit(app: *App, index: usize, f: Frame) !void {
 
 pub fn undo(app: *App) void {
     var u = app.undo_stack.pop() orelse return;
-    defer u.frame.deinit(app.gpa);
+    defer u.deinit(app.gpa);
     const d = &(app.doc orelse return);
+    if (u.cuts) |cs| {
+        app.cut_bonds.deinit(app.gpa);
+        app.cut_bonds = cs;
+        u.cuts = null;
+        app.scene_dirty = true;
+    }
     app.storeEdit(u.index, u.frame) catch return;
     if (d.shown_index == u.index) {
         if (d.shown) |*f| f.deinit(app.gpa);
@@ -1178,12 +1263,20 @@ pub fn revertFrame(app: *App) void {
         var f = kv.value;
         f.deinit(app.gpa);
     }
-    // Drop undo entries for this frame, and force a reload.
+    // Drop undo entries for this frame, and force a reload. If an edit
+    // renumbered atoms, go back to the cut bonds from before the first one.
     var i: usize = 0;
+    var restored_cuts = false;
     while (i < app.undo_stack.items.len) {
         if (app.undo_stack.items[i].index == d.shown_index) {
             var old = app.undo_stack.orderedRemove(i);
-            old.frame.deinit(app.gpa);
+            if (!restored_cuts) if (old.cuts) |cs| {
+                app.cut_bonds.deinit(app.gpa);
+                app.cut_bonds = cs;
+                old.cuts = null;
+                restored_cuts = true;
+            };
+            old.deinit(app.gpa);
         } else i += 1;
     }
     if (d.shown) |*f| f.deinit(app.gpa);
@@ -1194,7 +1287,7 @@ fn clearEdits(app: *App) void {
     var it = app.edits.valueIterator();
     while (it.next()) |f| f.deinit(app.gpa);
     app.edits.clearRetainingCapacity();
-    for (app.undo_stack.items) |*u| u.frame.deinit(app.gpa);
+    for (app.undo_stack.items) |*u| u.deinit(app.gpa);
     app.undo_stack.clearRetainingCapacity();
 }
 
@@ -1278,6 +1371,7 @@ fn menuBar(app: *App) void {
     if (c.igBeginMenu("Edit", true)) {
         if (c.igMenuItem_Bool("Undo geometry edit", "Ctrl+Z", false, app.undo_stack.items.len > 0)) app.undo();
         const edited = if (app.doc) |d| app.edits.contains(d.shown_index) else false;
+        if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.selection.items.len > 0)) app.deleteSelection();
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
         c.igSeparator();
         if (c.igMenuItem_Bool("Cut / restore selected bond", "X", false, app.selected_bond != null or app.selection.items.len == 2)) app.toggleCut();
