@@ -151,6 +151,8 @@ uploaded_atoms: usize = 0,
 uploaded_opaque_bonds: usize = 0,
 uploaded_translucent_bonds: usize = 0,
 uploaded_lines: usize = 0,
+/// Bond to draw highlighted (key as in `App.pairKey`), set before building.
+selected_bond: ?u64 = null,
 
 pub fn init(gpa: Allocator) !Renderer {
     var r: Renderer = .{
@@ -326,12 +328,20 @@ pub fn addStructure(
             },
         }
         var radius_scale = thin;
-        if (cut) |set| if (set.contains((@as(u64, @min(b.a, b.b)) << 32) | @max(b.a, b.b))) {
+        const key = (@as(u64, @min(b.a, b.b)) << 32) | @max(b.a, b.b);
+        if (cut) |set| if (set.contains(key)) {
             const red: [3]f32 = .{ 0.85, 0.15, 0.15 };
             ca = .{ red[0], red[1], red[2], @max(ca[3], 0.6) };
             cb = ca;
             radius_scale = thin * 0.45;
         };
+        if (r.selected_bond == key) {
+            // Selected bond: accent colour, a little thicker, fully opaque.
+            const ac = style.theme.accent();
+            ca = .{ ac[0], ac[1], ac[2], 1 };
+            cb = ca;
+            radius_scale = @max(radius_scale, 0.8) * 1.3;
+        }
         const inst: BondInstance = .{
             .a = positions[b.a],
             .b = positions[b.b],

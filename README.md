@@ -24,7 +24,7 @@ OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
   axis; Alt+middle (or Alt+Shift+left) drag translates. Without a base atom the
   grabbed atom's molecule moves; with several atoms selected, the selection
   moves. Each drag is one undoable edit; Esc cancels.
-- **Cut bonds.** Click a bond and press X to cut it. It stays drawn (thin, red),
+- **Cut bonds.** Double-click a bond (or click it and press X) to cut it. It stays drawn (thin, red),
   but edits and molecule selection treat the two sides as separate, so you can
   move part of a ring or a ligand freely.
 - **Formats:** XYZ / extended XYZ, Gaussian input (`.gjf`/`.com`) and output
@@ -67,7 +67,7 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 
 | Input | Action |
 |---|---|
-| Left click | select / deselect atom; on a bond: select its two atoms; empty space: clear |
+| Left click | select / deselect an atom; on a bond: select just the bond; empty space: clear |
 | Alt + left drag on an atom | rotate its group around the selected base atom (or its molecule about its centre) |
 | Alt + right drag | twist the group about the base→grabbed axis |
 | Alt + middle drag / Alt + Shift + left drag | translate the group |

@@ -15,4 +15,5 @@ something is picked up.
   run`) or `-Doptimize=ReleaseFast`, and whether it's the slider or the
   energy plot.*
 - [x] Double click on bond to toggle being ignored
-  *Double-clicking a bond selects it and toggles its cut (same as X).*
+  *Double-clicking a bond toggles its cut (same as X). Clicking a bond selects
+  only the bond, not its atoms.*

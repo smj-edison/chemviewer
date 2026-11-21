@@ -89,6 +89,9 @@ save_ready: std.atomic.Value(bool) = .init(false),
 /// Selected atoms in click order (indices into the frame). The first four
 /// define the measurement; any number can be copied as XYZ.
 selection: std.ArrayList(u32) = .empty,
+/// A clicked bond (independent of the atom selection): highlighted, shown in
+/// the bar, and the target of X / the cut checkbox.
+selected_bond: ?[2]u32 = null,
 edit_mode: cv.geometry.Mode = .last,
 /// Edited geometries by frame index; they replace the file's frames.
 edits: std.AutoHashMapUnmanaged(usize, Frame) = .empty,
@@ -487,6 +490,7 @@ pub fn fitCamera(app: *App) void {
 fn rebuildScene(app: *App) !void {
     const r = &app.renderer;
     r.clear();
+    r.selected_bond = if (app.selected_bond) |b| pairKey(b[0], b[1]) else null;
     const d = app.doc orelse return r.upload();
     const f = d.shown orelse return r.upload();
     if (app.diff) |df| if (df.overlay and df.result != null) {
@@ -676,8 +680,9 @@ pub fn selected(app: *const App) []const u32 {
 }
 
 pub fn clearSelection(app: *App) void {
-    if (app.selection.items.len == 0) return;
+    if (app.selection.items.len == 0 and app.selected_bond == null) return;
     app.selection.clearRetainingCapacity();
+    app.selected_bond = null;
     app.scene_dirty = true;
 }
 
@@ -706,6 +711,9 @@ fn dropInvalidSelection(app: *App) void {
             app.scene_dirty = true;
         } else i += 1;
     }
+    if (app.selected_bond) |b| if (b[0] >= n or b[1] >= n) {
+        app.selected_bond = null;
+    };
 }
 
 pub fn pairKey(a: u32, b: u32) u64 {
@@ -717,13 +725,20 @@ pub fn isCut(app: *const App, a: u32, b: u32) bool {
 }
 
 /// Cut (or restore) the bond between the two selected atoms.
+/// Cut (or restore) the selected bond, or else the bond between the two
+/// selected atoms.
 pub fn toggleCut(app: *App) void {
     const sel = app.selected();
-    if (sel.len != 2) {
-        app.setStatus("Select a bond (or its two atoms) to cut it", .{});
+    const pair: [2]u32 = if (app.selected_bond) |b| b else if (sel.len == 2) .{ sel[0], sel[1] } else {
+        app.setStatus("Click a bond (or select its two atoms) to cut it", .{});
         return;
-    }
-    const key = pairKey(sel[0], sel[1]);
+    };
+    app.toggleCutPair(pair[0], pair[1]);
+}
+
+/// Cut (or restore) the bond between atoms `a` and `b`.
+pub fn toggleCutPair(app: *App, a: u32, b: u32) void {
+    const key = pairKey(a, b);
     if (app.cut_bonds.remove(key)) {
         app.setStatus("Restored bond", .{});
     } else {
@@ -904,17 +919,23 @@ pub fn atomAt(app: *const App, x: f32, y: f32) ?u32 {
 
 /// A click toggles the atom under the cursor, selects a bond's two atoms,
 /// or clears the selection on empty space.
-/// `clicks` is SDL's click count: a double click on a bond toggles its cut
-/// (the first click already selected it); on an atom it changes nothing more.
+/// `clicks` is SDL's click count. A click on a bond selects just the bond
+/// (atoms unchanged); a double click toggles its cut. A double click on an
+/// atom changes nothing beyond the first click.
 pub fn clickAt(app: *App, x: f32, y: f32, clicks: u8) void {
     const h = app.hitAt(x, y) orelse return app.clearSelection();
     switch (h.target) {
         .atom => |atom| if (clicks < 2) app.toggleSelect(atom),
         .bond => |pair| {
-            app.selection.clearRetainingCapacity();
-            app.selection.appendSlice(app.gpa, &pair) catch return;
+            // Bonds are selected on their own; the atom selection is untouched.
+            const same = if (app.selected_bond) |b| pairKey(b[0], b[1]) == pairKey(pair[0], pair[1]) else false;
+            if (clicks >= 2) {
+                app.selected_bond = pair;
+                app.toggleCut();
+            } else {
+                app.selected_bond = if (same) null else pair;
+            }
             app.scene_dirty = true;
-            if (clicks >= 2) app.toggleCut();
         },
     }
 }
@@ -1274,7 +1295,7 @@ fn menuBar(app: *App) void {
         const edited = if (app.doc) |d| app.edits.contains(d.shown_index) else false;
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
         c.igSeparator();
-        if (c.igMenuItem_Bool("Cut / restore selected bond", "X", false, app.selection.items.len == 2)) app.toggleCut();
+        if (c.igMenuItem_Bool("Cut / restore selected bond", "X", false, app.selected_bond != null or app.selection.items.len == 2)) app.toggleCut();
         if (c.igMenuItem_Bool("Restore all cut bonds", null, false, app.cut_bonds.count() > 0)) app.restoreCuts();
         c.igSeparator();
         if (c.igMenuItem_Bool("Copy as XYZ", "Ctrl+C", false, app.doc != null)) app.copyXyz();
