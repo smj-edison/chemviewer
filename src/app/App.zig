@@ -233,43 +233,48 @@ fn copyXyzInner(app: *App) !void {
     app.setStatus("Copied {d} atom{s} as XYZ", .{ out.len(), if (out.len() == 1) "" else "s" });
 }
 
-/// Offer `bytes` as text on the clipboard.
+/// The most recently copied text. Kept alive until the next copy replaces
+/// it; the last one is reclaimed by the OS at exit.
 ///
-/// On Wayland (and X11) SDL hands the data out lazily, whenever another app
-/// asks for it, so the bytes must stay alive until SDL's cleanup callback
-/// runs. We keep our own copy in a C-allocated block for exactly that long;
-/// it may outlive the App (SDL clears the clipboard during SDL_Quit).
+/// Why not free it in SDL's cleanup callback: on Wayland, SDL serves
+/// clipboard data lazily (when another app pastes), and on the user's
+/// compositor SDL 3.4 cancels its own clipboard data (calling cleanup) right
+/// after taking ownership while still answering paste requests with the
+/// freed pointer, so other apps pasted allocator garbage. Both
+/// SDL_SetClipboardText and a cleanup-freed buffer failed that way
+/// (confirmed with `wl-paste | od -c`).
+var clipboard_blob: ?[]u8 = null;
+
+/// Offer `bytes` as text on the clipboard.
 fn setClipboardText(bytes: []const u8) !void {
-    const Blob = struct {
-        len: usize,
-
-        fn data(b: *@This()) [*]u8 {
-            return @as([*]u8, @ptrCast(b)) + @sizeOf(@This());
-        }
-
+    const S = struct {
         fn provide(userdata: ?*anyopaque, mime_type: [*c]const u8, size: [*c]usize) callconv(.c) ?*const anyopaque {
             _ = mime_type; // every offered type is the same UTF-8 text
-            const b: *@This() = @ptrCast(@alignCast(userdata));
-            size.* = b.len;
-            return b.data();
+            _ = userdata;
+            const blob = clipboard_blob orelse {
+                size.* = 0;
+                return null;
+            };
+            size.* = blob.len;
+            return blob.ptr;
         }
 
         fn cleanup(userdata: ?*anyopaque) callconv(.c) void {
-            const b: *@This() = @ptrCast(@alignCast(userdata));
-            const raw: [*]align(@alignOf(@This())) u8 = @ptrCast(b);
-            std.heap.c_allocator.free(raw[0 .. @sizeOf(@This()) + b.len]);
+            _ = userdata; // see `clipboard_blob`: never free here
         }
     };
-    const raw = try std.heap.c_allocator.alignedAlloc(u8, .of(Blob), @sizeOf(Blob) + bytes.len);
-    const blob: *Blob = @ptrCast(raw.ptr);
-    blob.len = bytes.len;
-    @memcpy(blob.data()[0..bytes.len], bytes);
+    const copy = try std.heap.c_allocator.dupe(u8, bytes);
+    const old = clipboard_blob;
+    clipboard_blob = copy;
     // Same text types SDL_SetClipboardText offers.
     const mime_types = [_][*:0]const u8{ "text/plain;charset=utf-8", "text/plain", "TEXT", "UTF8_STRING", "STRING" };
-    if (!c.SDL_SetClipboardData(Blob.provide, Blob.cleanup, blob, @ptrCast(&mime_types), mime_types.len)) {
-        Blob.cleanup(blob);
+    if (!c.SDL_SetClipboardData(S.provide, S.cleanup, null, @ptrCast(&mime_types), mime_types.len)) {
+        clipboard_blob = old;
+        std.heap.c_allocator.free(copy);
         return error.ClipboardUnavailable;
     }
+    // The new data is offered; the previous text can no longer be requested.
+    if (old) |o| std.heap.c_allocator.free(o);
 }
 
 /// Paste the clipboard (XYZ, bare coordinates, or a Gaussian/ORCA input)

@@ -121,10 +121,13 @@ structure if it would overlap). Ctrl+Shift+V opens them as a new structure.
 Undo therefore snapshots whole frames, since a paste changes the atom count.
 ImGui keyboard navigation is off, and app shortcuts yield only while a text
 field is being edited (`WantTextInput`), so focusing a panel doesn't swallow them.
-On Wayland SDL serves clipboard data lazily, when another app asks for it, so
-the copied text lives in a C-allocated block handed to `SDL_SetClipboardData`
-and is freed by SDL's cleanup callback. A buffer freed right after the call
-pasted as garbage.
+On Wayland SDL serves clipboard data lazily, when another app asks for it.
+On the user's compositor SDL 3.4 also cancels its own clipboard data right
+after taking ownership (calling the cleanup callback) while it keeps serving
+paste requests. So the copied text lives in a C-allocated buffer that is only
+replaced by the next copy, and the cleanup callback deliberately does nothing.
+Freeing on cleanup, or using `SDL_SetClipboardText` (whose internal copy is
+freed the same way), pasted allocator garbage into other apps.
 
 ### D16 — Lasso on Ctrl+drag; Ctrl+A grows the selection
 Left, right and middle drags are taken by the GaussView camera controls, so
