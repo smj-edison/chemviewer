@@ -258,11 +258,15 @@ fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
     _ = c.ImGui_ImplSDL3_ProcessEvent(ev);
     // Shortcuts yield only while a text field is being edited.
     const typing = c.cvImGuiWantTextInput();
+    // Clipboard / select-all keys also belong to any active widget (e.g. a
+    // read-only field the user clicked to copy the energy): ImGui handles
+    // Ctrl+C there, and handling it here too would overwrite its copy.
+    const widget_active = typing or c.igIsAnyItemActive();
     if (ev.type == c.SDL_EVENT_KEY_DOWN and (ev.key.mod & c.SDL_KMOD_CTRL) != 0 and !typing) {
         switch (ev.key.key) {
-            c.SDLK_C => return app.copyXyz(),
-            c.SDLK_V => return app.pasteXyz((ev.key.mod & c.SDL_KMOD_SHIFT) != 0),
-            c.SDLK_A => return app.expandSelection(),
+            c.SDLK_C => if (!widget_active) return app.copyXyz(),
+            c.SDLK_V => if (!widget_active) return app.pasteXyz((ev.key.mod & c.SDL_KMOD_SHIFT) != 0),
+            c.SDLK_A => if (!widget_active) return app.expandSelection(),
             c.SDLK_O => return app.openDialog(),
             c.SDLK_S => return app.saveDialog(),
             c.SDLK_Z => return app.undo(),
