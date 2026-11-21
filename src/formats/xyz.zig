@@ -58,6 +58,46 @@ pub fn parseAll(gpa: Allocator, buf: []const u8) Error![]Frame {
     return frames.toOwnedSlice(gpa);
 }
 
+/// Lenient parse for pasted text: proper (multi-frame) XYZ if possible,
+/// otherwise every line that looks like `Label x y z [...]` as one frame
+/// (e.g. a coordinate block copied out of a Gaussian/ORCA input or a paper).
+pub fn parseLoose(gpa: Allocator, buf: []const u8) Error![]Frame {
+    if (parseAll(gpa, buf)) |frames| {
+        if (frames.len > 0) return frames;
+        gpa.free(frames);
+    } else |e| switch (e) {
+        error.OutOfMemory => return e,
+        error.InvalidXyz => {},
+    }
+    var b: structure.FrameBuilder = .{};
+    defer b.deinit(gpa);
+    var lines = text.Lines.init(buf);
+    while (lines.next()) |l| {
+        var it = text.tokens(l);
+        const label = it.next() orelse continue;
+        const z = elements.parseLabel(label) orelse continue;
+        // Gaussian freeze flags ("C 0 x y z") have 4 numbers after the label.
+        var nums: [4]f64 = undefined;
+        var n: usize = 0;
+        while (it.next()) |tok| {
+            if (n == nums.len) break;
+            nums[n] = text.parseFloat(tok) catch break;
+            n += 1;
+        }
+        const xyz = switch (n) {
+            3 => nums[0..3],
+            4 => nums[1..4],
+            else => continue,
+        };
+        try b.append(gpa, z, .{ @floatCast(xyz[0]), @floatCast(xyz[1]), @floatCast(xyz[2]) });
+    }
+    if (b.len() == 0) return error.InvalidXyz;
+    const frames = try gpa.alloc(Frame, 1);
+    errdefer gpa.free(frames);
+    frames[0] = try b.finish(gpa);
+    return frames;
+}
+
 /// Write one frame as XYZ (extended-XYZ Lattice/energy keys when present).
 pub fn write(w: *Io.Writer, frame: Frame) Io.Writer.Error!void {
     try w.print("{d}\n", .{frame.len()});
@@ -254,6 +294,26 @@ test "write then read back" {
     try std.testing.expectApproxEqAbs(@as(f32, -1.25), frames[0].positions[1][0], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f64, -76.5), frames[0].energy.?, 1e-9);
     try std.testing.expectApproxEqAbs(@as(f32, 10), frames[0].cell.?[1][1], 1e-6);
+}
+
+test "loose parse of bare coordinates" {
+    const gpa = std.testing.allocator;
+    const src =
+        \\ C                 -0.49367557    0.04662441   -0.28549818
+        \\ some prose line that should be ignored
+        \\ H   0   0.5 0.6 0.7
+        \\Au 2.36 -0.27 -0.0076
+        \\
+    ;
+    const frames = try parseLoose(gpa, src);
+    defer {
+        for (frames) |*f| f.deinit(gpa);
+        gpa.free(frames);
+    }
+    try std.testing.expectEqual(@as(usize, 1), frames.len);
+    try std.testing.expectEqualSlices(u8, &.{ 6, 1, 79 }, frames[0].numbers);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.6), frames[0].positions[1][1], 1e-6);
+    try std.testing.expectError(error.InvalidXyz, parseLoose(gpa, "hello world\n"));
 }
 
 test "orca trajectory comment" {

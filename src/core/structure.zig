@@ -41,6 +41,18 @@ pub const Frame = struct {
         return r;
     }
 
+    /// A new frame with just the given atoms (in the given order). The cell
+    /// is kept, the energy is not (it belongs to the whole frame).
+    pub fn subset(f: Frame, gpa: Allocator, atoms: []const u32) !Frame {
+        var r = try Frame.init(gpa, atoms.len);
+        for (atoms, 0..) |a, i| {
+            r.positions[i] = f.positions[a];
+            r.numbers[i] = f.numbers[a];
+        }
+        r.cell = f.cell;
+        return r;
+    }
+
     pub fn len(f: Frame) usize {
         return f.positions.len;
     }
@@ -103,3 +115,17 @@ pub const FrameBuilder = struct {
         b.numbers.clearRetainingCapacity();
     }
 };
+
+test "subset" {
+    const gpa = std.testing.allocator;
+    var f = try Frame.init(gpa, 3);
+    defer f.deinit(gpa);
+    for (f.positions, 0..) |*p, i| p.* = @splat(@floatFromInt(i));
+    @memcpy(f.numbers, &[_]u8{ 1, 6, 8 });
+    f.energy = -1;
+    var s = try f.subset(gpa, &.{ 2, 0 });
+    defer s.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, &.{ 8, 1 }, s.numbers);
+    try std.testing.expectEqual(@as(f32, 2), s.positions[0][0]);
+    try std.testing.expectEqual(@as(?f64, null), s.energy);
+}

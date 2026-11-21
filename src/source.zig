@@ -106,6 +106,26 @@ pub fn detect(path: []const u8, head: []const u8) ?Format {
     return null;
 }
 
+/// Open structures from text (e.g. the clipboard): Gaussian or ORCA input if
+/// it looks like one, otherwise lenient XYZ (bare coordinate lines accepted).
+pub fn openBytes(gpa: Allocator, bytes: []const u8) !Opened {
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    const looks_orca = std.mem.indexOf(u8, trimmed, "* xyz") != null or std.mem.indexOf(u8, trimmed, "*xyz") != null;
+    const looks_gaussian = trimmed.len > 0 and (trimmed[0] == '%' or trimmed[0] == '#');
+    if (looks_orca) {
+        switch (try orca.parseInput(gpa, trimmed)) {
+            .frame => |f| return .{ .format = .orca_input, .source = .{ .memory = try single(gpa, f) } },
+            .xyzfile => return error.XyzFileReferenceNotSupported,
+        }
+    }
+    if (looks_gaussian) {
+        if (gaussian.parseInput(gpa, trimmed)) |f| {
+            return .{ .format = .gaussian_input, .source = .{ .memory = try single(gpa, f) } };
+        } else |_| {}
+    }
+    return .{ .format = .xyz, .source = .{ .memory = try xyz.parseLoose(gpa, trimmed) } };
+}
+
 pub fn open(io: Io, gpa: Allocator, dir: Io.Dir, path: []const u8) !Opened {
     const file = try dir.openFile(io, path, .{});
     var file_owned = true;
@@ -170,6 +190,19 @@ fn single(gpa: Allocator, f: Frame) ![]Frame {
     };
     out[0] = f;
     return out;
+}
+
+test "open pasted text" {
+    const gpa = std.testing.allocator;
+    var a = try openBytes(gpa, "2\nH2\nH 0 0 0\nH 0 0 0.74\n");
+    defer a.source.deinit(std.testing.io, gpa);
+    try std.testing.expectEqual(@as(usize, 1), a.source.frameCount());
+    var b = try openBytes(gpa, "%chk=x\n# hf\n\nt\n\n0 1\nO 0 0 0\nH 0 0 1\n\n");
+    defer b.source.deinit(std.testing.io, gpa);
+    try std.testing.expectEqual(Format.gaussian_input, b.format);
+    var o = try openBytes(gpa, "! HF\n* xyz 0 1\nO 0 0 0\n*\n");
+    defer o.source.deinit(std.testing.io, gpa);
+    try std.testing.expectEqual(Format.orca_input, o.format);
 }
 
 test "detect formats" {
