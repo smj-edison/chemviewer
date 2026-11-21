@@ -49,7 +49,7 @@ SDL_VIDEO_DRIVER=offscreen zig-out/bin/chemviewer traj.traj \
     --frame 120 --diff-ref 1 --screenshot out.png --size 1400x900
 ```
 
-Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`,
+Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`, `--atom-numbers`,
 `--ui-scale X`.
 
 Scripted edits (atom numbers are 1-based; values in Å or degrees):
@@ -88,7 +88,8 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Ctrl+C | copy selection (or whole frame) as XYZ |
 | Ctrl+V | paste XYZ / coordinates as a fragment into the current structure |
 | Ctrl+Shift+V | paste as a new structure |
-| X | cut / restore the selected bond (ignored when moving groups) |
+| X / double-click a bond | cut / restore the bond (ignored when moving groups) |
+| N | show / hide atom numbers |
 | Ctrl+Z | undo geometry edit |
 | Ctrl+S | save current frame (with edits) as XYZ |
 | Ctrl+O | open file (or drop a file on the window) |

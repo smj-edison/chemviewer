@@ -196,6 +196,45 @@ pub fn overlay(app: *App) void {
     }
 }
 
+/// 1-based atom numbers drawn over every atom (View > Atom numbers, N).
+/// Drawn back to front so nearer labels sit on top; skipped for huge frames.
+pub fn atomNumbers(app: *App) void {
+    const pos = app.displayedPositions() orelse return;
+    const max_labels = 5000;
+    if (pos.len > max_labels) return;
+    const gpa = app.gpa;
+    const proj = app.screenProjector();
+    const Label = struct { i: u32, x: f32, y: f32, depth: f32 };
+    var labels: std.ArrayList(Label) = .empty;
+    defer labels.deinit(gpa);
+    const eye = app.camera.ray(0, 0, 1).origin;
+    for (pos, 0..) |p, i| {
+        const q = proj.toScreen(p) orelse continue;
+        if (q.x < 0 or q.y < 0 or q.x > proj.w or q.y > proj.h) continue;
+        labels.append(gpa, .{ .i = @intCast(i), .x = q.x, .y = q.y, .depth = cv.math.length(p - eye) }) catch return;
+    }
+    std.mem.sort(Label, labels.items, {}, struct {
+        fn farFirst(_: void, a: Label, b: Label) bool {
+            return a.depth > b.depth;
+        }
+    }.farFirst);
+    const dl = c.igGetBackgroundDrawList_Nil();
+    const light = app.style.theme == .light;
+    const fg = if (light) ui.rgba(0.05, 0.05, 0.08, 1) else ui.rgba(1, 1, 1, 1);
+    const halo = if (light) ui.rgba(1, 1, 1, 0.85) else ui.rgba(0, 0, 0, 0.85);
+    for (labels.items) |l| {
+        var buf: [12]u8 = undefined;
+        const t = ui.printZ(&buf, "{d}", .{l.i + 1}) catch continue;
+        const size = c.igCalcTextSize(t.ptr, null, false, -1);
+        const at = ui.v2(l.x - size.x / 2, l.y - size.y / 2);
+        // A 1-px halo keeps numbers readable on any atom colour.
+        for ([_][2]f32{ .{ -1, 0 }, .{ 1, 0 }, .{ 0, -1 }, .{ 0, 1 } }) |o| {
+            c.ImDrawList_AddText_Vec2(dl, ui.v2(at.x + o[0], at.y + o[1]), halo, t.ptr, null);
+        }
+        c.ImDrawList_AddText_Vec2(dl, at, fg, t.ptr, null);
+    }
+}
+
 fn dashedLine(dl: *c.ImDrawList, a: c.ImVec2_c, b: c.ImVec2_c, col: u32, thickness: f32) void {
     const dx = b.x - a.x;
     const dy = b.y - a.y;

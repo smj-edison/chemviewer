@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, GL context, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--atom-numbers]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
 //!                   [--cut I,J]... [--add FRAGMENT_FILE]
 //!
@@ -23,6 +23,7 @@ const Args = struct {
     ui_scale: ?f32 = null,
     no_ui: bool = false,
     dark: bool = false,
+    atom_numbers: bool = false,
     /// Startup script: select atoms (1-based), set their distance (Å) or
     /// angle/dihedral (degrees), save the frame as XYZ.
     select: [4]u32 = undefined,
@@ -88,6 +89,8 @@ fn parseArgs(argv: []const []const u8) !Args {
                 a.width = try std.fmt.parseInt(c_int, it.next() orelse return error.BadSize, 10);
                 a.height = try std.fmt.parseInt(c_int, it.next() orelse return error.BadSize, 10);
             }
+        } else if (eql(u8, arg, "--atom-numbers")) {
+            a.atom_numbers = true;
         } else if (eql(u8, arg, "--dark")) {
             a.dark = true;
         } else if (eql(u8, arg, "--no-ui")) {
@@ -117,7 +120,7 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark]
+            \\                  [--ui-scale X] [--no-ui] [--dark] [--atom-numbers]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\                  [--cut I,J]... [--add FRAGMENT_FILE]
             \\
@@ -173,6 +176,7 @@ pub fn main(init: std.process.Init) !void {
     defer app.deinit();
     if (args.ui_scale) |u| app.ui_scale = u;
     if (args.dark) app.style.theme = .dark;
+    app.show_atom_numbers = args.atom_numbers;
     if (args.file) |f| app.openFile(f);
 
     var startup: Startup = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };

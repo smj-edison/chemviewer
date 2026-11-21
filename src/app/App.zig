@@ -69,6 +69,7 @@ bonds_dirty: bool = false,
 scene_radius: f32 = 10,
 show_inspector: bool = true,
 show_diff: bool = false,
+show_atom_numbers: bool = false,
 /// User multiplier on top of the monitor's content scale (View menu).
 ui_scale: f32 = 1.0,
 /// Font size the panel layout was last placed for; when it changes the
@@ -583,7 +584,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             app.lasso_active = false;
             // A click (not a drag) picks an atom or bond.
             if (pr.moved < 5) {
-                if (!want_mouse) app.clickAt(ev.button.x, ev.button.y);
+                if (!want_mouse) app.clickAt(ev.button.x, ev.button.y, ev.button.clicks);
             } else if (was_lasso) {
                 app.applyLasso();
             }
@@ -626,6 +627,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             switch (ev.key.key) {
                 c.SDLK_ESCAPE => if (app.drag != null) app.endDrag(false) else app.clearSelection(),
                 c.SDLK_X => app.toggleCut(),
+                c.SDLK_N => app.show_atom_numbers = !app.show_atom_numbers,
                 c.SDLK_SPACE => app.togglePlay(),
                 c.SDLK_RIGHT, c.SDLK_PERIOD => app.setFrame(d.current + 1),
                 c.SDLK_LEFT, c.SDLK_COMMA => app.setFrame(d.current -| 1),
@@ -902,14 +904,17 @@ pub fn atomAt(app: *const App, x: f32, y: f32) ?u32 {
 
 /// A click toggles the atom under the cursor, selects a bond's two atoms,
 /// or clears the selection on empty space.
-pub fn clickAt(app: *App, x: f32, y: f32) void {
+/// `clicks` is SDL's click count: a double click on a bond toggles its cut
+/// (the first click already selected it); on an atom it changes nothing more.
+pub fn clickAt(app: *App, x: f32, y: f32, clicks: u8) void {
     const h = app.hitAt(x, y) orelse return app.clearSelection();
     switch (h.target) {
-        .atom => |atom| app.toggleSelect(atom),
+        .atom => |atom| if (clicks < 2) app.toggleSelect(atom),
         .bond => |pair| {
             app.selection.clearRetainingCapacity();
             app.selection.appendSlice(app.gpa, &pair) catch return;
             app.scene_dirty = true;
+            if (clicks >= 2) app.toggleCut();
         },
     }
 }
@@ -1239,6 +1244,7 @@ fn layoutCond(app: *App) c_int {
 
 pub fn drawUi(app: *App) void {
     defer app.layout_font_size = c.igGetFontSize();
+    if (app.show_atom_numbers) measure.atomNumbers(app);
     measure.overlay(app);
     app.drawLasso();
     app.menuBar();
@@ -1283,6 +1289,7 @@ fn menuBar(app: *App) void {
         _ = c.igMenuItem_BoolPtr("Inspector", null, &app.show_inspector, true);
         _ = c.igMenuItem_BoolPtr("Diff", null, &app.show_diff, true);
         if (c.igMenuItem_BoolPtr("Unit cell", null, &app.style.show_cell, true)) app.scene_dirty = true;
+        _ = c.igMenuItem_BoolPtr("Atom numbers", "N", &app.show_atom_numbers, true);
         if (c.igMenuItem_Bool("Fit to view", "F", false, app.doc != null)) app.fitCamera();
         c.igSeparator();
         c.igSetNextItemWidth(c.igGetFontSize() * 8);
