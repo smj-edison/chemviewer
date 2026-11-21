@@ -33,6 +33,22 @@ pub fn textWrapped(comptime fmt: []const u8, args: anytype) void {
     c.igTextWrapped("%s", fmtZ(fmt, args).ptr);
 }
 
+/// Text that looks like a label but can be selected and copied (Ctrl+C):
+/// a borderless read-only input field spanning the rest of the line.
+pub fn selectableText(id: [:0]const u8, comptime fmt: []const u8, args: anytype) void {
+    var buf: [1024]u8 = undefined;
+    const s = printZ(&buf, fmt, args) catch blk: {
+        buf[buf.len - 1] = 0;
+        break :blk buf[0 .. buf.len - 1 :0];
+    };
+    c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, 0);
+    c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(0, c.igGetStyle().*.FramePadding.y));
+    c.igSetNextItemWidth(-1);
+    _ = c.igInputText(id.ptr, s.ptr, s.len + 1, c.ImGuiInputTextFlags_ReadOnly | c.ImGuiInputTextFlags_AutoSelectAll, null, null);
+    c.igPopStyleVar(1);
+    c.igPopStyleColor(1);
+}
+
 pub fn tooltip(s: [:0]const u8) void {
     if (c.igBeginItemTooltip()) {
         c.igPushTextWrapPos(c.igGetFontSize() * 25);

@@ -92,8 +92,10 @@ the dark theme remain options.
 
 ### D14 — Editing internal coordinates moves groups
 Setting a distance, angle or dihedral moves the moving atom's whole group:
-everything attached to it once the mover–pivot bond is cut (bonds with
-character ≥ 0.6). If the two atoms aren't bonded, the mover's whole molecule
+everything attached to it once the mover–pivot bond is cut. Connectivity is
+exactly the set of *drawn* bonds (`Renderer.isDrawn`: "Hide below" and
+"Cut-off"), so what moves together is what looks connected. "Hide below"
+defaults to 0.25 so near-invisible contacts don't tie groups together. If the two atoms aren't bonded, the mover's whole molecule
 moves, so pulling two fragments apart is one edit. If the group can't be split
 off (rings, or non-bonded atoms in the same molecule), only the atom moves.
 "Both sides" applies half the change to each side. Dihedrals rotate about the
@@ -105,3 +107,13 @@ The frame's energy is dropped, since it no longer describes the geometry. Undo
 restores positions, and edited frames can be saved as XYZ (Ctrl+S). The same
 path can be scripted from the CLI (`--select`, `--set`, `--save`), which is how
 it's verified headlessly.
+
+### D15 — XYZ is the clipboard format
+Ctrl+C writes the selection (or the whole frame) as XYZ. The comment line
+holds `key=value` provenance (`source=`, `frame=`, `atoms=` as 1-based ranges,
+`frame_energy=` for partial copies, `edited=T`). The `energy=` key is written
+only for whole frames, so it never misdescribes a fragment. Ctrl+V accepts
+XYZ, bare `El x y z` lines (optionally with Gaussian freeze flags), or
+Gaussian/ORCA inputs, and opens them as a new in-memory structure.
+ImGui keyboard navigation is off, and app shortcuts yield only while a text
+field is being edited (`WantTextInput`), so focusing a panel doesn't swallow them.

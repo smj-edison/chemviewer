@@ -7,4 +7,5 @@
 void cvImGuiCreateContext(void);
 void cvImGuiDestroyContext(void);
 bool cvImGuiWantCaptureMouse(void);
-bool cvImGuiWantCaptureKeyboard(void);
+// True while a text field is being edited: app shortcuts should yield.
+bool cvImGuiWantTextInput(void);

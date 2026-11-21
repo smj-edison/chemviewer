@@ -10,10 +10,13 @@ OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
   Large trajectories are streamed from disk with background prefetch.
 - **Diffing.** Superimpose the current frame onto a reference frame
   (Horn/Kabsch), with a red/green overlay, RMSD and max deviation.
-- **Measure and edit.** Click up to four atoms to get a distance, angle or
-  dihedral in the bottom bar. Copy it, or type a new value (degrees or
-  radians for angles): the attached group moves with it, Chemcraft-style.
-  Edits are per frame, undoable, and can be saved as XYZ.
+- **Measure and edit.** Click two to four atoms to get a distance, angle or
+  dihedral in the bottom bar. Type a new value (degrees or radians for
+  angles) and the attached group moves with it, Chemcraft-style. Edits are per
+  frame, undoable, and can be saved as XYZ.
+- **XYZ clipboard.** Ctrl+C copies the selected atoms (or the whole frame) as
+  XYZ, with the source in the comment line. Ctrl+V opens XYZ, bare
+  `El x y z` lines, or a Gaussian/ORCA input from the clipboard.
 - **Formats:** XYZ / extended XYZ, Gaussian input (`.gjf`/`.com`) and output
   (`.log`), ORCA input (`.inp`) and output (`.out`), ASE trajectories (`.traj`).
 
@@ -52,7 +55,8 @@ zig-out/bin/chemviewer mol.xyz --select 3,1,2,6 --set 75 --screenshot dih.png
 
 | Input | Action |
 |---|---|
-| Left click | select / deselect atom (up to 4); click empty space to clear |
+| Left click | select / deselect atom; click empty space to clear |
+| Double click | select the atom's whole molecule |
 | Left drag | rotate |
 | Right drag ← → | rotate about the viewing axis |
 | Right drag ↑ ↓ | zoom (up = closer) |
@@ -64,6 +68,9 @@ zig-out/bin/chemviewer mol.xyz --select 3,1,2,6 --set 75 --screenshot dih.png
 | Home / End | first / last frame |
 | F | fit to view |
 | Esc | clear selection |
+| Ctrl+A | select all atoms |
+| Ctrl+C | copy selection (or whole frame) as XYZ |
+| Ctrl+V | paste XYZ / coordinates as a new structure |
 | Ctrl+Z | undo geometry edit |
 | Ctrl+S | save current frame (with edits) as XYZ |
 | Ctrl+O | open file (or drop a file on the window) |

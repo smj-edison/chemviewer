@@ -6,9 +6,10 @@ void cvImGuiCreateContext(void) {
     igCreateContext(NULL);
     ImGuiIO *io = igGetIO_Nil();
     io->IniFilename = NULL; // settings persistence will go through std.Io
-    io->ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // No keyboard navigation: it captures the keyboard whenever a panel has
+    // focus, which would swallow the viewer's shortcuts (Space, arrows, Ctrl+C).
 }
 
 void cvImGuiDestroyContext(void) { igDestroyContext(NULL); }
 bool cvImGuiWantCaptureMouse(void) { return igGetIO_Nil()->WantCaptureMouse; }
-bool cvImGuiWantCaptureKeyboard(void) { return igGetIO_Nil()->WantCaptureKeyboard; }
+bool cvImGuiWantTextInput(void) { return igGetIO_Nil()->WantTextInput; }

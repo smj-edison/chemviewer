@@ -46,16 +46,6 @@ fn nudge(id: [:0]const u8, step: f64) ?f64 {
     return out;
 }
 
-fn copyButton(comptime fmt: []const u8, value: f64) void {
-    c.igSameLine(0, -1);
-    if (c.igSmallButton("Copy")) {
-        var buf: [64]u8 = undefined;
-        const s = ui.printZ(&buf, fmt, .{value}) catch return;
-        _ = c.SDL_SetClipboardText(s.ptr);
-    }
-    ui.tooltip("Copy the value to the clipboard");
-}
-
 fn modeSelector(app: *App, last_label: []const u8) void {
     c.igSameLine(0, c.igGetFontSize() * 1.5);
     c.igAlignTextToFramePadding();
@@ -68,7 +58,7 @@ fn modeSelector(app: *App, last_label: []const u8) void {
     const lbl = ui.printZ(&buf, "{s} side", .{last_label}) catch "last side";
     _ = c.igRadioButton_IntPtr(lbl.ptr, &mode, @backingInt(geom.Mode.last));
     app.edit_mode = @fromBackingInt(@intCast(mode));
-    ui.tooltip("Atoms bonded to the moved atom move with it. Inside rings only the atom itself moves.");
+    ui.tooltip("Everything bonded to the moved atom, through the bonds that are drawn, moves with it (adjust with \"Hide below\" / \"Cut-off\"). Inside rings only the atom itself moves.");
 }
 
 /// One row: what is selected and its measurement, editable.
@@ -87,7 +77,15 @@ pub fn bar(app: *App) void {
     const fs = c.igGetFontSize();
     c.igAlignTextToFramePadding();
     if (sel.len == 0) {
-        ui.textDisabled("Click atoms to measure: 2 = distance, 3 = angle, 4 = dihedral. Esc clears.", .{});
+        ui.textDisabled("Click atoms to select (double-click: whole molecule, Ctrl+A: all). 2 = distance, 3 = angle, 4 = dihedral. Ctrl+C copies as XYZ.", .{});
+        return;
+    }
+    if (sel.len > 4) {
+        ui.text("{d} atoms selected", .{sel.len});
+        c.igSameLine(0, fs);
+        ui.textDisabled("Ctrl+C copies them as XYZ", .{});
+        c.igSameLine(0, fs * 1.5);
+        if (c.igSmallButton("Clear")) app.clearSelection();
         return;
     }
     var lb: [128]u8 = undefined;
@@ -106,7 +104,6 @@ pub fn bar(app: *App) void {
             c.igSameLine(0, 4);
             ui.text("Å", .{});
             if (nudge("dist", 0.01)) |dv| app.applyEdit(.{ .distance = dist + dv });
-            copyButton("{d:.5}", dist);
             if (app.bondCharacter(sel[0], sel[1])) |ch| {
                 c.igSameLine(0, fs);
                 ui.textDisabled("bond character {d:.2}", .{ch});
@@ -153,7 +150,6 @@ fn angleFields(app: *App, comptime id: []const u8, rad: f64, kind: AngleKind) vo
     c.igSameLine(0, 4);
     ui.text("°", .{});
     if (nudge(id ++ "n", 1)) |dv| submit(app, kind, std.math.degreesToRadians(deg + dv));
-    copyButton("{d:.3}", deg);
     c.igSameLine(0, fs);
     if (valueField("##" ++ id ++ "rad", rad, "%.6f", fs * 6.5)) |v| submit(app, kind, v);
     c.igSameLine(0, 4);
@@ -164,7 +160,8 @@ fn angleFields(app: *App, comptime id: []const u8, rad: f64, kind: AngleKind) vo
 /// 3D view (under the UI windows).
 pub fn overlay(app: *App) void {
     const sel = app.selected();
-    if (sel.len == 0) return;
+    // Rings come from the renderer; numbers and the path only make sense for measurements.
+    if (sel.len == 0 or sel.len > 4) return;
     const pos = app.displayedPositions() orelse return;
     const proj = app.screenProjector();
     const dl = c.igGetBackgroundDrawList_Nil();

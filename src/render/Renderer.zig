@@ -85,8 +85,9 @@ pub const Style = struct {
     atom_scale: f32 = 1.0,
     bond_radius: f32 = 0.11,
     bond_coloring: BondColoring = .gradient,
-    /// Bonds with a character below this are not drawn.
-    min_character: f32 = 0.0,
+    /// Bonds with a character below this are not drawn (and don't connect
+    /// groups when editing geometry).
+    min_character: f32 = 0.25,
     /// How strongly bond character snaps toward whole bond orders before
     /// colouring (0 = linear, 1 = flat plateaus). See `cv.color.snap`.
     snap: f32 = 0.7,
@@ -256,6 +257,12 @@ fn tinted(rgb: [3]f32, tint: ?Tint) [3]f32 {
     return out;
 }
 
+/// Whether a bond of this character is drawn with this style. Also defines
+/// connectivity for selection and geometry edits.
+pub fn isDrawn(style: Style, character: f32) bool {
+    return character >= style.min_character and cv.color.snap(character, style.snap) >= 0.02;
+}
+
 /// How much outline a bond gets for its (snapped) character: none for
 /// vanishing contacts, easing in so it is fully there by single-bond
 /// character. Smooth, so forming/breaking bonds don't pop an outline on.
@@ -293,8 +300,7 @@ pub fn addStructure(
         });
     }
     for (bonds) |b| {
-        if (b.character < style.min_character) continue;
-        if (cv.color.snap(b.character, style.snap) < 0.02) continue; // invisible anyway
+        if (!isDrawn(style, b.character)) continue;
         // Snapped character drives colour, opacity and thinning alike.
         const ch = cv.color.snap(b.character, style.snap);
         // Below single-bond character, thin the bond out as it fades.

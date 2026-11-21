@@ -67,7 +67,6 @@ bonds_dirty: bool = false,
 scene_radius: f32 = 10,
 show_inspector: bool = true,
 show_diff: bool = false,
-show_demo: bool = false,
 /// User multiplier on top of the monitor's content scale (View menu).
 ui_scale: f32 = 1.0,
 /// Font size the panel layout was last placed for; when it changes the
@@ -84,9 +83,9 @@ dialog_ready: std.atomic.Value(bool) = .init(false),
 save_path: [4096]u8 = undefined,
 save_ready: std.atomic.Value(bool) = .init(false),
 
-/// Selected atoms in click order (indices into the frame), up to 4.
-selection: [4]u32 = undefined,
-sel_len: usize = 0,
+/// Selected atoms in click order (indices into the frame). The first four
+/// define the measurement; any number can be copied as XYZ.
+selection: std.ArrayList(u32) = .empty,
 edit_mode: cv.geometry.Mode = .last,
 /// Edited geometries by frame index; they replace the file's frames.
 edits: std.AutoHashMapUnmanaged(usize, Frame) = .empty,
@@ -97,8 +96,6 @@ press: ?struct { moved: f32 } = null,
 /// Edits are undone by restoring the positions of the edited frame.
 const Undo = struct { index: usize, positions: []Vec3 };
 
-/// Bonds at least this strong count as connections when moving groups.
-const group_min_character = 0.6;
 const max_undo = 200;
 
 pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window) !App {
@@ -109,6 +106,7 @@ pub fn deinit(app: *App) void {
     app.clearEdits();
     app.edits.deinit(app.gpa);
     app.undo_stack.deinit(app.gpa);
+    app.selection.deinit(app.gpa);
     app.clearDiff();
     app.closeDocument();
     app.renderer.deinit();
@@ -146,13 +144,19 @@ pub fn openFile(app: *App, path: []const u8) void {
 }
 
 fn openFileInner(app: *App, path: []const u8) !void {
+    var opened = try cv.source.open(app.io, app.gpa, .cwd(), path);
+    errdefer opened.source.deinit(app.io, app.gpa);
+    try app.install(opened, path);
+}
+
+/// Make `opened` the current document (takes ownership of its source).
+/// `path` is used for display and save suggestions.
+fn install(app: *App, opened: cv.source.Opened, path: []const u8) !void {
     const gpa = app.gpa;
+    if (opened.source.frameCount() == 0) return error.NoFrames;
     const src = try gpa.create(cv.source.Source);
     errdefer gpa.destroy(src);
-    const opened = try cv.source.open(app.io, gpa, .cwd(), path);
     src.* = opened.source;
-    errdefer src.deinit(app.io, gpa);
-    if (src.frameCount() == 0) return error.NoFrames;
 
     const stream = try gpa.create(cv.stream.FrameStream);
     errdefer gpa.destroy(stream);
@@ -174,6 +178,66 @@ fn openFileInner(app: *App, path: []const u8) !void {
     var title_buf: [512]u8 = undefined;
     const title = ui.printZ(&title_buf, "chemviewer — {s}", .{std.fs.path.basename(path)}) catch "chemviewer";
     _ = c.SDL_SetWindowTitle(app.window, title.ptr);
+}
+
+// ------------------------------------------------------------ clipboard
+
+/// Copy the selected atoms (or the whole frame if nothing is selected) to
+/// the clipboard as XYZ, with provenance in the comment line.
+pub fn copyXyz(app: *App) void {
+    app.copyXyzInner() catch |e| app.setStatus("Copy failed: {t}", .{e});
+}
+
+fn copyXyzInner(app: *App) !void {
+    const gpa = app.gpa;
+    const d = app.doc orelse return;
+    const f = d.shown orelse return;
+    const sel = app.selected();
+    const whole = sel.len == 0 or sel.len == f.len();
+
+    var comment: std.Io.Writer.Allocating = .init(gpa);
+    defer comment.deinit();
+    const cw = &comment.writer;
+    try cw.print("chemviewer source=\"{s}\" frame={d}/{d}", .{ std.fs.path.basename(d.path), d.shown_index + 1, d.frameCount() });
+    if (!whole) {
+        try cw.writeAll(" atoms=\"");
+        try cv.formats.xyz.writeAtomRanges(cw, sel);
+        try cw.writeAll("\"");
+        if (f.energy) |e| try cw.print(" frame_energy={d}", .{e});
+    }
+    if (app.edits.contains(d.shown_index)) try cw.writeAll(" edited=T");
+
+    var out = if (whole) try f.clone(gpa) else try f.subset(gpa, sel);
+    defer out.deinit(gpa);
+    if (out.comment.len > 0) gpa.free(out.comment);
+    out.comment = try gpa.dupe(u8, comment.written());
+
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    defer text.deinit();
+    try cv.formats.xyz.write(&text.writer, out);
+    try text.writer.writeByte(0);
+    const z = text.written();
+    if (!c.SDL_SetClipboardText(@ptrCast(z.ptr))) return error.ClipboardUnavailable;
+    app.setStatus("Copied {d} atom{s} as XYZ", .{ out.len(), if (out.len() == 1) "" else "s" });
+}
+
+/// Open the clipboard's text (XYZ, bare coordinates, or a Gaussian/ORCA
+/// input) as a new structure.
+pub fn pasteXyz(app: *App) void {
+    app.pasteXyzInner() catch |e| app.setStatus("Nothing pasteable on the clipboard ({t})", .{e});
+}
+
+fn pasteXyzInner(app: *App) !void {
+    if (!c.SDL_HasClipboardText()) return error.Empty;
+    const raw = c.SDL_GetClipboardText() orelse return error.Empty;
+    defer c.SDL_free(raw);
+    const text = std.mem.span(raw);
+    var opened = try cv.source.openBytes(app.gpa, text);
+    errdefer opened.source.deinit(app.io, app.gpa);
+    try app.install(opened, "clipboard.xyz");
+    app.setStatus("Pasted {d} atom{s} from the clipboard", .{
+        opened.source.memory[0].len(), if (opened.source.memory[0].len() == 1) "" else "s",
+    });
 }
 
 pub fn setFrame(app: *App, index: usize) void {
@@ -367,7 +431,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             const pr = app.press orelse return;
             app.press = null;
             // A click (not a rotate-drag) picks an atom.
-            if (pr.moved < 5 and !want_mouse) app.pickAt(ev.button.x, ev.button.y);
+            if (pr.moved < 5 and !want_mouse) app.clickAt(ev.button.x, ev.button.y, ev.button.clicks);
         },
         c.SDL_EVENT_MOUSE_MOTION => {
             if (app.press) |*pr| pr.moved += @abs(ev.motion.xrel) + @abs(ev.motion.yrel);
@@ -441,28 +505,59 @@ fn dialogCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filte
 // ------------------------------------------------------------ selection
 
 pub fn selected(app: *const App) []const u32 {
-    return app.selection[0..app.sel_len];
+    return app.selection.items;
 }
 
 pub fn clearSelection(app: *App) void {
-    if (app.sel_len == 0) return;
-    app.sel_len = 0;
+    if (app.selection.items.len == 0) return;
+    app.selection.clearRetainingCapacity();
     app.scene_dirty = true;
 }
 
-/// Click on an atom: add it to the selection, or remove it if already
-/// selected. A fifth atom starts a new selection.
+fn isSelected(app: *const App, atom: u32) ?usize {
+    return std.mem.indexOfScalar(u32, app.selection.items, atom);
+}
+
+/// Click on an atom: add it to the selection, or remove it if already selected.
 pub fn toggleSelect(app: *App, atom: u32) void {
-    for (app.selected(), 0..) |s, k| if (s == atom) {
-        std.mem.copyForwards(u32, app.selection[k .. app.sel_len - 1], app.selection[k + 1 .. app.sel_len]);
-        app.sel_len -= 1;
-        app.scene_dirty = true;
-        return;
-    };
-    if (app.sel_len == app.selection.len) app.sel_len = 0;
-    app.selection[app.sel_len] = atom;
-    app.sel_len += 1;
+    if (app.isSelected(atom)) |k| {
+        _ = app.selection.orderedRemove(k);
+    } else {
+        app.selection.append(app.gpa, atom) catch return;
+    }
     app.scene_dirty = true;
+}
+
+pub fn selectAll(app: *App) void {
+    const d = app.doc orelse return;
+    const f = d.shown orelse return;
+    app.selection.clearRetainingCapacity();
+    app.selection.ensureTotalCapacity(app.gpa, f.len()) catch return;
+    for (0..f.len()) |i| app.selection.appendAssumeCapacity(@intCast(i));
+    app.scene_dirty = true;
+}
+
+/// Add every atom connected to `atom` through drawn bonds (its molecule).
+pub fn selectFragment(app: *App, atom: u32) void {
+    const d = app.doc orelse return;
+    var graph = app.drawnGraph() catch return;
+    defer graph.deinit(app.gpa);
+    const group = (graph.side(app.gpa, atom, .{ atom, atom }, &.{}) catch return) orelse return;
+    defer app.gpa.free(group);
+    _ = d;
+    for (group) |i| if (app.isSelected(i) == null) app.selection.append(app.gpa, i) catch return;
+    app.scene_dirty = true;
+}
+
+/// Connectivity used for moving groups and selecting molecules: exactly the
+/// bonds that are drawn, so what moves together is what looks connected.
+pub fn drawnGraph(app: *const App) !cv.geometry.Graph {
+    const d = app.doc orelse return error.NoDocument;
+    const f = d.shown orelse return error.NoDocument;
+    var drawn: std.ArrayList(cv.bonds.Bond) = .empty;
+    defer drawn.deinit(app.gpa);
+    for (d.bonds.items) |b| if (Renderer.isDrawn(app.style, b.character)) try drawn.append(app.gpa, b);
+    return cv.geometry.Graph.init(app.gpa, f.len(), drawn.items, 0);
 }
 
 /// Positions as drawn (aligned onto the reference in diff overlay mode).
@@ -480,9 +575,9 @@ fn windowSize(app: *const App) [2]f32 {
     return .{ @floatFromInt(@max(w, 1)), @floatFromInt(@max(h, 1)) };
 }
 
-/// Pick the nearest atom under window point (x, y) and toggle it.
-pub fn pickAt(app: *App, x: f32, y: f32) void {
-    const pos = app.displayedPositions() orelse return;
+/// The atom under window point (x, y), if any.
+pub fn atomAt(app: *const App, x: f32, y: f32) ?u32 {
+    const pos = app.displayedPositions() orelse return null;
     const f = app.doc.?.shown.?;
     const ws = app.windowSize();
     const r = app.camera.ray(2 * x / ws[0] - 1, 1 - 2 * y / ws[1], ws[0] / ws[1]);
@@ -500,7 +595,17 @@ pub fn pickAt(app: *App, x: f32, y: f32) void {
             best = @intCast(i);
         }
     }
-    if (best) |i| app.toggleSelect(i) else app.clearSelection();
+    return best;
+}
+
+/// Single click toggles the atom under the cursor (or clears on empty
+/// space); double click adds the atom's whole molecule.
+pub fn clickAt(app: *App, x: f32, y: f32, clicks: u8) void {
+    const atom = app.atomAt(x, y) orelse {
+        if (clicks == 1) app.clearSelection();
+        return;
+    };
+    if (clicks >= 2) app.selectFragment(atom) else app.toggleSelect(atom);
 }
 
 /// Maps world positions to window points for overlays.
@@ -554,7 +659,7 @@ fn applyEditInner(app: *App, edit: Edit) !void {
     const f = &(d.shown orelse return);
     const sel = app.selected();
     const gpa = app.gpa;
-    var graph = try cv.geometry.Graph.init(gpa, f.len(), d.bonds.items, group_min_character);
+    var graph = try app.drawnGraph();
     defer graph.deinit(gpa);
 
     const before = try gpa.dupe(Vec3, f.positions);
@@ -684,7 +789,6 @@ pub fn drawUi(app: *App) void {
     timeline.draw(app, timeline_h);
     if (app.show_inspector) app.inspector(timeline_h);
     if (app.show_diff) app.diffPanel();
-    if (app.show_demo) c.igShowDemoWindow(&app.show_demo);
 }
 
 fn menuBar(app: *App) void {
@@ -707,7 +811,11 @@ fn menuBar(app: *App) void {
         const edited = if (app.doc) |d| app.edits.contains(d.shown_index) else false;
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
         c.igSeparator();
-        if (c.igMenuItem_Bool("Clear selection", "Esc", false, app.sel_len > 0)) app.clearSelection();
+        if (c.igMenuItem_Bool("Copy as XYZ", "Ctrl+C", false, app.doc != null)) app.copyXyz();
+        if (c.igMenuItem_Bool("Paste XYZ as new structure", "Ctrl+V", false, true)) app.pasteXyz();
+        c.igSeparator();
+        if (c.igMenuItem_Bool("Select all", "Ctrl+A", false, app.doc != null)) app.selectAll();
+        if (c.igMenuItem_Bool("Clear selection", "Esc", false, app.selection.items.len > 0)) app.clearSelection();
         c.igEndMenu();
     }
     if (c.igBeginMenu("View", true)) {
@@ -718,8 +826,6 @@ fn menuBar(app: *App) void {
         c.igSeparator();
         c.igSetNextItemWidth(c.igGetFontSize() * 8);
         _ = c.igSliderFloat("UI scale", &app.ui_scale, 0.5, 2.0, "%.2fx", 0);
-        c.igSeparator();
-        _ = c.igMenuItem_BoolPtr("ImGui demo", null, &app.show_demo, true);
         c.igEndMenu();
     }
     if (app.status_len > 0) {
@@ -743,13 +849,18 @@ fn inspector(app: *App, timeline_h: f32) void {
 
     if (app.doc) |d| {
         c.igSeparatorText("File");
-        ui.textWrapped("{s}", .{std.fs.path.basename(d.path)});
+        ui.selectableText("##path", "{s}", .{std.fs.path.basename(d.path)});
         ui.textDisabled("{s}{s}", .{ d.format.label(), if (d.source.isStreamed()) ", streamed" else "" });
         if (d.shown) |f| {
             ui.text("Frame {d} / {d}{s}", .{ d.shown_index + 1, d.frameCount(), if (app.edits.contains(d.shown_index)) "  (edited)" else "" });
             ui.text("{d} atoms, {d} links", .{ f.len(), d.bonds.items.len });
-            if (f.energy) |e| ui.text("E = {d:.8}", .{e});
-            if (f.comment.len > 0) ui.textWrapped("{s}", .{f.comment[0..@min(f.comment.len, 200)]});
+            if (f.energy) |e| {
+                c.igAlignTextToFramePadding();
+                ui.text("E =", .{});
+                c.igSameLine(0, -1);
+                ui.selectableText("##energy", "{d}", .{e});
+            }
+            if (f.comment.len > 0) ui.selectableText("##comment", "{s}", .{f.comment});
             app.composition(f);
         } else ui.textDisabled("loading...", .{});
     } else {
@@ -768,7 +879,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igSliderFloat("Cut-off x r1", &app.bond_params.cutoff_factor, 1.0, 1.8, "%.2f", 0)) app.bonds_dirty = true;
     ui.tooltip("Pairs closer than this multiple of their single-bond length get a link.");
     if (c.igSliderFloat("Hide below", &app.style.min_character, 0, 3, "%.2f", 0)) app.scene_dirty = true;
-    ui.tooltip("Hide links whose bond character is below this value (1 = single).");
+    ui.tooltip("Hide links whose bond character is below this value (1 = single). Only drawn links connect atoms when moving groups or selecting molecules.");
 
     c.igSeparatorText("Display");
     var theme: c_int = @backingInt(app.style.theme);

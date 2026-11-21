@@ -98,6 +98,23 @@ pub fn parseLoose(gpa: Allocator, buf: []const u8) Error![]Frame {
     return frames;
 }
 
+/// Atom indices (0-based in, 1-based out) compressed into ranges:
+/// {0,1,2,6,8,9,10,11} -> "1-3,7,9-12". Used in copy/paste metadata.
+pub fn writeAtomRanges(w: *Io.Writer, atoms: []const u32) Io.Writer.Error!void {
+    var i: usize = 0;
+    while (i < atoms.len) {
+        var j = i;
+        while (j + 1 < atoms.len and atoms[j + 1] == atoms[j] + 1) j += 1;
+        if (i > 0) try w.writeByte(',');
+        if (j > i + 1) {
+            try w.print("{d}-{d}", .{ atoms[i] + 1, atoms[j] + 1 });
+        } else if (j == i + 1) {
+            try w.print("{d},{d}", .{ atoms[i] + 1, atoms[j] + 1 });
+        } else try w.print("{d}", .{atoms[i] + 1});
+        i = j + 1;
+    }
+}
+
 /// Write one frame as XYZ (extended-XYZ Lattice/energy keys when present).
 pub fn write(w: *Io.Writer, frame: Frame) Io.Writer.Error!void {
     try w.print("{d}\n", .{frame.len()});
@@ -294,6 +311,13 @@ test "write then read back" {
     try std.testing.expectApproxEqAbs(@as(f32, -1.25), frames[0].positions[1][0], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f64, -76.5), frames[0].energy.?, 1e-9);
     try std.testing.expectApproxEqAbs(@as(f32, 10), frames[0].cell.?[1][1], 1e-6);
+}
+
+test "atom ranges" {
+    var buf: [64]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try writeAtomRanges(&w, &.{ 0, 1, 2, 6, 8, 9, 10, 11, 20, 21, 5 });
+    try std.testing.expectEqualStrings("1-3,7,9-12,21,22,6", w.buffered());
 }
 
 test "loose parse of bare coordinates" {

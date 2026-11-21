@@ -235,8 +235,13 @@ const UiScale = struct {
 
 fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
     _ = c.ImGui_ImplSDL3_ProcessEvent(ev);
-    if (ev.type == c.SDL_EVENT_KEY_DOWN and (ev.key.mod & c.SDL_KMOD_CTRL) != 0) {
+    // Shortcuts yield only while a text field is being edited.
+    const typing = c.cvImGuiWantTextInput();
+    if (ev.type == c.SDL_EVENT_KEY_DOWN and (ev.key.mod & c.SDL_KMOD_CTRL) != 0 and !typing) {
         switch (ev.key.key) {
+            c.SDLK_C => return app.copyXyz(),
+            c.SDLK_V => return app.pasteXyz(),
+            c.SDLK_A => return app.selectAll(),
             c.SDLK_O => return app.openDialog(),
             c.SDLK_S => return app.saveDialog(),
             c.SDLK_Z => return app.undo(),
@@ -247,7 +252,7 @@ fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
             else => {},
         }
     }
-    app.handleEvent(ev, c.cvImGuiWantCaptureMouse(), c.cvImGuiWantCaptureKeyboard());
+    app.handleEvent(ev, c.cvImGuiWantCaptureMouse(), typing);
 }
 
 /// Startup script: optionally sets a diff reference, waits for the target
