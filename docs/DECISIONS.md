@@ -274,3 +274,34 @@ they are and refract only the backdrop.
   an Intel Xe iGPU (cel: 0.25 ms). The MSAA colour and depth targets are no
   longer transient (lazily allocated memory on tilers), as glass stores and
   reloads them mid-frame; other styles still discard them after the resolve.
+
+### D23 — Liquid glass: per-atom blobs from a smooth union
+Glass's "Liquid" option (on by default; `--no-liquid` turns it off) makes
+bonds flow into the atoms like drops of glass. Each atom is drawn as one
+ray-marched blob (shaders/liquid.frag): the smooth union of its sphere, its
+bonds as capsules and its bonded neighbours' spheres, with colours blended by
+the same weights.
+- **Seamless blobs.** A blob only draws surface on its side of each bond: a
+  plane across the middle of the gap between the two spheres. The neighbour
+  draws the rest from the same field, so the union of the blobs is one
+  surface with no internal faces. Both sides must compute the same field near
+  the plane, so the smooth union is the exponential one (log-sum-exp), which
+  doesn't depend on the order primitives are combined in. The common
+  polynomial smin does, and two blobs would disagree slightly at the seam.
+  Each blob leaves out its neighbours' other bonds; their weight at the plane
+  is about e^-6, far below a pixel.
+- **Glass layers per blob.** Each blob is one object in the glass layering
+  (D22), with its bounding sphere as its disc; there are no separate bond
+  objects. Refraction fades out toward the ownership planes: the blob drawn
+  second would otherwise refract its neighbour's glass right beside it and
+  show a tinted seam.
+- **Cost.** Rays are first tested analytically against every primitive,
+  inflated by the most the union can swell it (k ln N), so the empty space
+  between bonds in a blob's bounding circle costs nothing, and the march
+  starts at the surface. That brought a 77-atom complex from 6 ms to 2.8 ms
+  per frame at 1080p on an Intel Xe iGPU (non-liquid glass: 1 ms).
+  Per-atom links (neighbour, bond radius and colour, plane) live in a storage
+  buffer per frame slot (binding 3).
+- **Limits.** Faint (alpha-blended) contacts stay as separate rods, so metal
+  clusters drawn with weak contacts look like non-liquid glass.
+
