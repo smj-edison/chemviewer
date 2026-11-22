@@ -29,9 +29,14 @@ pub const Document = struct {
     /// Frame currently displayed (may lag `current` while it loads).
     shown: ?Frame = null,
     shown_index: usize = 0,
-    /// Interpolated playback: the step after `shown` (null until loaded).
+    /// Interpolated playback: the steps after `shown` and the ones either
+    /// side of that segment, for a smooth curve (null until loaded).
     next: ?Frame = null,
     next_index: usize = 0,
+    prev: ?Frame = null,
+    prev_index: usize = 0,
+    next2: ?Frame = null,
+    next2_index: usize = 0,
     bonds: std.ArrayList(cv.bonds.Bond) = .empty,
     needs_fit: bool = true,
 
@@ -195,7 +200,7 @@ pub fn closeDocument(app: *App) void {
     d.source.deinit(app.io, app.gpa);
     app.gpa.destroy(d.source);
     if (d.shown) |*f| f.deinit(app.gpa);
-    if (d.next) |*f| f.deinit(app.gpa);
+    for ([_]*?Frame{ &d.next, &d.prev, &d.next2 }) |slot| if (slot.*) |*f| f.deinit(app.gpa);
     d.bonds.deinit(app.gpa);
     app.gpa.free(d.path);
     app.doc = null;
@@ -556,46 +561,89 @@ fn nextReady(app: *const App) bool {
         nx.positions.len == s.positions.len and app.diff == null;
 }
 
-/// Keeps `Document.next` holding the step after the current one while
-/// interpolated playback is running (with any edits applied).
+/// Keeps the frames around the current step loaded while interpolated
+/// playback runs: `next` (required to blend) and `prev`/`next2` (shape the
+/// curve; optional). Edits are applied, as for the shown frame.
 fn updateNextFrame(app: *App) void {
     const d = &(app.doc orelse return);
-    const want = app.interpolate and app.playing and d.current + 1 < d.frameCount();
-    if (!want) {
-        if (d.next) |*f| f.deinit(app.gpa);
-        d.next = null;
-        return;
-    }
-    const ni = d.current + 1;
-    if (d.next != null and d.next_index == ni) return;
-    if (d.next) |*f| f.deinit(app.gpa);
-    d.next = null;
-    const got = (d.stream.take(app.gpa, ni) catch null) orelse return;
+    const n = d.frameCount();
+    const on = app.interpolate and app.playing;
+    const i = d.current;
+    app.keepFrame(&d.next, &d.next_index, if (on and i + 1 < n) i + 1 else null);
+    app.keepFrame(&d.prev, &d.prev_index, if (on and i >= 1 and i + 1 < n) i - 1 else null);
+    app.keepFrame(&d.next2, &d.next2_index, if (on and i + 2 < n) i + 2 else null);
+}
+
+/// Makes `slot` hold frame `want` (taken from the stream's cache when
+/// ready), or nothing.
+fn keepFrame(app: *App, slot: *?Frame, index: *usize, want: ?usize) void {
+    const d = &(app.doc orelse return);
+    if (want) |w| if (slot.* != null and index.* == w) return;
+    if (slot.*) |*f| f.deinit(app.gpa);
+    slot.* = null;
+    const w = want orelse return;
+    const got = (d.stream.take(app.gpa, w) catch null) orelse return;
     var frame = got;
-    if (app.edits.get(ni)) |e| {
+    if (app.edits.get(w)) |e| {
         if (e.clone(app.gpa)) |copy| {
             frame.deinit(app.gpa);
             frame = copy;
         } else |_| {}
     }
-    d.next = frame;
-    d.next_index = ni;
+    slot.* = frame;
+    index.* = w;
 }
 
-/// Positions to draw for the shown frame: blended toward the next step while
-/// interpolating. Atoms that jump far between steps (periodic wrap) snap
-/// instead of streaking across the box.
+/// Positions to draw for the shown frame while interpolating: a monotone
+/// cubic (Fritsch-Butland, per coordinate) through the steps either side.
+/// It passes exactly through every real step and never overshoots: between
+/// two steps each coordinate stays within their values, and where an atom
+/// reverses it eases through the turn instead of snapping (linear blending
+/// made every reversal a sharp bounce). Atoms that jump far between steps
+/// (periodic wrap) snap instead of streaking across the box.
 fn displayPositions(app: *App, f: Frame) []const Vec3 {
     const d = app.doc orelse return f.positions;
     if (app.interp_t <= 0 or !app.nextReady()) return f.positions;
     const nx = d.next.?;
-    app.interp_positions.resize(app.gpa, f.positions.len) catch return f.positions;
+    const len = f.positions.len;
+    const pv: ?[]const Vec3 = if (d.prev) |p| (if (d.prev_index + 1 == d.current and p.positions.len == len) p.positions else null) else null;
+    const n2: ?[]const Vec3 = if (d.next2) |p| (if (d.next2_index == d.current + 2 and p.positions.len == len) p.positions else null) else null;
+    app.interp_positions.resize(app.gpa, len) catch return f.positions;
     const t = app.interp_t;
-    for (app.interp_positions.items, f.positions, nx.positions) |*o, a, b| {
-        const delta = b - a;
-        o.* = if (cv.math.length(delta) > 2.5) (if (t < 0.5) a else b) else a + delta * cv.math.splat(t);
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const h00 = 2 * t3 - 3 * t2 + 1;
+    const h10 = t3 - 2 * t2 + t;
+    const h01 = -2 * t3 + 3 * t2;
+    const h11 = t3 - t2;
+    const jump = 2.5;
+    for (app.interp_positions.items, 0..) |*o, k| {
+        const p1 = f.positions[k];
+        const p2 = nx.positions[k];
+        if (cv.math.length(p2 - p1) > jump) {
+            o.* = if (t < 0.5) p1 else p2;
+            continue;
+        }
+        // Neighbours across a wrap don't shape the curve.
+        const p0 = if (pv) |a| (if (cv.math.length(p1 - a[k]) > jump) p1 else a[k]) else p1;
+        const p3 = if (n2) |a| (if (cv.math.length(a[k] - p2) > jump) p2 else a[k]) else p2;
+        const m1 = slope(p1 - p0, p2 - p1);
+        const m2 = slope(p2 - p1, p3 - p2);
+        o.* = p1 * cv.math.splat(h00) + m1 * cv.math.splat(h10) + p2 * cv.math.splat(h01) + m2 * cv.math.splat(h11);
     }
     return app.interp_positions.items;
+}
+
+/// Tangent at a step from the secants either side, per coordinate: zero at a
+/// turning point (or flat side), else their harmonic mean, which keeps the
+/// curve within the neighbouring values.
+fn slope(a: Vec3, b: Vec3) Vec3 {
+    const zero: Vec3 = @splat(0);
+    const ab = a * b;
+    const same = ab > zero;
+    // Guard the division where the sides disagree (masked out anyway).
+    const sum = @select(f32, same, a + b, @as(Vec3, @splat(1)));
+    return @select(f32, same, cv.math.splat(2) * ab / sum, zero);
 }
 
 pub fn fitCamera(app: *App) void {
@@ -1392,10 +1440,14 @@ fn deleteSelectionInner(app: *App) !void {
 
 fn storeEdit(app: *App, index: usize, f: Frame) !void {
     // A cached next step for interpolation is stale once it is edited.
-    if (app.doc) |*d| if (d.next != null and d.next_index == index) {
-        d.next.?.deinit(app.gpa);
-        d.next = null;
-    };
+    if (app.doc) |*d| {
+        for ([_]*?Frame{ &d.next, &d.prev, &d.next2 }, [_]usize{ d.next_index, d.prev_index, d.next2_index }) |slot, i| {
+            if (slot.* != null and i == index) {
+                slot.*.?.deinit(app.gpa);
+                slot.* = null;
+            }
+        }
+    }
     const copy = try f.clone(app.gpa);
     const gop = try app.edits.getOrPut(app.gpa, index);
     if (gop.found_existing) gop.value_ptr.deinit(app.gpa);
