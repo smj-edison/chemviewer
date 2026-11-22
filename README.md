@@ -50,7 +50,7 @@ SDL_VIDEO_DRIVER=offscreen zig-out/bin/chemviewer traj.traj \
     --frame 120 --diff-ref 1 --screenshot out.png --size 1400x900
 ```
 
-Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`, `--atom-numbers`,
+Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`, `--flat` (flat style), `--atom-numbers`,
 `--ui-scale X`.
 
 Scripted edits (atom numbers are 1-based; values in Å or degrees):

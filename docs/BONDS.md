@@ -60,15 +60,23 @@ lightness is *perceived* lightness. Each theme has its own palette
 increases with bond character, so on the light theme higher orders get darker
 and on the dark theme they get brighter:
 
-| character | light theme L | dark theme L | look |
+| character | light theme L | dark theme L | look (light / dark) |
 |---|---|---|---|
-| 0 | 0.968 (= bg) | 0.228 (= bg) | invisible, fully transparent |
-| 1 | 0.50 | 0.58 | neutral grey (single) |
-| 2 | 0.42 | 0.79 | blue (double) |
-| 3 | 0.32 | 0.93 | deep magenta / bright pale gold (triple) |
+| 0 | 0.925 (= bg) | 0.228 (= bg) | invisible, fully transparent |
+| 0.5 | 0.72 | 0.43 | faint warm grey |
+| 1 | 0.58 | 0.57 | warm grey (single) |
+| 2 | 0.44 | 0.73 | dusty plum / mauve (double) |
+| 3 | 0.28 | 0.89 | deep indigo / pale lavender (triple) |
 
-Carbon atoms use a lighter grey than the CPK default (L ≈ 0.77 / 0.82), so
-atoms never blend into single bonds.
+The stop at 0.5 front-loads the change, so thermally stretched bonds just
+below single (C–H in MD frames) still stand clear of the background. Chroma
+stays low so atoms carry the colour, and the bond hues avoid the hues atoms
+use (teal C in the flat style, blue N, red O, gold Au, yellow S). Because
+lightness moves monotonically away from the background, the scale also reads
+correctly in greyscale.
+
+In the cel style, carbon atoms use a lighter grey than the CPK default
+(L ≈ 0.77 / 0.82), so atoms never blend into single bonds.
 
 Weak contacts fade *into* the background, both in lightness and in opacity, and
 higher bond orders always look more intense. Interpolation happens in OKLCh,
