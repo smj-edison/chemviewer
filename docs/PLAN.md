@@ -30,9 +30,9 @@ that are settled are recorded in [DECISIONS.md](DECISIONS.md).
 | Concern | Choice | Why |
 |---|---|---|
 | Language | Zig 0.17 | Requested. Core logic in Zig, C only at the edges. |
-| Window / input / GL context / file dialogs | **SDL3** (system lib for now) | Common, mature, cross-platform, has native file dialogs (`SDL_ShowOpenFileDialog`). |
+| Window / input / Vulkan surface / file dialogs | **SDL3** (system lib for now) | Common, mature, cross-platform, has native file dialogs (`SDL_ShowOpenFileDialog`). |
 | Immediate-mode UI | **Dear ImGui** via **cimgui** (pinned, built from source by `build.zig`) | The standard immediate-mode GUI. cimgui gives it a C ABI, so Zig only ever sees C. |
-| 3D rendering | **OpenGL 3.3 core**, with a small loader we write ourselves (`src/render/gl.zig`) | Works everywhere. Ray-cast impostors scale to 10⁵–10⁶ atoms. |
+| 3D rendering | **Vulkan 1.3** (dynamic rendering) via **vulkan-zig** bindings generated from a pinned `vk.xml`; GLSL compiled to SPIR-V by `glslc` at build time | Explicit, modern, not deprecated anywhere (MoltenVK on macOS). Ray-cast impostors scale to 10⁵–10⁶ atoms. See D20. |
 | C bindings | `b.addTranslateC` on `src/c.h` | `@cImport` is on its way out. Doing it in the build system is the 0.17 way. |
 
 ## Architecture
@@ -55,17 +55,18 @@ src/
   source.zig          format detection + Source union: "N frames, give me frame i"
   stream.zig          FrameStream: background loader, LRU cache, energy scan (io.concurrent)
   testdata/           small ASE-generated fixtures for the traj tests
-  main.zig            GUI entry point: SDL + GL + ImGui setup, main loop, --screenshot
+  main.zig            GUI entry point: SDL + Vulkan + ImGui setup, main loop, --screenshot
   app/
     App.zig           application state, document lifecycle, inspector + diff panels, input
     timeline.zig      bottom timeline (transport, frame slider, energy envelope plot)
     ui.zig            cimgui helpers (formatted text, gradient legend)
   render/
-    gl.zig            GL 3.3 function loader (via SDL_GL_GetProcAddress)
-    shaders.zig       GLSL sources
+    Gpu.zig           Vulkan instance/device, swapchain, MSAA targets, frame loop, readback
+    shaders/          GLSL 450 sources (compiled to SPIR-V by build.zig)
     Renderer.zig      atoms (sphere impostors), bonds (instanced cylinders), cell edges
     Camera.zig        orbit / pan / zoom, auto-fit
-  cshim/              C helpers for ImGui calls translate-c can't express (see D9)
+  cshim/              C helpers for ImGui calls translate-c can't express (see D9),
+                      and a C wrapper around ImGui's Vulkan backend
   tools/inspect.zig   headless summary tool (`zig build inspect -- FILE`)
 ```
 

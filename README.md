@@ -1,7 +1,8 @@
 # chemviewer
 
 A fast molecular structure and trajectory viewer written in Zig, with SDL3,
-OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
+Vulkan (via [vulkan-zig](https://github.com/Snektron/vulkan-zig)) and Dear
+ImGui (via cimgui) doing the heavy lifting.
 
 - **No bond guessing.** Every pair that *could* be bonded gets a link,
   coloured by a continuous bond character (0 → single → double → triple)
@@ -38,8 +39,14 @@ OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
 
 ## Build & run
 
-Requires Zig 0.17. Dear ImGui and cimgui are fetched and compiled
-automatically. SDL3 comes from:
+Requires Zig 0.17, a Vulkan 1.3 driver, and `glslc` (the shader compiler from
+shaderc: the `shaderc` package on Arch/Homebrew, `glslc` on Debian/Ubuntu, or
+the LunarG Vulkan SDK on Windows and macOS). Point the build at another
+compiler with `-Dglslc=PATH`. On macOS, Vulkan runs on Metal through MoltenVK
+(`brew install molten-vk`, or the Vulkan SDK). Dear ImGui, cimgui, the Vulkan
+headers and the vulkan-zig bindings are fetched and compiled automatically.
+Debug builds turn on the Khronos validation layer when it is installed.
+SDL3 comes from:
 
 - **macOS / Linux:** the system package, found via pkg-config
   (`brew install sdl3 pkgconf`, or your distro's `sdl3` dev package).

@@ -188,3 +188,42 @@ one's atoms get their element symbol drawn on them. A lone rare element is
 not labelled (the inspector's element key names it), and H/C/N/O never
 trigger labels against the everyday organic elements (unit-tested), so
 labels stay rare and clutter stays low.
+
+### D20 — Vulkan instead of OpenGL
+OpenGL is deprecated on macOS and frozen everywhere; the renderer moved to
+Vulkan 1.3 with vulkan-zig's generated bindings (D1's OpenGL part is
+superseded). Choices that keep it small:
+- **Bindings from a pinned registry.** vulkan-zig (its `zig-0.17-compat`
+  branch) generates `vk.zig` from `vk.xml` in a pinned Vulkan-Headers
+  package, whose C headers also build ImGui's Vulkan backend. Entry points
+  come from SDL's loader (`SDL_Vulkan_GetVkGetInstanceProcAddr`), so nothing
+  links libvulkan.
+- **Vulkan 1.3 core features:** dynamic rendering (no render pass or
+  framebuffer objects), synchronization2, and dynamic cull mode / depth
+  writes, so one pipeline covers a shader's draw, outline and translucent
+  variants that differ only in that state. Blend modes still need their own
+  pipelines (none, alpha, multiply for flat shadows).
+- **OpenGL conventions kept.** The camera still builds OpenGL projection
+  matrices; vertex shaders remap clip z to [0, w], and the scene viewport has
+  a negative height so NDC y points up and the winding (CCW front faces, the
+  outline hulls' front-face culling) is unchanged. The backdrop cache is drawn
+  with a normal viewport, so the blit samples it the same way up.
+- **Frames in flight:** two. Uniforms and instance buffers are per frame
+  slot; `upload` snapshots the scene and each slot copies it the next time it
+  draws, so a frame still on the GPU never sees a half-written buffer. All
+  buffers are host-visible (scenes are small next to what the GPU can read
+  over the bus). Shared targets (MSAA colour, depth, backdrop cache) need no
+  copies: barriers order frames on the one queue.
+- **4x MSAA always**, resolved into the swapchain image at the end of the
+  scene pass; ImGui draws in a second, single-sampled pass on top.
+  Swapchain format is UNORM, as the shaders write sRGB-encoded colours (as
+  they did into OpenGL's default framebuffer).
+- **Shaders** are GLSL 450 files compiled to SPIR-V by `glslc` at build time
+  and embedded. Compiling GLSL in Zig (glslang from source) would avoid the
+  external tool but adds a large C++ build; shaderc ships with every Vulkan
+  SDK and distribution.
+- **ImGui's Vulkan backend** keeps C++ linkage (it overloads a function, which
+  cimgui's `extern "C"` mode can't express) and is reached through a small C
+  wrapper (`cshim/imgui_vulkan.cpp`) that takes raw handles.
+- **Screenshots** copy the swapchain image to a host buffer; `--profile` uses
+  timestamp queries, read back when a frame slot comes round again.
