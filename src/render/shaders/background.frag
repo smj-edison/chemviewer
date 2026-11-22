@@ -11,6 +11,7 @@
 //   sharper small ones nearer, drifting vesicles.
 // u_mode 1: "space": nebula haze, glowing bokeh discs and a few four-point
 //   sparkle stars.
+// u_mode 2: plain background (pattern off; only glass shading samples it).
 #include "common.glsl"
 
 layout(location = 0) in vec2 v_ndc;
@@ -190,7 +191,7 @@ void main() {
         // Near: drifting vesicles, soft.
         float s3 = 16.0;
         col = dots(col, shellDir(4.8) * s3, 0.22, vec2(0.05, 0.11), dof(4.8, s3, 1.0), 0.40, 29.0, u_deep, u_light);
-    } else {
+    } else if (u_mode == 1) {
         // Nebula haze: slow noise, tinted toward the two glow colours.
         vec3 hd = shellDir(14.0);
         float n1 = noise(hd * 2.2) * 0.6 + noise(hd * 4.7 + 7.0) * 0.4;

@@ -1,6 +1,7 @@
 #version 450
 #include "common.glsl"
 #include "lighting.glsl"
+#include "glass.glsl"
 
 layout(location = 0) in vec3 v_view_pos;
 layout(location = 1) flat in float v_highlight;
@@ -35,6 +36,9 @@ void main() {
         float dots = min(length(q - vec2(0.12, 0.14)) - 0.30, length(q - vec2(0.52, 0.12)) - 0.13);
         body = mix(body, mix(body, vec3(1.0), 0.32), 1.0 - smoothstep(-aa, aa, dots));
         body = fogged(body, -p.z);
+    } else if (u_cel == 3) {
+        // Path through the sphere along the view ray.
+        body = glass(v_color.rgb, n, p, 2.0 * v_radius * max(dot(n, -d), 0.0), 1.0);
     }
     float k = 1.0;
     if (v_outer > v_radius) k = clamp(disc_i / max(fwidth(disc_i), 1e-9) + 0.5, 0.0, 1.0);

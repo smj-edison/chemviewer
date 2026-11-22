@@ -125,12 +125,16 @@ pub const Shading = enum(c_int) {
     /// highlight dots, no outlines, flat drop shadows, depth shown by fading
     /// toward the background, chunkier atoms.
     flat,
+    /// Experimental: inspired by Apple's "Liquid Glass". Tinted glass that
+    /// refracts the backdrop, with bright specular rims; no outlines.
+    glass,
 
     /// Shader lighting mode (`u_cel` in shaders/common.glsl).
     pub fn lightingMode(sh: Shading) c_int {
         return switch (sh) {
             .cel => 1,
             .flat => 2,
+            .glass => 3,
         };
     }
 };
@@ -167,7 +171,12 @@ pub const Style = struct {
     /// Drawn (and picked) atom radius. Flat uses chunkier atoms, like the
     /// overlapping discs in Kurzgesagt's molecules.
     pub fn atomRadius(s: Style, z: u8) f32 {
-        const k: f32 = if (s.shading == .flat) 1.3 else 1.0;
+        const k: f32 = switch (s.shading) {
+            .cel => 1.0,
+            .flat => 1.3,
+            // Bigger droplets show more of the refraction.
+            .glass => 1.2,
+        };
         return cv.elements.displayRadius(z) * s.atom_scale * k;
     }
 
@@ -935,7 +944,9 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
         cmd.resetQueryPool(prof.pool, @intCast(frame.slot * Profile.per_slot), Profile.per_slot);
         prof.stamp(frame, 0);
     }
-    if (p.style.background_pattern) try r.updateBackground(frame, p, set);
+    // Glass refracts the backdrop cache, so it needs one even without the
+    // pattern (it then holds the plain background).
+    if (p.style.background_pattern or p.style.shading == .glass) try r.updateBackground(frame, p, set);
 
     gpu.beginScenePass(frame, p.style.theme.background());
     const w: f32 = @floatFromInt(frame.extent.width);
@@ -1045,7 +1056,7 @@ fn frameUniforms(p: DrawParams, res: f32) FrameUniforms {
         .shadow_color = ratio,
         .fog_range = p.fog_range,
         .bg = bg,
-        .mode = @backingInt(style.backdrop),
+        .mode = if (style.background_pattern) @backingInt(style.backdrop) else 2,
         .ink = bd.ink,
         .radius = p.bg_radius,
         .deep = bd.deep,
@@ -1085,6 +1096,7 @@ const BackgroundCache = struct {
         radius: f32,
         theme: Theme,
         backdrop: BackdropKind,
+        pattern: bool,
         blur: f32,
     };
 
@@ -1136,6 +1148,7 @@ fn updateBackground(r: *Renderer, frame: Gpu.Frame, p: DrawParams, set: vk.Descr
         .radius = p.bg_radius,
         .theme = p.style.theme,
         .backdrop = p.style.backdrop,
+        .pattern = p.style.background_pattern,
         .blur = p.style.background_blur,
     };
     if (cache.key != null and std.meta.eql(cache.key.?, key)) return;

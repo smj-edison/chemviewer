@@ -1,6 +1,7 @@
 #version 450
 #include "common.glsl"
 #include "lighting.glsl"
+#include "glass.glsl"
 
 layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec3 v_view_pos;
@@ -25,6 +26,11 @@ void main() {
     }
     gl_FragDepth = gl_FragCoord.z;
     vec4 c = v_t < 0.5 ? v_ca : v_cb;
-    vec3 col = shade(c.rgb, normalize(v_normal), normalize(-v_view_pos));
+    vec3 n = normalize(v_normal);
+    vec3 col = shade(c.rgb, n, normalize(-v_view_pos));
+    if (u_cel == 3) {
+        // Thickness: twice the bond radius times the cosine (approximately).
+        col = glass(c.rgb, n, v_view_pos, 0.25 * max(dot(n, normalize(-v_view_pos)), 0.0), 0.45);
+    }
     o_color = vec4(fogged(col, -v_view_pos.z), c.a);
 }

@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, Vulkan device, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--glass] [--atom-numbers]
 //!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
 //!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -26,6 +26,7 @@ const Args = struct {
     no_ui: bool = false,
     dark: bool = false,
     flat: bool = false,
+    glass: bool = false,
     no_bg_pattern: bool = false,
     bg_blur: ?f32 = null,
     backdrop: ?[]const u8 = null,
@@ -131,6 +132,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.dark = true;
         } else if (eql(u8, arg, "--flat")) {
             a.flat = true;
+        } else if (eql(u8, arg, "--glass")) {
+            a.glass = true;
         } else if (eql(u8, arg, "--no-bg-pattern")) {
             a.no_bg_pattern = true;
         } else if (eql(u8, arg, "--profile-static")) {
@@ -160,7 +163,7 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--glass] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
             \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -214,6 +217,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.ui_scale) |u| app.ui_scale = u;
     if (args.dark) app.style.theme = .dark;
     if (args.flat) app.style.shading = .flat;
+    if (args.glass) app.style.shading = .glass;
     if (args.no_bg_pattern) app.style.background_pattern = false;
     if (args.bg_blur) |b| app.style.background_blur = b;
     if (args.backdrop) |b| app.style.backdrop = if (std.mem.eql(u8, b, "space")) .space else .cells;

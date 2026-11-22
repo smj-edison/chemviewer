@@ -9,7 +9,7 @@ vec3 fogged(vec3 c, float depth) {
 }
 
 vec3 shade(vec3 base, vec3 n, vec3 v) {
-    if (u_cel == 2) return base;
+    if (u_cel >= 2) return base;
     // Cel: three flat bands with anti-aliased steps.
     vec3 l = normalize(vec3(0.35, 0.45, 1.0));
     float diff = max(dot(n, l), 0.0);

@@ -158,7 +158,7 @@ pub fn build(b: *std.Build) void {
 fn addShaders(b: *std.Build, mod: *std.Build.Module) void {
     const glslc = b.option([]const u8, "glslc", "Path to the glslc shader compiler") orelse "glslc";
     const dir = "src/render/shaders";
-    const includes = [_][]const u8{ "common.glsl", "lighting.glsl" };
+    const includes = [_][]const u8{ "common.glsl", "lighting.glsl", "glass.glsl" };
     const stages = [_][]const u8{
         "sphere.vert",     "sphere.frag",
         "cylinder.vert",   "cylinder.frag",
