@@ -152,6 +152,18 @@ pub const dark_palette: Palette = .{
     },
 };
 
+/// Kurzgesagt-style night sky: deep indigo, bonds climbing from a muted
+/// lavender through pink to hot yellow. Same rule as the dark palette.
+pub const kurzgesagt_palette: Palette = .{
+    .background = .{ 0x16.0 / 255.0, 0x14.0 / 255.0, 0x45.0 / 255.0 }, // OKLab L ≈ 0.230
+    .stops = &.{
+        .{ .at = 0.0, .lch = .{ .l = 0.230, .c = 0.089, .h = 279 } }, // = background
+        .{ .at = 1.0, .lch = .{ .l = 0.62, .c = 0.070, .h = 285 } }, // single: soft lavender
+        .{ .at = 2.0, .lch = .{ .l = 0.80, .c = 0.150, .h = 350 } }, // double: candy pink
+        .{ .at = 3.0, .lch = .{ .l = 0.92, .c = 0.170, .h = 95 } }, // triple: hot yellow
+    },
+};
+
 pub const BondColor = struct { rgb: Rgb, alpha: f32 };
 
 /// Colour (sRGB) and opacity for a bond of the given (raw) character.
@@ -200,8 +212,8 @@ test "snap is monotonic, continuous, and fixes integers" {
     try std.testing.expect(snap(1.05, 0.7) - 1 < 0.05);
 }
 
-test "bond palette contrast rises with bond character (both themes)" {
-    for ([_]Palette{ light_palette, dark_palette }) |pal| {
+test "bond palette contrast rises with bond character (all themes)" {
+    for ([_]Palette{ light_palette, dark_palette, kurzgesagt_palette }) |pal| {
         const bg_l = srgbToOklab(pal.background).l;
         // The first stop sits on the background.
         try std.testing.expectApproxEqAbs(bg_l, pal.stops[0].lch.l, 0.02);
