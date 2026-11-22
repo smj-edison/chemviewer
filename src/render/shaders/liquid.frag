@@ -8,6 +8,11 @@
 // The smooth union is the exponential one (log-sum-exp), which unlike the
 // polynomial smin doesn't depend on the order primitives are combined in:
 // both sides of a bond evaluate the same field near their shared plane.
+// Each bond has a weight (0..1, Renderer `Style.liquidWeight`): a pair of
+// primitives blends by the smaller of their weights (the atom's own sphere
+// has 1), so a bond that has just formed meets its atoms with a hard join,
+// and its neck grows as the bond strengthens. That pairing makes the sum
+// depend on which primitive is nearest, so it takes two passes.
 // Ray-marched in world space; shaded by glass.glsl.
 #include "common.glsl"
 #include "lighting.glsl"
@@ -17,7 +22,7 @@ struct Link {
     vec4 other;        // neighbour centre (world), its radius
     vec4 bond_color;   // this side's bond colour
     vec4 other_color;  // neighbour's atom colour
-    vec4 params;       // bond radius, plane offset from this atom along the bond, -, -
+    vec4 params;       // bond radius, plane offset from this atom along the bond, weight, -
 };
 layout(std430, set = 0, binding = 3) readonly buffer Links { Link links[]; };
 
@@ -36,35 +41,51 @@ float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
     return length(pa - ba * h) - r;
 }
 
-// Online log-sum-exp: m = smallest distance so far, s = sum of
-// exp(-(d - m) / k), and colour and radius summed with the same weights.
-struct Acc { float m; float s; vec3 col; float rad; };
+// Weighted log-sum-exp over the blob's primitives: d = m - k ln S, with m
+// the nearest distance and S = sum of w_i exp(-(d_i - m) / k), where w_i is
+// 1 for the nearest primitive and otherwise the smaller of its weight and
+// the nearest one's. Colour and radius are averaged with the same weights.
+struct Acc { float m; float wm; vec3 cm; float rm; float s; vec3 col; float rad; };
 
-void add(inout Acc a, float d, vec3 col, float rad) {
-    float k = u_liquid_k;
+void nearest(inout Acc a, float d, float w, vec3 col, float rad) {
     if (d < a.m) {
-        float f = exp((d - a.m) / k);
-        a.s = a.s * f + 1.0;
-        a.col = a.col * f + col;
-        a.rad = a.rad * f + rad;
         a.m = d;
-    } else {
-        float w = exp((a.m - d) / k);
-        a.s += w;
-        a.col += col * w;
-        a.rad += rad * w;
+        a.wm = w;
+        a.cm = col;
+        a.rm = rad;
     }
+}
+
+void add(inout Acc a, float d, float w, vec3 col, float rad) {
+    float e = min(w, a.wm) * exp((a.m - d) / u_liquid_k);
+    a.s += e;
+    a.col += col * e;
+    a.rad += rad * e;
 }
 
 Acc field(vec3 p) {
     vec3 c = v_center_radius.xyz;
-    Acc a = Acc(1e9, 0.0, vec3(0.0), 0.0);
-    add(a, length(p - c) - v_center_radius.w, v_color.rgb, v_center_radius.w);
-    for (uint i = v_links.x; i < v_links.x + v_links.y; i++) {
+    uint end = v_links.x + v_links.y;
+    Acc a = Acc(1e9, 1.0, vec3(0.0), 0.0, 0.0, vec3(0.0), 0.0);
+    float d0 = length(p - c) - v_center_radius.w;
+    nearest(a, d0, 1.0, v_color.rgb, v_center_radius.w);
+    for (uint i = v_links.x; i < end; i++) {
         Link l = links[i];
-        add(a, sdCapsule(p, c, l.other.xyz, l.params.x), l.bond_color.rgb, l.params.x);
-        add(a, length(p - l.other.xyz) - l.other.w, l.other_color.rgb, l.other.w);
+        nearest(a, sdCapsule(p, c, l.other.xyz, l.params.x), l.params.z, l.bond_color.rgb, l.params.x);
+        nearest(a, length(p - l.other.xyz) - l.other.w, l.params.z, l.other_color.rgb, l.other.w);
     }
+    add(a, d0, 1.0, v_color.rgb, v_center_radius.w);
+    for (uint i = v_links.x; i < end; i++) {
+        Link l = links[i];
+        add(a, sdCapsule(p, c, l.other.xyz, l.params.x), l.params.z, l.bond_color.rgb, l.params.x);
+        add(a, length(p - l.other.xyz) - l.other.w, l.params.z, l.other_color.rgb, l.other.w);
+    }
+    // The nearest primitive's own term came in with weight w_m: top it up
+    // to 1.
+    float top = 1.0 - a.wm;
+    a.s += top;
+    a.col += a.cm * top;
+    a.rad += a.rm * top;
     return a;
 }
 
@@ -206,7 +227,7 @@ void main() {
     // over: there both sides show what is straight behind them, so they
     // match. (Bent, the side drawn second would refract its neighbour's
     // glass beside it and show a tinted seam.)
-    float bend = smoothstep(0.0, 0.3, own);
+    float bend = smoothstep(0.0, 0.12, own);
     vec3 body = glass(base, n, pv, 2.0 * rad * max(dot(n, -dv), 0.0), 1.0, bend);
     if (v_bound_highlight.y > 0.0) {
         // Selected: an accent band along the silhouette.

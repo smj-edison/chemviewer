@@ -199,6 +199,24 @@ pub const Style = struct {
         return 0.6 * s.bondRadius();
     }
 
+    /// Whether atoms and bonds are drawn as liquid glass blobs.
+    pub fn isLiquid(s: Style) bool {
+        return s.shading == .glass and s.liquid;
+    }
+
+    /// Liquid glass: how much a bond of this (raw) character takes part in
+    /// the blobs, 0..1. It starts at 0 where the bond first appears ("Hide
+    /// below") and is 1 from single-bond character on, so a forming bond
+    /// grows its liquid rod and neck smoothly as it strengthens, while its
+    /// faint rod fades out (see `addStructure`).
+    pub fn liquidWeight(s: Style, character: f32) f32 {
+        const lo = cv.color.snap(s.min_character, s.snap);
+        const x = cv.color.snap(character, s.snap);
+        if (lo >= 1) return @floatFromInt(@intFromBool(x >= 1));
+        const t = std.math.clamp((x - lo) / (1 - lo), 0, 1);
+        return t * t * (3 - 2 * t);
+    }
+
     pub fn bondRadius(s: Style) f32 {
         const k: f32 = if (s.shading == .flat) 1.3 else 1.0;
         return s.bond_radius * k;
@@ -247,6 +265,9 @@ const LiquidInstance = extern struct {
     first: u32,
     count: u32,
 };
+/// A bond's atoms (instance indices) and how much it takes part in liquid
+/// glass (`Style.liquidWeight`).
+const BondLink = struct { atoms: [2]u32, weight: f32 };
 /// One side of a bond, for liquid glass (`Link` in shaders/liquid.frag).
 const Link = extern struct {
     other: [3]f32,
@@ -257,7 +278,9 @@ const Link = extern struct {
     /// Distance from this atom, along the bond, to the plane where the
     /// neighbour's blob takes over.
     plane: f32,
-    pad: [2]f32 = .{ 0, 0 },
+    /// How strongly the bond blends with the atoms (`Style.liquidWeight`).
+    weight: f32,
+    pad: f32 = 0,
 };
 
 const cylinder_segments = 16;
@@ -289,8 +312,10 @@ atoms: std.ArrayList(AtomInstance) = .empty,
 /// Opaque bonds first, then translucent ones (drawn without depth writes).
 bonds: std.ArrayList(BondInstance) = .empty,
 translucent: std.ArrayList(BondInstance) = .empty,
-/// Instance indices of the atoms of each opaque bond (parallel to `bonds`).
-bond_atoms: std.ArrayList([2]u32) = .empty,
+/// Liquid glass: each bond's atoms and weight (parallel to `bonds` and
+/// `translucent`).
+bond_links: std.ArrayList(BondLink) = .empty,
+translucent_links: std.ArrayList(BondLink) = .empty,
 lines: std.ArrayList(LineVertex) = .empty,
 uploaded: Uploaded = .{},
 /// Bumped by `upload`; frame slots compare it to their own copy.
@@ -303,7 +328,8 @@ bounds_radius: f32 = 1,
 
 pub fn clear(r: *Renderer) void {
     r.atoms.clearRetainingCapacity();
-    r.bond_atoms.clearRetainingCapacity();
+    r.bond_links.clearRetainingCapacity();
+    r.translucent_links.clearRetainingCapacity();
     r.bonds.clearRetainingCapacity();
     r.translucent.clearRetainingCapacity();
     r.lines.clearRetainingCapacity();
@@ -392,7 +418,13 @@ pub fn addStructure(
             cb = ca;
             radius_scale = thin * 0.45;
         };
-        const inst: BondInstance = .{
+        // Liquid glass: cut bonds stay out of the blobs.
+        const is_cut = if (cut) |set| set.contains(key) else false;
+        const link: BondLink = .{
+            .atoms = .{ @intCast(start + b.a), @intCast(start + b.b) },
+            .weight = if (is_cut) 0 else style.liquidWeight(b.character),
+        };
+        var inst: BondInstance = .{
             .a = positions[b.a],
             .b = positions[b.b],
             .radius = style.bondRadius() * radius_scale,
@@ -401,10 +433,17 @@ pub fn addStructure(
             .color_b = cb,
         };
         if (ca[3] < 0.99) {
+            // Liquid glass: the faint rod hands over to the blobs' liquid
+            // one as the bond strengthens.
+            if (style.isLiquid()) {
+                inst.color_a[3] *= 1 - link.weight;
+                inst.color_b[3] *= 1 - link.weight;
+            }
             try r.translucent.append(r.gpa, inst);
+            try r.translucent_links.append(r.gpa, link);
         } else {
             try r.bonds.append(r.gpa, inst);
-            try r.bond_atoms.append(r.gpa, .{ @intCast(start + b.a), @intCast(start + b.b) });
+            try r.bond_links.append(r.gpa, link);
         }
     }
     return start;
@@ -450,8 +489,9 @@ pub fn upload(r: *Renderer) !void {
     try up.bonds.appendSlice(r.gpa, r.bonds.items);
     try up.bonds.appendSlice(r.gpa, r.translucent.items);
     up.opaque_bonds = r.bonds.items.len;
-    up.bond_atoms.clearRetainingCapacity();
-    try up.bond_atoms.appendSlice(r.gpa, r.bond_atoms.items);
+    up.bond_links.clearRetainingCapacity();
+    try up.bond_links.appendSlice(r.gpa, r.bond_links.items);
+    try up.bond_links.appendSlice(r.gpa, r.translucent_links.items);
     up.lines.clearRetainingCapacity();
     try up.lines.appendSlice(r.gpa, r.lines.items);
     r.generation += 1;
@@ -587,13 +627,13 @@ const Uploaded = struct {
     atoms: std.ArrayList(AtomInstance) = .empty,
     bonds: std.ArrayList(BondInstance) = .empty,
     opaque_bonds: usize = 0,
-    /// Atom instance indices of each opaque bond.
-    bond_atoms: std.ArrayList([2]u32) = .empty,
+    /// Liquid glass links of `bonds` (same order).
+    bond_links: std.ArrayList(BondLink) = .empty,
     lines: std.ArrayList(LineVertex) = .empty,
 
     fn deinit(u: *Uploaded, gpa: Allocator) void {
         u.atoms.deinit(gpa);
-        u.bond_atoms.deinit(gpa);
+        u.bond_links.deinit(gpa);
         u.bonds.deinit(gpa);
         u.lines.deinit(gpa);
     }
@@ -746,7 +786,8 @@ pub fn deinit(r: *Renderer) void {
     r.uploaded.deinit(r.gpa);
     r.glass.deinit(r.gpa);
     r.liquid.deinit(r.gpa);
-    r.bond_atoms.deinit(r.gpa);
+    r.bond_links.deinit(r.gpa);
+    r.translucent_links.deinit(r.gpa);
 }
 
 const Blend = enum { none, alpha, multiply, min };
@@ -1586,14 +1627,17 @@ fn buildLiquid(r: *Renderer, style: Style) !void {
     if (l.built) |b| if (b.generation == r.generation and b.k == k) return;
     const gpa = r.gpa;
     const atoms = r.uploaded.atoms.items;
-    const bonds = r.uploaded.bonds.items[0..r.uploaded.opaque_bonds];
-    const pairs = r.uploaded.bond_atoms.items;
+    // Opaque and faint bonds alike: faint ones fade in (`liquidWeight`).
+    const bonds = r.uploaded.bonds.items;
+    const bond_links = r.uploaded.bond_links.items;
+    const min_weight = 1e-3;
 
     try l.counts.resize(gpa, atoms.len);
     @memset(l.counts.items, 0);
-    for (pairs) |pr| {
-        l.counts.items[pr[0]] += 1;
-        l.counts.items[pr[1]] += 1;
+    for (bond_links) |bl| {
+        if (bl.weight < min_weight) continue;
+        l.counts.items[bl.atoms[0]] += 1;
+        l.counts.items[bl.atoms[1]] += 1;
     }
     try l.blobs.resize(gpa, atoms.len);
     var first: u32 = 0;
@@ -1605,10 +1649,13 @@ fn buildLiquid(r: *Renderer, style: Style) !void {
     // How far the blend reaches beyond a primitive: exp(-4) of a neighbour's
     // weight is about 2% of k in distance.
     const reach = 4 * k;
-    for (bonds, pairs) |bd, pr| {
+    for (bonds, bond_links) |bd, bl| {
+        if (bl.weight < min_weight) continue;
+        // The liquid rod grows in with the weight.
+        const rod = bd.radius * bl.weight;
         for (0..2) |side| {
-            const i = pr[side];
-            const j = pr[1 - side];
+            const i = bl.atoms[side];
+            const j = bl.atoms[1 - side];
             const a = atoms[i];
             const o = atoms[j];
             const len = math.length(@as(Vec3, o.center) - @as(Vec3, a.center));
@@ -1620,13 +1667,14 @@ fn buildLiquid(r: *Renderer, style: Style) !void {
                 .other_radius = o.radius,
                 .bond_color = if (side == 0) bd.color_a else bd.color_b,
                 .other_color = o.color,
-                .bond_radius = bd.radius,
+                .bond_radius = rod,
                 .plane = plane,
+                .weight = bl.weight,
             };
             blob.count += 1;
             // Bound: up to the plane, as wide as the rod or, if it reaches
             // past the plane, the neighbour's sphere.
-            var lateral = bd.radius + reach;
+            var lateral = rod + reach;
             const rest = len - plane;
             const ro = o.radius + reach;
             if (rest < ro) lateral = @max(lateral, @sqrt(ro * ro - rest * rest));
