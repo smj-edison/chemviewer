@@ -5,10 +5,21 @@ Inspector > Display > Kurzgesagt). The images are Kurzgesagt's copyrighted
 artwork, so they are kept locally and git-ignored; this file records where
 they came from (downloaded 2026-11-22).
 
-Traits borrowed: deep indigo radial-gradient sky with sparse stars and a few
-four-point flares; saturated flat fills; hard-edged violet shadow and warm lit
-crescents instead of smooth shading; a small glint; outlines that are a deep
-shade of the object's own colour, not black; soft coloured glow.
+The flat look is what matters, not the space scenes. The main reference is
+`3072288018327926909.png` ("Molecules / Proteins"). Traits borrowed:
+
+- a solid, saturated background (#FFD648 yellow) with no gradient or texture;
+- atoms as flat single-colour discs (pink C, periwinkle O, cyan N, white H),
+  with no outlines or shading bands;
+- one or two lighter dots of the same hue up and to the right of centre;
+- depth shown by fading toward the background colour, so back atoms wash out;
+- flat drop shadows / silhouettes a deeper shade of the background (#FEC80E),
+  offset down-right like the speech bubbles in `5202208609956091538.png`.
+
+## Added by the user
+
+- 3072288018327926909.png, 5202208609956091538.png, 6456239958559852212.png,
+  8087734847281085614.png, 8454863061447715334.png
 
 ## kurzgesagt.org
 
