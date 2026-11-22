@@ -1454,20 +1454,17 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igRadioButton_IntPtr("Light", &theme, 0)) app.scene_dirty = true;
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Dark", &theme, 1)) app.scene_dirty = true;
-    c.igSameLine(0, -1);
-    if (c.igRadioButton_IntPtr("Kurzgesagt", &theme, 2)) app.scene_dirty = true;
-    ui.tooltip("Experimental: Kurzgesagt-style flat look. Solid colours, flat drop shadows, depth shown by fading into the background.");
     app.style.theme = @fromBackingInt(@intCast(theme));
-    // The flat theme has its own shading and no outlines.
-    if (app.style.theme != .kurzgesagt) {
-        var shading: c_int = @backingInt(app.style.shading);
-        _ = c.igRadioButton_IntPtr("Cel", &shading, 0);
-        c.igSameLine(0, -1);
-        _ = c.igRadioButton_IntPtr("Smooth", &shading, 1);
-        app.style.shading = @fromBackingInt(@intCast(shading));
-        if (app.style.shading == .cel) {
-            _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
-        }
+    c.igSameLine(0, c.igGetFontSize() * 1.5);
+    var shading: c_int = @backingInt(app.style.shading);
+    if (c.igRadioButton_IntPtr("Cel", &shading, 0)) app.scene_dirty = true;
+    ui.tooltip("Toon bands with outlines, CPK element colours.");
+    c.igSameLine(0, -1);
+    if (c.igRadioButton_IntPtr("Flat", &shading, 1)) app.scene_dirty = true;
+    ui.tooltip("Inspired by Kurzgesagt's flat illustrations: solid colours, flat drop shadows, depth shown by fading into the background, teal carbon.");
+    app.style.shading = @fromBackingInt(@intCast(shading));
+    if (app.style.shading == .cel) {
+        _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
     }
     if (c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0)) app.scene_dirty = true;
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;

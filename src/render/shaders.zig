@@ -1,9 +1,9 @@
 //! GLSL 330 core shaders.
 //!
-//! Shading modes (u_cel): 1 = cel/toon (flat bands, no highlights),
-//! 0 = smooth Blinn-Phong, 2 = Kurzgesagt-style flat (one solid colour per
-//! object, highlight dots on atoms, depth shown by fading toward the
-//! background, flat offset drop shadows; no outlines). Outlines have a constant screen width:
+//! Shading modes (u_cel): 1 = cel/toon (flat bands, outlines), 2 = flat,
+//! inspired by Kurzgesagt (one solid colour per object, highlight dots on
+//! atoms, depth shown by fading toward the background, flat offset drop
+//! shadows, no outlines). Outlines have a constant screen width:
 //! `u_outline_k` is the outline width in world units per unit of view depth.
 
 const lighting =
@@ -22,19 +22,14 @@ const lighting =
     \\}
     \\vec3 shade(vec3 base, vec3 n, vec3 v) {
     \\    if (u_cel == 2) return base;
+    \\    // Cel: three flat bands with anti-aliased steps.
     \\    vec3 l = normalize(vec3(0.35, 0.45, 1.0));
     \\    float diff = max(dot(n, l), 0.0);
-    \\    if (u_cel == 1) {
-    \\        // Three flat bands with anti-aliased steps.
-    \\        float w = max(fwidth(diff), 1e-4);
-    \\        float band = 0.66
-    \\            + 0.17 * smoothstep(0.20 - w, 0.20 + w, diff)
-    \\            + 0.17 * smoothstep(0.62 - w, 0.62 + w, diff);
-    \\        return base * band;
-    \\    }
-    \\    float spec = pow(max(dot(n, normalize(l + v)), 0.0), 48.0) * 0.35;
-    \\    float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.15;
-    \\    return base * (0.22 + 0.78 * diff) + vec3(spec + rim);
+    \\    float w = max(fwidth(diff), 1e-4);
+    \\    float band = 0.66
+    \\        + 0.17 * smoothstep(0.20 - w, 0.20 + w, diff)
+    \\        + 0.17 * smoothstep(0.62 - w, 0.62 + w, diff);
+    \\    return base * band;
     \\}
     \\
 ;

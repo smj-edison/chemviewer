@@ -22,24 +22,16 @@ pub const BondColoring = enum(c_int) {
     element,
 };
 
+/// Light or dark: owns the background, bond palette, accents and outlines.
 pub const Theme = enum(c_int) {
     light,
     dark,
-    /// Experimental: flat, saturated "Kurzgesagt" look: solid pale
-    /// background, single-colour atoms with highlight dots, flat drop
-    /// shadows, depth shown by fading toward the background.
-    kurzgesagt,
 
     pub fn palette(t: Theme) cv.color.Palette {
         return switch (t) {
             .light => cv.color.light_palette,
             .dark => cv.color.dark_palette,
-            .kurzgesagt => cv.color.kurzgesagt_palette,
         };
-    }
-
-    pub fn isLight(t: Theme) bool {
-        return t == .light;
     }
 
     pub fn background(t: Theme) [3]f32 {
@@ -50,20 +42,15 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.10, 0.11, 0.13 },
             .dark => .{ 0.0, 0.0, 0.0 },
-            .kurzgesagt => .{ 0.33, 0.25, 0.94 }, // unused: the flat theme has no outlines
         };
     }
 
-    /// Element colour, adjusted per theme where the default would blend
-    /// with bonds: carbon is lifted well above the single-bond grey.
-    pub fn atomColor(t: Theme, z: u8) [3]f32 {
-        if (t == .kurzgesagt) return kurzgesagtAtomColor(z);
-        if (z == 6) return switch (t) {
-            .light => .{ 0.71, 0.71, 0.72 }, // OKLab L ≈ 0.77 vs single bonds 0.50
-            .dark => .{ 0.77, 0.77, 0.78 }, // OKLab L ≈ 0.82 vs single bonds 0.58
-            .kurzgesagt => unreachable,
+    /// Flat style's drop-shadow colour: a deeper shade of the background.
+    pub fn shadow(t: Theme) [3]f32 {
+        return switch (t) {
+            .light => .{ 0.7858, 0.8304, 0.8886 }, // #C8D4E3, OKLCh (0.865, 0.024, 255)
+            .dark => .{ 0.055, 0.058, 0.075 }, // OKLCh ≈ (0.17, 0.01, 265)
         };
-        return cv.elements.colorRgb(z);
     }
 
     /// Selection accent (rings, labels, measurement lines).
@@ -71,7 +58,6 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.93, 0.45, 0.0 },
             .dark => .{ 1.0, 0.72, 0.2 },
-            .kurzgesagt => .{ 0.33, 0.25, 0.94 }, // #5540F0 violet
         };
     }
 
@@ -79,32 +65,16 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.30, 0.32, 0.36, 1 },
             .dark => .{ 0.60, 0.60, 0.65, 1 },
-            .kurzgesagt => .{ 0.33, 0.25, 0.94, 0.8 },
         };
-    }
-
-    /// Flat drop-shadow colour: a deeper, more saturated shade of the
-    /// background, as in Kurzgesagt's silhouettes (OKLCh 0.865, 0.024, 255).
-    pub fn shadow(t: Theme) [3]f32 {
-        return switch (t) {
-            .kurzgesagt => .{ 0.7858, 0.8304, 0.8886 }, // #C8D4E3
-            else => t.background(),
-        };
-    }
-
-    /// Shader lighting mode (`u_cel` in shaders.zig).
-    pub fn lightingMode(t: Theme, shading: Shading) c_int {
-        if (t == .kurzgesagt) return 2;
-        return @intFromBool(shading == .cel);
     }
 };
 
-/// Flat, saturated element colours. They keep the hues chemists know (red O,
+/// Flat style's element colours. They keep the hues chemists know (red O,
 /// blue N, green halogens, yellow S, orange P, gold Au) and give carbon
 /// teal: the one hue CPK leaves free (only the rare noble gases use cyan),
 /// and VMD's carbon colour. Anything not listed is its CPK hue made bright
 /// and saturated.
-fn kurzgesagtAtomColor(z: u8) [3]f32 {
+fn flatAtomColor(z: u8) [3]f32 {
     const hex: ?u24 = switch (z) {
         1 => 0xFFFFFF, // H
         5 => 0xFF9A7A, // B: salmon
@@ -132,11 +102,22 @@ fn kurzgesagtAtomColor(z: u8) [3]f32 {
     return cv.color.oklchToSrgb(lch);
 }
 
+/// How atoms and bonds are drawn; works with either theme.
 pub const Shading = enum(c_int) {
-    /// Flat lighting bands and outlines.
+    /// Toon bands with outlines, CPK colours.
     cel,
-    /// Smooth Blinn-Phong with highlights.
-    smooth,
+    /// Inspired by Kurzgesagt's flat illustrations: solid fills with
+    /// highlight dots, no outlines, flat drop shadows, depth shown by fading
+    /// toward the background, chunkier atoms, teal carbon.
+    flat,
+
+    /// Shader lighting mode (`u_cel` in shaders.zig).
+    pub fn lightingMode(sh: Shading) c_int {
+        return switch (sh) {
+            .cel => 1,
+            .flat => 2,
+        };
+    }
 };
 
 pub const Style = struct {
@@ -155,15 +136,26 @@ pub const Style = struct {
     snap: f32 = 0.7,
     show_cell: bool = true,
 
-    /// Drawn (and picked) atom radius. The flat theme uses chunkier atoms,
-    /// like the overlapping discs in Kurzgesagt's molecules.
+    /// Element colour. Cel uses CPK, with carbon lifted well above the
+    /// single-bond colour so the two don't blend; flat has its own set.
+    pub fn atomColor(s: Style, z: u8) [3]f32 {
+        if (s.shading == .flat) return flatAtomColor(z);
+        if (z == 6) return switch (s.theme) {
+            .light => .{ 0.71, 0.71, 0.72 }, // OKLab L ≈ 0.77 vs single bonds 0.58
+            .dark => .{ 0.77, 0.77, 0.78 }, // OKLab L ≈ 0.82 vs single bonds 0.56
+        };
+        return cv.elements.colorRgb(z);
+    }
+
+    /// Drawn (and picked) atom radius. Flat uses chunkier atoms, like the
+    /// overlapping discs in Kurzgesagt's molecules.
     pub fn atomRadius(s: Style, z: u8) f32 {
-        const k: f32 = if (s.theme == .kurzgesagt) 1.3 else 1.0;
+        const k: f32 = if (s.shading == .flat) 1.3 else 1.0;
         return cv.elements.displayRadius(z) * s.atom_scale * k;
     }
 
     pub fn bondRadius(s: Style) f32 {
-        const k: f32 = if (s.theme == .kurzgesagt) 1.3 else 1.0;
+        const k: f32 = if (s.shading == .flat) 1.3 else 1.0;
         return s.bond_radius * k;
     }
 };
@@ -225,7 +217,7 @@ uploaded_atoms: usize = 0,
 uploaded_opaque_bonds: usize = 0,
 uploaded_translucent_bonds: usize = 0,
 uploaded_lines: usize = 0,
-/// Bounding sphere of the uploaded atoms (for the flat theme's depth fade).
+/// Bounding sphere of the uploaded atoms (for the flat style's depth fade).
 bounds_center: Vec3 = .{ 0, 0, 0 },
 bounds_radius: f32 = 1,
 /// Bond to draw highlighted (key as in `App.pairKey`), set before building.
@@ -373,7 +365,7 @@ pub fn addStructure(
     const start = r.atoms.items.len;
     try r.atoms.ensureUnusedCapacity(r.gpa, positions.len);
     for (positions, numbers) |p, z| {
-        const rgb = tinted(style.theme.atomColor(z), tint);
+        const rgb = tinted(style.atomColor(z), tint);
         r.atoms.appendAssumeCapacity(.{
             .center = p,
             .radius = style.atomRadius(z),
@@ -398,8 +390,8 @@ pub fn addStructure(
             },
             .element => {
                 const alpha = @min(ch, 1.0);
-                const ra = tinted(style.theme.atomColor(numbers[b.a]), tint);
-                const rb = tinted(style.theme.atomColor(numbers[b.b]), tint);
+                const ra = tinted(style.atomColor(numbers[b.a]), tint);
+                const rb = tinted(style.atomColor(numbers[b.b]), tint);
                 ca = .{ ra[0], ra[1], ra[2], alpha };
                 cb = .{ rb[0], rb[1], rb[2], alpha };
             },
@@ -492,7 +484,7 @@ pub const DrawParams = struct {
     style: Style,
     /// Filled in by `draw`: world units per framebuffer pixel at unit depth.
     world_per_px: f32 = 0,
-    /// Filled in by `draw`: view-depth range of the scene (flat theme fade).
+    /// Filled in by `draw`: view-depth range of the scene (flat style fade).
     fog_range: [2]f32 = .{ 0, 1 },
 };
 
@@ -501,7 +493,7 @@ fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
     f.UseProgram(prog);
     f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_view"), 1, gl.FALSE, @ptrCast(&p.view.m));
     f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_proj"), 1, gl.FALSE, @ptrCast(&p.proj.m));
-    f.Uniform1i(f.GetUniformLocation(prog, "u_cel"), p.style.theme.lightingMode(p.style.shading));
+    f.Uniform1i(f.GetUniformLocation(prog, "u_cel"), p.style.shading.lightingMode());
     f.Uniform1f(f.GetUniformLocation(prog, "u_outline_k"), outline_k);
     f.Uniform1i(f.GetUniformLocation(prog, "u_outline_pass"), 0);
     const oc = p.style.theme.outline();
@@ -536,10 +528,10 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     f.Disable(gl.CULL_FACE);
 
     // Outline width in world units per unit of view depth (constant on screen).
-    const outlines = p.style.theme.lightingMode(p.style.shading) == 1 and p.style.outline_px > 0;
+    const outlines = p.style.shading == .cel and p.style.outline_px > 0;
     const outline_k: f32 = if (outlines) p.style.outline_px * p.pixel_density * p.world_per_px else 0;
 
-    if (p.style.theme == .kurzgesagt) r.drawShadows(p);
+    if (p.style.shading == .flat) r.drawShadows(p);
 
     if (r.uploaded_atoms > 0) {
         setCommon(r.sphere_prog, p, outline_k);
@@ -597,7 +589,7 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     f.BindVertexArray(0);
 }
 
-/// Flat theme: every opaque atom and bond as a flat silhouette in a darker
+/// Flat style: every opaque atom and bond as a flat silhouette in a darker
 /// shade of the background, offset down and to the right. Drawn first,
 /// without depth, so the molecule covers its own shadow.
 fn drawShadows(r: *Renderer, p: DrawParams) void {

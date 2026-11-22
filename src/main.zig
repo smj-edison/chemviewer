@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, GL context, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--kurzgesagt] [--atom-numbers]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
 //!                   [--cut I,J]... [--add FRAGMENT_FILE]
 //!
@@ -23,7 +23,7 @@ const Args = struct {
     ui_scale: ?f32 = null,
     no_ui: bool = false,
     dark: bool = false,
-    kurzgesagt: bool = false,
+    flat: bool = false,
     atom_numbers: bool = false,
     /// Startup script: select atoms (1-based), set their distance (Å) or
     /// angle/dihedral (degrees), save the frame as XYZ.
@@ -94,8 +94,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.atom_numbers = true;
         } else if (eql(u8, arg, "--dark")) {
             a.dark = true;
-        } else if (eql(u8, arg, "--kurzgesagt")) {
-            a.kurzgesagt = true;
+        } else if (eql(u8, arg, "--flat")) {
+            a.flat = true;
         } else if (eql(u8, arg, "--no-ui")) {
             a.no_ui = true;
         } else if (eql(u8, arg, "-h") or eql(u8, arg, "--help")) {
@@ -123,7 +123,7 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark] [--kurzgesagt] [--atom-numbers]
+            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\                  [--cut I,J]... [--add FRAGMENT_FILE]
             \\
@@ -179,7 +179,7 @@ pub fn main(init: std.process.Init) !void {
     defer app.deinit();
     if (args.ui_scale) |u| app.ui_scale = u;
     if (args.dark) app.style.theme = .dark;
-    if (args.kurzgesagt) app.style.theme = .kurzgesagt;
+    if (args.flat) app.style.shading = .flat;
     app.show_atom_numbers = args.atom_numbers;
     if (args.file) |f| app.openFile(f);
 
@@ -199,9 +199,8 @@ pub fn main(init: std.process.Init) !void {
         if (applied_theme != app.style.theme) {
             applied_theme = app.style.theme;
             switch (app.style.theme) {
-                .light => c.igStyleColorsLight(null),
+                .light => lightImGuiColors(),
                 .dark => c.igStyleColorsDark(null),
-                .kurzgesagt => kurzgesagtImGuiColors(),
             }
         }
 
@@ -408,8 +407,9 @@ test {
     _ = @import("app/occlusion.zig");
 }
 
-/// Light ImGui colours with Kurzgesagt violet and pink accents.
-fn kurzgesagtImGuiColors() void {
+/// Light ImGui colours on the blue-grey of the light theme, with violet and
+/// pink accents. Dark text sits on every fill, so fills stay light tints.
+fn lightImGuiColors() void {
     c.igStyleColorsLight(null);
     const col = &c.igGetStyle().*.Colors;
     const set = struct {
@@ -426,7 +426,6 @@ fn kurzgesagtImGuiColors() void {
     set(col, c.ImGuiCol_PopupBg, 0xF4F7FA, 0.98);
     set(col, c.ImGuiCol_MenuBarBg, 0xE6ECF3, 1);
     set(col, c.ImGuiCol_TitleBg, 0xE6ECF3, 1);
-    // Dark text sits on every one of these, so they stay light tints.
     set(col, c.ImGuiCol_TitleBgActive, 0xD9D3FF, 1);
     set(col, c.ImGuiCol_Border, 0xC8D4E3, 0.8);
     set(col, c.ImGuiCol_FrameBg, 0xE3E9F1, 1);
