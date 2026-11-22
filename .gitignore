@@ -3,3 +3,4 @@ zig-out/
 *.png
 zig-pkg/
 docs/style-refs/**/*.jpg
+renders/

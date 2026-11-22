@@ -156,18 +156,18 @@ pub const dark_palette: Palette = .{
 /// near-white backgrounds of their lighter scenes): saturation is kept for
 /// the atoms.
 ///
-/// Unlike the light/dark palettes, lightness *rises* with bond order (a
-/// viridis-like violet -> teal -> yellow ramp), so the scale still reads
-/// correctly in greyscale. Weak contacts still vanish through opacity
-/// (`bondColor` fades alpha below single), not by matching the background.
-/// Teal and yellow also keep bonds clear of the pink carbons.
+/// Bonds follow a reversed "mako"-like ramp anchored on the background:
+/// sea-green grey -> teal-blue -> deep indigo. Lightness falls steadily from
+/// no bond to triple (~0.2 per order), so the scale is unambiguous in
+/// greyscale and agrees with the opacity fade of weak contacts. Hues stay
+/// clear of the pink carbons, orange P/Au and white H.
 pub const kurzgesagt_palette: Palette = .{
     .background = .{ 0.8762, 0.9065, 0.9390 }, // #DFE7EF, OKLCh (0.925, 0.014, 250)
     .stops = &.{
-        .{ .at = 0.0, .lch = .{ .l = 0.32, .c = 0.120, .h = 290 } }, // (transparent)
-        .{ .at = 1.0, .lch = .{ .l = 0.45, .c = 0.160, .h = 280 } }, // single: deep violet
-        .{ .at = 2.0, .lch = .{ .l = 0.68, .c = 0.130, .h = 175 } }, // double: teal
-        .{ .at = 3.0, .lch = .{ .l = 0.88, .c = 0.170, .h = 105 } }, // triple: yellow
+        .{ .at = 0.0, .lch = .{ .l = 0.925, .c = 0.014, .h = 250 } }, // = background
+        .{ .at = 1.0, .lch = .{ .l = 0.70, .c = 0.070, .h = 190 } }, // single: sea-green grey
+        .{ .at = 2.0, .lch = .{ .l = 0.50, .c = 0.120, .h = 225 } }, // double: teal-blue
+        .{ .at = 3.0, .lch = .{ .l = 0.30, .c = 0.120, .h = 280 } }, // triple: deep indigo
     },
 };
 
@@ -219,8 +219,8 @@ test "snap is monotonic, continuous, and fixes integers" {
     try std.testing.expect(snap(1.05, 0.7) - 1 < 0.05);
 }
 
-test "bond palette contrast rises with bond character (light and dark)" {
-    for ([_]Palette{ light_palette, dark_palette }) |pal| {
+test "bond palette contrast rises with bond character (all themes)" {
+    for ([_]Palette{ light_palette, dark_palette, kurzgesagt_palette }) |pal| {
         const bg_l = srgbToOklab(pal.background).l;
         // The first stop sits on the background.
         try std.testing.expectApproxEqAbs(bg_l, pal.stops[0].lch.l, 0.02);
@@ -236,19 +236,4 @@ test "bond palette contrast rises with bond character (light and dark)" {
         try std.testing.expect(prev > 0.6);
         try std.testing.expectEqual(@as(f32, 0), bondColor(pal, 0, 0.7).alpha);
     }
-}
-
-test "kurzgesagt palette gets lighter with bond character (greyscale-safe)" {
-    var prev: f32 = -1;
-    var x: f32 = 0;
-    while (x <= 3) : (x += 0.01) {
-        const col = bondColor(kurzgesagt_palette, x, 0.7);
-        const l = srgbToOklab(col.rgb).l;
-        try std.testing.expect(l >= prev - 2e-3);
-        prev = l;
-    }
-    // Single to triple spans a wide lightness range.
-    const single = srgbToOklab(bondColor(kurzgesagt_palette, 1, 0.7).rgb).l;
-    try std.testing.expect(prev - single > 0.35);
-    try std.testing.expectEqual(@as(f32, 0), bondColor(kurzgesagt_palette, 0, 0.7).alpha);
 }
