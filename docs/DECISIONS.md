@@ -227,3 +227,16 @@ superseded). Choices that keep it small:
   wrapper (`cshim/imgui_vulkan.cpp`) that takes raw handles.
 - **Screenshots** copy the swapchain image to a host buffer; `--profile` uses
   timestamp queries, read back when a frame slot comes round again.
+
+### D21 — Lock rotation moves the camera, not the atoms
+"Lock rotation" keeps a structure's orientation steady across frames. The
+frame's coordinates are left alone: picking, measuring, editing and saving
+all keep working on the file's coordinates. Instead the camera follows each
+frame's rigid motion. When the lock is switched on, the displayed frame
+becomes the anchor. Each newly shown frame is superposed onto it (Horn, as
+in diffing), and the camera turns by the motion between the frame it was
+following and the new one (`Camera.followRigid`). Because every frame is
+measured against the same anchor, a frame looks the same however you got to
+it (scrubbing, stepping, playback), and the user's own rotations in between
+are kept. The backdrop pattern gets the same correction, so the scene as a
+whole stays still. A frame with different atoms restarts the lock there.

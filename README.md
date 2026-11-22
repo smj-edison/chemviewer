@@ -14,6 +14,9 @@ ImGui (via cimgui) doing the heavy lifting.
   symbol (View > Element labels). The inspector shows an element key.
 - **Instant scrubbing.** A timeline with an energy plot you can click or drag.
   Large trajectories are streamed from disk with background prefetch.
+  **Lock rotation** (next to Loop) turns the view with each frame so a
+  tumbling structure keeps its orientation: every frame is superposed onto
+  the frame shown when the lock was switched on, as in diffing.
 - **Diffing.** Superimpose the current frame onto a reference frame
   (Horn/Kabsch), with a red/green overlay, RMSD and max deviation.
 - **Measure and edit.** Click two to four atoms to get a distance, angle or
@@ -75,7 +78,9 @@ Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`, `--flat` (fl
 `--ui-scale X`, `--no-bg-pattern` (plain background), `--backdrop cells|space`
 (backdrop motif), `--bg-blur K` (backdrop depth of field, default 0.6), and
 a camera pose for scripted screenshots: `--orbit DX,DY` and `--pan DX,DY` (mouse
-drag in pixels), `--zoom STEPS` (wheel steps).
+drag in pixels), `--zoom STEPS` (wheel steps). `--lock-rotation` locks on
+the first frame before going to `--frame N`, so frame N is drawn in frame 1's
+orientation.
 
 GPU profiling: `--profile N` renders N frames while orbiting the camera and
 prints the mean GPU time of the background pass and the rest of the scene

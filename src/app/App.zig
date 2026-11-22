@@ -50,6 +50,23 @@ pub const Diff = struct {
     overlay: bool = true,
 };
 
+/// "Lock rotation": the camera follows each new frame's rigid motion
+/// relative to an anchor frame, so the structure keeps its orientation.
+pub const RotationLock = struct {
+    /// Displayed positions and elements of the frame shown when it started.
+    anchor: []Vec3,
+    numbers: []u8,
+    /// Superposition of the frame the camera currently follows onto the anchor.
+    current: cv.align_.Transform = .identity,
+    /// That frame's index.
+    index: usize,
+
+    fn deinit(l: *RotationLock, gpa: Allocator) void {
+        gpa.free(l.anchor);
+        gpa.free(l.numbers);
+    }
+};
+
 io: Io,
 gpa: Allocator,
 window: *c.SDL_Window,
@@ -63,6 +80,9 @@ diff: ?Diff = null,
 playing: bool = false,
 fps: f32 = 15,
 loop_playback: bool = true,
+/// Keep the structure's orientation steady across frames (see RotationLock).
+lock_rotation: bool = false,
+rotation_lock: ?RotationLock = null,
 last_advance: Io.Timestamp = .zero,
 
 scene_dirty: bool = true,
@@ -167,6 +187,7 @@ pub fn closeDocument(app: *App) void {
     d.bonds.deinit(app.gpa);
     app.gpa.free(d.path);
     app.doc = null;
+    app.dropRotationLock();
     app.scene_dirty = true;
 }
 
@@ -443,6 +464,7 @@ pub fn update(app: *App) void {
                 d.needs_fit = false;
                 app.fitCamera();
             }
+            app.followRotationLock();
             app.scene_dirty = true;
         }
     }
@@ -534,6 +556,63 @@ pub fn clearDiff(app: *App) void {
     df.deviations.deinit(app.gpa);
     app.diff = null;
     app.scene_dirty = true;
+}
+
+// ------------------------------------------------------- rotation lock
+
+pub fn setLockRotation(app: *App, on: bool) void {
+    app.lock_rotation = on;
+    app.dropRotationLock();
+    if (on) app.followRotationLock();
+}
+
+fn dropRotationLock(app: *App) void {
+    if (app.rotation_lock) |*l| l.deinit(app.gpa);
+    app.rotation_lock = null;
+}
+
+/// Starts the lock at the shown frame, or, if the shown frame changed, turns
+/// the camera by that frame's motion relative to the last one it followed
+/// (both measured by superposing onto the anchor, so the view of a frame does
+/// not depend on the path taken to it). Frames whose atoms don't match the
+/// anchor's restart the lock there.
+fn followRotationLock(app: *App) void {
+    if (!app.lock_rotation) return;
+    const d = app.doc orelse return;
+    const f = d.shown orelse return;
+    const pos = app.displayedPositions() orelse return;
+    if (app.rotation_lock) |*l| {
+        if (l.index == d.shown_index) return;
+        if (l.anchor.len == pos.len and std.mem.eql(u8, l.numbers, f.numbers)) {
+            const next = cv.align_.superpose(l.anchor, pos, null).transform;
+            // Frame-to-frame motion M = current⁻¹ ∘ next, with T(p) = R (p - from) + to:
+            // M(p) = curᵀ next (p - next.from) + curᵀ (next.to - cur.to) + cur.from.
+            const cur = l.current;
+            var rot: cv.math.Mat3 = undefined;
+            for (0..3) |row| for (0..3) |col| {
+                var s: f64 = 0;
+                for (0..3) |k| s += cur.rot[k][row] * next.rot[k][col];
+                rot.m[col][row] = @floatCast(s);
+            };
+            const dt = next.to_center - cur.to_center;
+            const to = cur.from_center + cv.math.Vec3d{
+                cur.rot[0][0] * dt[0] + cur.rot[1][0] * dt[1] + cur.rot[2][0] * dt[2],
+                cur.rot[0][1] * dt[0] + cur.rot[1][1] * dt[1] + cur.rot[2][1] * dt[2],
+                cur.rot[0][2] * dt[0] + cur.rot[1][2] * dt[1] + cur.rot[2][2] * dt[2],
+            };
+            app.camera.followRigid(rot, @floatCast(next.from_center), @floatCast(to));
+            l.current = next;
+            l.index = d.shown_index;
+            return;
+        }
+        app.dropRotationLock();
+    }
+    const anchor = app.gpa.dupe(Vec3, pos) catch return;
+    const numbers = app.gpa.dupe(u8, f.numbers) catch {
+        app.gpa.free(anchor);
+        return;
+    };
+    app.rotation_lock = .{ .anchor = anchor, .numbers = numbers, .index = d.shown_index };
 }
 
 fn updateDiff(app: *App) void {

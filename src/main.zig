@@ -3,7 +3,7 @@
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
 //!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
 //!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
-//!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
+//!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
 //!                   [--cut I,J]... [--add FRAGMENT_FILE]
 //!
@@ -37,6 +37,9 @@ const Args = struct {
     profile: ?u32 = null,
     /// With --profile: keep the camera still (measures cached redraws).
     profile_static: bool = false,
+    /// Lock rotation on the first frame, then go to --frame: the frame is
+    /// shown in the first frame's orientation.
+    lock_rotation: bool = false,
     pan: ?[2]f32 = null,
     atom_numbers: bool = false,
     /// Startup script: select atoms (1-based), set their distance (Å) or
@@ -132,6 +135,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.no_bg_pattern = true;
         } else if (eql(u8, arg, "--profile-static")) {
             a.profile_static = true;
+        } else if (eql(u8, arg, "--lock-rotation")) {
+            a.lock_rotation = true;
         } else if (eql(u8, arg, "--no-ui")) {
             a.no_ui = true;
         } else if (eql(u8, arg, "-h") or eql(u8, arg, "--help")) {
@@ -157,7 +162,7 @@ pub fn main(init: std.process.Init) !void {
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
             \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
-            \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
+            \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\                  [--cut I,J]... [--add FRAGMENT_FILE]
             \\
@@ -217,7 +222,7 @@ pub fn main(init: std.process.Init) !void {
 
     var startup: Startup = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };
     if (args.file != null) {
-        if (args.diff_ref) |r| app.setFrame(r) else if (args.frame) |f| app.setFrame(f);
+        if (args.diff_ref) |r| app.setFrame(r) else if (args.frame) |f| if (!args.lock_rotation) app.setFrame(f);
     }
 
     while (!app.quit_requested) {
@@ -255,6 +260,7 @@ pub fn main(init: std.process.Init) !void {
             .fovy = app.camera.fovy,
             .pixel_density = @max(c.SDL_GetWindowPixelDensity(window), 1),
             .style = app.style,
+            .bg_view = app.camera.bgView(),
             .bg_anchor = app.camera.bg_anchor,
             .bg_radius = app.camera.bg_radius,
         });
@@ -357,10 +363,11 @@ const Startup = struct {
         }
         switch (s.phase) {
             .reference => {
-                if (s.args.diff_ref == null) {
+                if (s.args.diff_ref == null and !s.args.lock_rotation) {
                     s.phase = .target;
                 } else if (app.isSettled()) {
-                    app.setReference();
+                    if (s.args.diff_ref != null) app.setReference();
+                    if (s.args.lock_rotation) app.setLockRotation(true);
                     app.setFrame(s.args.frame orelse 0);
                     s.phase = .target;
                 }
