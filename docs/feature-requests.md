@@ -27,3 +27,25 @@ something is picked up.
   moves the whole selection about its centre, so a pasted fragment always
   moves as one piece. An explicit pivot (e.g. Alt+click) could be added later
   for groups that bonds can't separate.*
+- [x] Design theme with color-blind awareness. For example, single to double
+  to triple gradient should increase in brightness, so both color blindness
+  and converting to grayscale work (the latter is common in publication).
+  *Bond gradients done on the kurzgesagt-style branch: in both themes the
+  lightness moves steadily away from the background from no bond to triple
+  (light: darker, dark: brighter), so order reads from lightness alone in
+  greyscale and for any colour vision; a unit test enforces it. On a light
+  background "brighter = stronger" would reverse against the fade of weak
+  contacts, hence darker.*
+  *Element colours re-chosen by simulating protanopia, deuteranopia and
+  tritanopia (Machado et al. 2009) and maximising the worst-case OKLab
+  distance between elements that bond, within each element's familiar hue.
+  Bonded pairs (Au-P, Au-S, C-N, C-O, O-P, ...) now stay apart in all four;
+  before, Au-F, C-Cl (tritanopia) and Au-S were near-identical. Remaining
+  close pairs are rare neighbours: Cl-F, N-I, O-Br, Au-F. Comparison
+  renders: renders/colorblind/.*
+- [x] Shift right-click and shift-middle click should match shift left-click
+  (e.g. panning)
+  *Shift with any button pans (Shift+middle already did, since middle pans).
+  With Alt, Shift+right now translates the group too.*
+- [x] Get rid of plus and minus buttons for adjusting bond and angle lengths
+  *Removed; type a value and press Enter.*
