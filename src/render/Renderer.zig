@@ -157,7 +157,7 @@ pub const Style = struct {
     /// Drawn (and picked) atom radius. The flat theme uses chunkier atoms,
     /// like the overlapping discs in Kurzgesagt's molecules.
     pub fn atomRadius(s: Style, z: u8) f32 {
-        const k: f32 = if (s.theme == .kurzgesagt) 1.6 else 1.0;
+        const k: f32 = if (s.theme == .kurzgesagt) 1.3 else 1.0;
         return cv.elements.displayRadius(z) * s.atom_scale * k;
     }
 
