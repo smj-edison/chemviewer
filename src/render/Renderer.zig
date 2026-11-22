@@ -99,17 +99,18 @@ pub const Theme = enum(c_int) {
     }
 };
 
-/// Flat, saturated element colours sampled from Kurzgesagt's molecule
-/// illustrations (pink carbon, blue oxygen, cyan nitrogen, white hydrogen).
-/// Others are picked to stay clear of the pale background; anything not
-/// listed is its CPK hue made bright and saturated.
+/// Flat, saturated element colours. They keep the hues chemists know (red O,
+/// blue N, green halogens, yellow S, orange P, gold Au) and give carbon
+/// teal: the one hue CPK leaves free (only the rare noble gases use cyan),
+/// and VMD's carbon colour. Anything not listed is its CPK hue made bright
+/// and saturated.
 fn kurzgesagtAtomColor(z: u8) [3]f32 {
     const hex: ?u24 = switch (z) {
         1 => 0xFFFFFF, // H
         5 => 0xFF9A7A, // B: salmon
-        6 => 0xFF2E7E, // C: hot pink
-        7 => 0x02C8F0, // N: cyan
-        8 => 0x5560F6, // O: periwinkle blue
+        6 => 0x00B3C2, // C: teal, OKLCh (0.70, 0.125, 205)
+        7 => 0x5560F6, // N: periwinkle blue
+        8 => 0xE94646, // O: coral red, OKLCh (0.63, 0.20, 25); apart from orange P
         9 => 0x7BD84A, // F: lime
         14 => 0xC58A5A, // Si: clay
         15 => 0xFF7A1A, // P: orange
