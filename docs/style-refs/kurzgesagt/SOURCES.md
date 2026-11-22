@@ -8,12 +8,16 @@ they came from (downloaded 2026-11-22).
 The flat look is what matters, not the space scenes. The main reference is
 `3072288018327926909.png` ("Molecules / Proteins"). Traits borrowed:
 
-- a solid, saturated background (#FFD648 yellow) with no gradient or texture;
+- a solid background with no gradient or texture. Not the saturated yellow
+  of the molecule frame (garish behind a whole UI), but the pale, low-chroma
+  near-white of their lighter scenes: #DFE7EF, OKLCh (0.925, 0.014, 250).
+  Saturation is kept for the atoms; the cool tint sets off the warm pink and
+  orange atoms, and it is dark enough that white hydrogens still read;
 - atoms as flat single-colour discs (pink C, periwinkle O, cyan N, white H),
   with no outlines or shading bands;
 - one or two lighter dots of the same hue up and to the right of centre;
 - depth shown by fading toward the background colour, so back atoms wash out;
-- flat drop shadows / silhouettes a deeper shade of the background (#FEC80E),
+- flat drop shadows / silhouettes a deeper shade of the background (#C8D4E3),
   offset down-right like the speech bubbles in `5202208609956091538.png`.
 
 ## Added by the user

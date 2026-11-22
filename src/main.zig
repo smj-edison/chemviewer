@@ -422,15 +422,15 @@ fn kurzgesagtImGuiColors() void {
             };
         }
     }.f;
-    set(col, c.ImGuiCol_WindowBg, 0xFFF8E6, 0.96);
-    set(col, c.ImGuiCol_PopupBg, 0xFFF8E6, 0.98);
-    set(col, c.ImGuiCol_MenuBarBg, 0xFFE89A, 1);
-    set(col, c.ImGuiCol_TitleBg, 0xFFE89A, 1);
+    set(col, c.ImGuiCol_WindowBg, 0xF4F7FA, 0.96);
+    set(col, c.ImGuiCol_PopupBg, 0xF4F7FA, 0.98);
+    set(col, c.ImGuiCol_MenuBarBg, 0xE6ECF3, 1);
+    set(col, c.ImGuiCol_TitleBg, 0xE6ECF3, 1);
     set(col, c.ImGuiCol_TitleBgActive, 0x5540F0, 1);
-    set(col, c.ImGuiCol_Border, 0xE8C860, 0.7);
-    set(col, c.ImGuiCol_FrameBg, 0xFFE9A8, 1);
-    set(col, c.ImGuiCol_FrameBgHovered, 0xFFDC7A, 1);
-    set(col, c.ImGuiCol_FrameBgActive, 0xFFCF4A, 1);
+    set(col, c.ImGuiCol_Border, 0xC8D4E3, 0.8);
+    set(col, c.ImGuiCol_FrameBg, 0xE3E9F1, 1);
+    set(col, c.ImGuiCol_FrameBgHovered, 0xD6DFEA, 1);
+    set(col, c.ImGuiCol_FrameBgActive, 0xC8D4E3, 1);
     set(col, c.ImGuiCol_Button, 0x5540F0, 0.85);
     set(col, c.ImGuiCol_ButtonHovered, 0xFF2E7E, 0.9);
     set(col, c.ImGuiCol_ButtonActive, 0xE0136A, 1);

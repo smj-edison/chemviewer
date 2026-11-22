@@ -152,12 +152,14 @@ pub const dark_palette: Palette = .{
     },
 };
 
-/// Kurzgesagt-style flat yellow: bonds darken from warm amber through the
-/// signature violet to deep indigo. Same rule as the light palette.
+/// Kurzgesagt-style flat look on a pale, low-chroma blue-grey (like the
+/// near-white backgrounds of their lighter scenes): saturation is kept for
+/// the atoms. Bonds darken from warm amber through the signature violet to
+/// deep indigo. Same rule as the light palette.
 pub const kurzgesagt_palette: Palette = .{
-    .background = .{ 0xFF.0 / 255.0, 0xD6.0 / 255.0, 0x48.0 / 255.0 }, // #FFD648, OKLab L ≈ 0.887
+    .background = .{ 0.8762, 0.9065, 0.9390 }, // #DFE7EF, OKLCh (0.925, 0.014, 250)
     .stops = &.{
-        .{ .at = 0.0, .lch = .{ .l = 0.887, .c = 0.159, .h = 92 } }, // = background
+        .{ .at = 0.0, .lch = .{ .l = 0.925, .c = 0.014, .h = 250 } }, // = background
         .{ .at = 1.0, .lch = .{ .l = 0.62, .c = 0.130, .h = 55 } }, // single: warm amber
         .{ .at = 2.0, .lch = .{ .l = 0.50, .c = 0.240, .h = 279 } }, // double: violet
         .{ .at = 3.0, .lch = .{ .l = 0.27, .c = 0.150, .h = 285 } }, // triple: deep indigo

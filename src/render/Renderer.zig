@@ -25,7 +25,7 @@ pub const BondColoring = enum(c_int) {
 pub const Theme = enum(c_int) {
     light,
     dark,
-    /// Experimental: flat, saturated "Kurzgesagt" look: solid yellow
+    /// Experimental: flat, saturated "Kurzgesagt" look: solid pale
     /// background, single-colour atoms with highlight dots, flat drop
     /// shadows, depth shown by fading toward the background.
     kurzgesagt,
@@ -84,10 +84,10 @@ pub const Theme = enum(c_int) {
     }
 
     /// Flat drop-shadow colour: a deeper, more saturated shade of the
-    /// background (Kurzgesagt's silhouette tone, #FEC80E on #FFD648).
+    /// background, as in Kurzgesagt's silhouettes (OKLCh 0.865, 0.024, 255).
     pub fn shadow(t: Theme) [3]f32 {
         return switch (t) {
-            .kurzgesagt => .{ 0xF5.0 / 255.0, 0xBC.0 / 255.0, 0x0A.0 / 255.0 },
+            .kurzgesagt => .{ 0.7858, 0.8304, 0.8886 }, // #C8D4E3
             else => t.background(),
         };
     }
@@ -101,7 +101,7 @@ pub const Theme = enum(c_int) {
 
 /// Flat, saturated element colours sampled from Kurzgesagt's molecule
 /// illustrations (pink carbon, blue oxygen, cyan nitrogen, white hydrogen).
-/// Others are picked to stay off the yellow background; anything not
+/// Others are picked to stay clear of the pale background; anything not
 /// listed is its CPK hue made bright and saturated.
 fn kurzgesagtAtomColor(z: u8) [3]f32 {
     const hex: ?u24 = switch (z) {
@@ -113,11 +113,11 @@ fn kurzgesagtAtomColor(z: u8) [3]f32 {
         9 => 0x7BD84A, // F: lime
         14 => 0xC58A5A, // Si: clay
         15 => 0xFF7A1A, // P: orange
-        16 => 0x18C59A, // S: teal green (yellow would vanish)
+        16 => 0xFFC21A, // S: sunflower
         17 => 0x2FBF5F, // Cl: green
         35 => 0xA8325A, // Br: wine
         53 => 0x8A3FE0, // I: purple
-        79 => 0xFF8A00, // Au: deep gold, darker than the background
+        79 => 0xFF8A00, // Au: deep gold
         else => null,
     };
     if (hex) |h| return .{
