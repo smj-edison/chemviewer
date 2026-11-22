@@ -71,12 +71,9 @@ and on the dark theme they get brighter:
 The stop at 0.5 front-loads the change, so thermally stretched bonds just
 below single (C–H in MD frames) still stand clear of the background. Chroma
 stays low so atoms carry the colour, and the bond hues avoid the hues atoms
-use (teal C in the flat style, blue N, red O, gold Au, yellow S). Because
+use (teal C, blue N, red O, gold Au, yellow S). Because
 lightness moves monotonically away from the background, the scale also reads
 correctly in greyscale.
-
-In the cel style, carbon atoms use a lighter grey than the CPK default
-(L ≈ 0.77 / 0.82), so atoms never blend into single bonds.
 
 Weak contacts fade *into* the background, both in lightness and in opacity, and
 higher bond orders always look more intense. Interpolation happens in OKLCh,
@@ -105,7 +102,7 @@ With cel shading, each bond's outline is weighted by
 both outline width and outline opacity, so a forming bond's outline grows in
 gradually instead of switching on at single-bond character.
 
-"Element" colouring (CPK colours on each half) is also available. It keeps
+"Element" colouring (element colours on each half) is also available. It keeps
 opacity and thinning from the snapped character.
 
 ## Neighbour search

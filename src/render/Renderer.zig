@@ -69,12 +69,12 @@ pub const Theme = enum(c_int) {
     }
 };
 
-/// Flat style's element colours. They keep the hues chemists know (red O,
+/// Element colours, shared by both styles. They keep the hues chemists know (red O,
 /// blue N, green halogens, yellow S, orange P, gold Au) and give carbon
 /// teal: the one hue CPK leaves free (only the rare noble gases use cyan),
 /// and VMD's carbon colour. Anything not listed is its CPK hue made bright
 /// and saturated.
-fn flatAtomColor(z: u8) [3]f32 {
+fn elementColor(z: u8) [3]f32 {
     const hex: ?u24 = switch (z) {
         1 => 0xFFFFFF, // H
         5 => 0xFF9A7A, // B: salmon
@@ -104,11 +104,11 @@ fn flatAtomColor(z: u8) [3]f32 {
 
 /// How atoms and bonds are drawn; works with either theme.
 pub const Shading = enum(c_int) {
-    /// Toon bands with outlines, CPK colours.
+    /// Toon bands with outlines.
     cel,
     /// Inspired by Kurzgesagt's flat illustrations: solid fills with
     /// highlight dots, no outlines, flat drop shadows, depth shown by fading
-    /// toward the background, chunkier atoms, teal carbon.
+    /// toward the background, chunkier atoms.
     flat,
 
     /// Shader lighting mode (`u_cel` in shaders.zig).
@@ -136,15 +136,10 @@ pub const Style = struct {
     snap: f32 = 0.7,
     show_cell: bool = true,
 
-    /// Element colour. Cel uses CPK, with carbon lifted well above the
-    /// single-bond colour so the two don't blend; flat has its own set.
+    /// Element colour: the same in every theme and style.
     pub fn atomColor(s: Style, z: u8) [3]f32 {
-        if (s.shading == .flat) return flatAtomColor(z);
-        if (z == 6) return switch (s.theme) {
-            .light => .{ 0.71, 0.71, 0.72 }, // OKLab L ≈ 0.77 vs single bonds 0.58
-            .dark => .{ 0.77, 0.77, 0.78 }, // OKLab L ≈ 0.82 vs single bonds 0.56
-        };
-        return cv.elements.colorRgb(z);
+        _ = s;
+        return elementColor(z);
     }
 
     /// Drawn (and picked) atom radius. Flat uses chunkier atoms, like the

@@ -1458,10 +1458,10 @@ fn inspector(app: *App, timeline_h: f32) void {
     c.igSameLine(0, c.igGetFontSize() * 1.5);
     var shading: c_int = @backingInt(app.style.shading);
     if (c.igRadioButton_IntPtr("Cel", &shading, 0)) app.scene_dirty = true;
-    ui.tooltip("Toon bands with outlines, CPK element colours.");
+    ui.tooltip("Toon bands with outlines.");
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Flat", &shading, 1)) app.scene_dirty = true;
-    ui.tooltip("Inspired by Kurzgesagt's flat illustrations: solid colours, flat drop shadows, depth shown by fading into the background, teal carbon.");
+    ui.tooltip("Inspired by Kurzgesagt's flat illustrations: solid colours, flat drop shadows, depth shown by fading into the background.");
     app.style.shading = @fromBackingInt(@intCast(shading));
     if (app.style.shading == .cel) {
         _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
