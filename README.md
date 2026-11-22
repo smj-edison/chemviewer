@@ -70,6 +70,10 @@ Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`, `--flat` (fl
 a camera pose for scripted screenshots: `--orbit DX,DY` and `--pan DX,DY` (mouse
 drag in pixels), `--zoom STEPS` (wheel steps).
 
+GPU profiling: `--profile N` renders N frames while orbiting the camera and
+prints the mean GPU time of the background pass and the rest of the scene
+(`--profile-static` keeps the camera still). Use a release build.
+
 Scripted edits (atom numbers are 1-based; values in Å or degrees):
 
 ```sh

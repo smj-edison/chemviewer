@@ -46,6 +46,8 @@ pub const COMPILE_STATUS: Enum = 0x8B81;
 pub const LINK_STATUS: Enum = 0x8B82;
 pub const INFO_LOG_LENGTH: Enum = 0x8B84;
 pub const PACK_ALIGNMENT: Enum = 0x0D05;
+pub const TIME_ELAPSED: Enum = 0x88BF;
+pub const QUERY_RESULT: Enum = 0x8866;
 pub const FALSE: Boolean = 0;
 pub const TRUE: Boolean = 1;
 
@@ -95,6 +97,11 @@ const Fns = struct {
     ReadPixels: *const fn (Int, Int, Sizei, Sizei, Enum, Enum, *anyopaque) callconv(.c) void,
     PixelStorei: *const fn (Enum, Int) callconv(.c) void,
     Finish: *const fn () callconv(.c) void,
+    GenQueries: *const fn (Sizei, [*]Uint) callconv(.c) void,
+    DeleteQueries: *const fn (Sizei, [*]const Uint) callconv(.c) void,
+    BeginQuery: *const fn (Enum, Uint) callconv(.c) void,
+    EndQuery: *const fn (Enum) callconv(.c) void,
+    GetQueryObjectui64v: *const fn (Uint, Enum, *u64) callconv(.c) void,
 };
 
 pub var f: Fns = undefined;

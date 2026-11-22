@@ -3,7 +3,7 @@
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
 //!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
 //!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
-//!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY]
+//!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
 //!                   [--cut I,J]... [--add FRAGMENT_FILE]
 //!
@@ -33,6 +33,10 @@ const Args = struct {
     /// orbit by a mouse drag of (dx, dy) pixels, zoom by wheel steps, pan by pixels.
     orbit: ?[2]f32 = null,
     zoom: ?f32 = null,
+    /// Render this many frames while orbiting, print GPU time per pass, exit.
+    profile: ?u32 = null,
+    /// With --profile: keep the camera still (measures cached redraws).
+    profile_static: bool = false,
     pan: ?[2]f32 = null,
     atom_numbers: bool = false,
     /// Startup script: select atoms (1-based), set their distance (Å) or
@@ -58,7 +62,7 @@ fn parseArgs(argv: []const []const u8) !Args {
             eql(u8, arg, "--select") or eql(u8, arg, "--set") or eql(u8, arg, "--save") or
             eql(u8, arg, "--cut") or eql(u8, arg, "--add") or
             eql(u8, arg, "--orbit") or eql(u8, arg, "--zoom") or eql(u8, arg, "--pan") or
-            eql(u8, arg, "--backdrop") or eql(u8, arg, "--bg-blur"))
+            eql(u8, arg, "--backdrop") or eql(u8, arg, "--bg-blur") or eql(u8, arg, "--profile"))
         {
             i += 1;
             if (i >= argv.len) return error.MissingArgumentValue;
@@ -72,6 +76,8 @@ fn parseArgs(argv: []const []const u8) !Args {
                 if (eql(u8, arg, "--orbit")) a.orbit = xy else a.pan = xy;
             } else if (eql(u8, arg, "--zoom")) {
                 a.zoom = try std.fmt.parseFloat(f32, v);
+            } else if (eql(u8, arg, "--profile")) {
+                a.profile = try std.fmt.parseInt(u32, v, 10);
             } else if (eql(u8, arg, "--bg-blur")) {
                 a.bg_blur = try std.fmt.parseFloat(f32, v);
             } else if (eql(u8, arg, "--backdrop")) {
@@ -124,6 +130,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.flat = true;
         } else if (eql(u8, arg, "--no-bg-pattern")) {
             a.no_bg_pattern = true;
+        } else if (eql(u8, arg, "--profile-static")) {
+            a.profile_static = true;
         } else if (eql(u8, arg, "--no-ui")) {
             a.no_ui = true;
         } else if (eql(u8, arg, "-h") or eql(u8, arg, "--help")) {
@@ -153,7 +161,7 @@ pub fn main(init: std.process.Init) !void {
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
             \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
-            \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY]
+            \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\                  [--cut I,J]... [--add FRAGMENT_FILE]
             \\
@@ -176,7 +184,7 @@ pub fn main(init: std.process.Init) !void {
     _ = c.SDL_GL_SetAttribute(c.SDL_GL_MULTISAMPLESAMPLES, 4);
 
     const win_flags = c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY |
-        (if (args.screenshot != null) c.SDL_WINDOW_HIDDEN else 0);
+        (if (args.screenshot != null or args.profile != null) c.SDL_WINDOW_HIDDEN else 0);
     const window = c.SDL_CreateWindow("chemviewer", args.width, args.height, win_flags) orelse
         return sdlFail("SDL_CreateWindow");
     defer c.SDL_DestroyWindow(window);
@@ -360,6 +368,7 @@ const Startup = struct {
                 s.phase = .settle;
             },
             .settle => {
+                if (s.args.profile) |n| return s.profile(app, n, w, h);
                 if (s.args.screenshot == null) {
                     s.phase = .done;
                     return false;
@@ -374,6 +383,29 @@ const Startup = struct {
             .done => {},
         }
         return false;
+    }
+
+    /// Orbits the camera a little every frame (so nothing can be cached) and
+    /// reports the mean GPU time of the background pass and the rest.
+    fn profile(s: *Startup, app: *App, n: u32, w: c_int, h: c_int) bool {
+        const Renderer = @import("render/Renderer.zig");
+        s.settle_frames += 1;
+        if (s.settle_frames == 4) Renderer.Profile.begin(&app.renderer);
+        if (s.settle_frames <= 4) return false;
+        if (!s.args.profile_static) app.camera.orbit(4, 1);
+        const prof = app.renderer.profile.?;
+        if (prof.frames < n) return false;
+        _ = Renderer.Profile.end(&app.renderer);
+        const ms = struct {
+            fn f(ns: u64, frames: u32) f64 {
+                return @as(f64, @floatFromInt(ns)) / 1e6 / @as(f64, @floatFromInt(frames));
+            }
+        }.f;
+        const motif = if (app.style.shading == .flat) @tagName(app.style.backdrop) else "-";
+        std.debug.print("{d}x{d} {s}/{s}: background {d:.3} ms, scene {d:.3} ms ({d} frames)\n", .{
+            w, h, @tagName(app.style.shading), motif, ms(prof.background_ns, prof.frames), ms(prof.scene_ns, prof.frames), prof.frames,
+        });
+        return true;
     }
 
     fn script(s: *Startup, app: *App) !void {

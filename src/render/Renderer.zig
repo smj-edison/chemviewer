@@ -245,6 +245,8 @@ uploaded_atoms: usize = 0,
 uploaded_opaque_bonds: usize = 0,
 uploaded_translucent_bonds: usize = 0,
 uploaded_lines: usize = 0,
+/// GPU timing of the background pass and the rest of `draw` (`--profile`).
+profile: ?Profile = null,
 /// Bounding sphere of the uploaded atoms (for the flat style's depth fade).
 bounds_center: Vec3 = .{ 0, 0, 0 },
 bounds_radius: f32 = 1,
@@ -329,8 +331,41 @@ fn instanceAttrib(loc: gl.Uint, n: gl.Int, stride: usize, offset: usize) void {
     gl.f.VertexAttribDivisor(loc, 1);
 }
 
+/// GPU time per pass, read back synchronously after each frame (stalls the
+/// pipeline, so only for measuring).
+pub const Profile = struct {
+    queries: [2]gl.Uint = .{ 0, 0 },
+    frames: u32 = 0,
+    background_ns: u64 = 0,
+    scene_ns: u64 = 0,
+
+    pub fn begin(r: *Renderer) void {
+        var q: [2]gl.Uint = undefined;
+        gl.f.GenQueries(2, &q);
+        r.profile = .{ .queries = q };
+    }
+
+    pub fn end(r: *Renderer) ?Profile {
+        const prof = r.profile orelse return null;
+        gl.f.DeleteQueries(2, &prof.queries);
+        r.profile = null;
+        return prof;
+    }
+
+    fn collect(prof: *Profile) void {
+        var a: u64 = 0;
+        var b: u64 = 0;
+        gl.f.GetQueryObjectui64v(prof.queries[0], gl.QUERY_RESULT, &a);
+        gl.f.GetQueryObjectui64v(prof.queries[1], gl.QUERY_RESULT, &b);
+        prof.background_ns += a;
+        prof.scene_ns += b;
+        prof.frames += 1;
+    }
+};
+
 pub fn deinit(r: *Renderer) void {
     const f = &gl.f;
+    _ = Profile.end(r);
     const vaos = [_]gl.Uint{ r.sphere_vao, r.cylinder_vao, r.line_vao, r.background_vao };
     f.DeleteVertexArrays(vaos.len, &vaos);
     const bufs = [_]gl.Uint{ r.quad_vbo, r.cyl_vbo, r.cyl_ibo, r.atom_vbo, r.bond_vbo, r.line_vbo };
@@ -559,7 +594,16 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     f.Viewport(0, 0, p.width, p.height);
     f.ClearColor(bg[0], bg[1], bg[2], 1);
     f.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if (r.profile) |prof| f.BeginQuery(gl.TIME_ELAPSED, prof.queries[0]);
     if (p.style.background_pattern) r.drawBackground(p);
+    if (r.profile) |prof| {
+        f.EndQuery(gl.TIME_ELAPSED);
+        f.BeginQuery(gl.TIME_ELAPSED, prof.queries[1]);
+    }
+    defer if (r.profile) |*prof| {
+        f.EndQuery(gl.TIME_ELAPSED);
+        prof.collect();
+    };
     f.Enable(gl.DEPTH_TEST);
     f.DepthFunc(gl.LESS);
     f.DepthMask(gl.TRUE);
