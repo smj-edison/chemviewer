@@ -49,3 +49,9 @@ something is picked up.
   With Alt, Shift+right now translates the group too.*
 - [x] Get rid of plus and minus buttons for adjusting bond and angle lengths
   *Removed; type a value and press Enter.*
+- [x] Single clicking bonds doesn't make sense, in fact the concept of selecting
+  bonds doesn't really make sense. The only affordance they should have is double
+  clicking to have them cut. The cut checkbox doesn't make sense either anymore.
+  *Bonds can't be selected any more: a single click on a bond does nothing,
+  a double click cuts or restores it. The cut checkboxes, the X key and the
+  Edit > Cut / restore menu item are gone; Edit > Restore all cut bonds stays.*

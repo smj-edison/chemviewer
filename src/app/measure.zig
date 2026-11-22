@@ -66,23 +66,6 @@ pub fn bar(app: *App) void {
         ui.text("{s}", .{hint});
         return;
     }
-    if (sel.len == 0 and app.selected_bond != null) {
-        const b = app.selected_bond.?;
-        var la: [16]u8 = undefined;
-        var lb2: [16]u8 = undefined;
-        ui.text("Bond {s}-{s}   {d:.5} Å", .{ atomLabel(&la, f.numbers, b[0]), atomLabel(&lb2, f.numbers, b[1]), geom.distance(f.positions, b[0], b[1]) });
-        if (app.bondCharacter(b[0], b[1])) |ch| {
-            c.igSameLine(0, fs);
-            ui.textDisabled("bond character {d:.2}", .{ch});
-        }
-        c.igSameLine(0, fs);
-        var cut = app.isCut(b[0], b[1]);
-        if (c.igCheckbox("cut (X, double-click)", &cut)) app.toggleCutPair(b[0], b[1]);
-        ui.tooltip("A cut bond is still drawn (thin, red) but is ignored when finding what moves together.");
-        c.igSameLine(0, fs * 1.5);
-        if (c.igSmallButton("Clear")) app.clearSelection();
-        return;
-    }
     if (sel.len == 0) {
         ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all. Alt+drag: move the selection, or a group around a single selected atom. Ctrl+C: copy XYZ.", .{});
         return;
@@ -113,10 +96,6 @@ pub fn bar(app: *App) void {
             if (app.bondCharacter(sel[0], sel[1])) |ch| {
                 c.igSameLine(0, fs);
                 ui.textDisabled("bond character {d:.2}", .{ch});
-                c.igSameLine(0, fs);
-                var cut = app.isCut(sel[0], sel[1]);
-                if (c.igCheckbox("cut", &cut)) app.toggleCutPair(sel[0], sel[1]);
-                ui.tooltip("A cut bond is still drawn (thin, red) but is ignored when finding what moves together and when double-click selects a molecule.");
             }
             var l2: [16]u8 = undefined;
             modeSelector(app, atomLabel(&l2, f.numbers, sel[1]));

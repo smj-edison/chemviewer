@@ -31,7 +31,7 @@ ImGui (via cimgui) doing the heavy lifting.
   drag twists; Alt+middle (or Alt+Shift+left/right) drag translates. With nothing
   selected the grabbed atom's molecule moves. Each drag is one undoable edit;
   Esc cancels.
-- **Cut bonds.** Double-click a bond (or click it and press X) to cut it. It stays drawn (thin, red),
+- **Cut bonds.** Double-click a bond to cut it (and again to restore it). It stays drawn (thin, red),
   but edits and molecule selection treat the two sides as separate, so you can
   move part of a ring or a ligand freely.
 - **Formats:** XYZ / extended XYZ, Gaussian input (`.gjf`/`.com`) and output
@@ -96,7 +96,8 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 
 | Input | Action |
 |---|---|
-| Left click | select / deselect an atom; on a bond: select just the bond; empty space: clear |
+| Left click | select / deselect an atom; empty space: clear selection |
+| Double-click a bond | cut / restore it |
 | Alt + left drag | on a selected atom: rotate the selection about its centre; with one base atom selected, on another atom: swing its branch around the base |
 | Alt + right drag | twist the group about the base→grabbed axis |
 | Alt + middle drag / Alt + Shift + left or right drag | translate the group |
@@ -117,7 +118,6 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Ctrl+C | copy selection (or whole frame) as XYZ |
 | Ctrl+V | paste XYZ / coordinates as a fragment into the current structure |
 | Ctrl+Shift+V | paste as a new structure |
-| X / double-click a bond | cut / restore the bond (ignored when moving groups) |
 | N | show / hide atom numbers |
 | Delete / Backspace | delete the selected atoms |
 | Ctrl+Z | undo geometry edit (including deletes and pastes) |
