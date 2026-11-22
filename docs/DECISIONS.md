@@ -241,30 +241,36 @@ it (scrubbing, stepping, playback), and the user's own rotations in between
 are kept. The backdrop pattern gets the same correction, so the scene as a
 whole stays still. A frame with different atoms restarts the lock there.
 
-### D22 — Glass style: translucent atoms drawn in layers
-A third style (experimental, `--glass`), inspired by Apple's "Liquid Glass":
-atoms are tinted glass that refracts what is behind them, filtered by their
-colour, with a bright rim on the lit side, a tinted glow opposite it, a
-Fresnel sheen and slight dispersion (shaders/glass.glsl). Atoms are 1.2x
-larger so the refraction shows. Bonds use the same shading but refract only
-the backdrop.
+### D22 — Glass style: translucent atoms and bonds drawn in layers
+A fourth style (experimental, `--glass`), inspired by Apple's "Liquid Glass":
+atoms and bonds are tinted glass that refracts what is behind them, filtered
+by their colour, with a bright rim on the lit side, a tinted glow opposite
+it, a Fresnel sheen and slight dispersion (shaders/glass.glsl). Atoms are
+1.2x larger so the refraction shows. Faint (alpha-blended) contacts stay as
+they are and refract only the backdrop.
 - **Refraction samples a copy of the scene.** A shader can't read the target
-  it draws into, so before glass atoms are drawn the MSAA scene is resolved
-  into `Gpu.scene_copy` (`snapshotScene`: end the pass, resolve, resume with
-  load ops). The backdrop cache is always kept for the same reason, holding
-  the plain background when the pattern is off.
-- **Layers instead of one snapshot per atom.** Atoms only need the atoms
-  behind them that they overlap on screen. On the CPU, going from far to
-  near, each atom goes one layer above the farthest-placed atoms it overlaps
-  (a grid of screen cells finds them), so atoms sharing a layer never
-  overlap and one snapshot per layer is exact. This reruns only when the
-  view or the scene changes. Typical molecules need a handful of layers;
-  the cap is 16 (deeper atoms share the last layer and hide what they
-  overlap), and above 20000 atoms everything is one layer. Depth peeling or
-  order-independent transparency would avoid the CPU sort but can't refract:
-  they blend, they don't bend what is behind.
-- **Cost.** The MSAA colour and depth targets are no longer transient
-  (lazily allocated memory on tilers), as glass stores and reloads them
-  mid-frame. Other styles still discard them after the resolve. Glass costs
-  about 2 ms per frame at 1080p on an Intel Xe iGPU for a 77-atom complex
-  (cel: 0.25 ms).
+  it draws into, so before glass is drawn the MSAA scene is resolved into
+  `Gpu.scene_copy` (`snapshotScene`: end the pass, resolve, resume with load
+  ops). The backdrop cache is always kept for the same reason, holding the
+  plain background when the pattern is off.
+- **Layers instead of one snapshot per object.** Glass only needs what is
+  behind it that it overlaps on screen. Every atom and bond is a screen-space
+  capsule (an atom has zero length); on the CPU, going from far to near, each
+  goes one layer above the farthest-placed capsules it overlaps (a grid of
+  screen cells finds them; src/render/glass_layers.zig, unit-tested), so
+  objects sharing a layer never overlap and one snapshot per layer is exact.
+  This reruns only when the view or the scene changes. Bonds sort by their
+  midpoint, so they usually fall between their two atoms; split into halves
+  they would sort more finely, but the second half refracts the first one's
+  open end, leaving a dark notch. The cap is 24 layers (a 77-atom complex
+  needs about 22; deeper objects share the last layer and hide what they
+  overlap); above 40000 objects there are two layers, bonds then atoms.
+  Depth peeling or order-independent transparency would avoid the CPU sort
+  but can't refract: they blend, they don't bend what is behind.
+- **Cost.** Each snapshot resolves only the screen rectangle its layer
+  covers, widened by how far refraction can reach, and while glass pauses the
+  pass the resolve into the swapchain image happens once at the end instead
+  of at every pause. That took a 22-layer frame from 8 ms to 1 ms at 1080p on
+  an Intel Xe iGPU (cel: 0.25 ms). The MSAA colour and depth targets are no
+  longer transient (lazily allocated memory on tilers), as glass stores and
+  reloads them mid-frame; other styles still discard them after the resolve.

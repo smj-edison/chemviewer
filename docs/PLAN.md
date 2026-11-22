@@ -136,7 +136,7 @@ bytes (not frame count) evicts old ones. Scrubbing never blocks the render loop.
 - [ ] Periodic cells: draw images, wrap atoms, bonds across boundaries (minimum image)
 - [x] Outlines (cel shading), light/dark themes
 - [x] Flat style inspired by Kurzgesagt (independent of the light/dark theme), blue-grey light background, greyscale-safe bond palettes, teal carbon
-- [x] Experimental glass style: translucent tinted glass atoms that refract the atoms, bonds and backdrop behind them (D22)
+- [x] Experimental glass style: translucent tinted glass atoms and bonds that refract everything behind them (D22)
 - [ ] Depth cueing / SSAO (the flat style fades with depth; cel does not yet)
 - [ ] Persist settings (window layout, style) via `Io.Dir` in the platform config dir
 - [x] Drag-and-drop files (SDL drop events)
