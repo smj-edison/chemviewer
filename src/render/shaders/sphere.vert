@@ -21,6 +21,7 @@ void main() {
     float d = length(c);
     // Selected atoms get a wider ring (in the accent colour) even without outlines.
     float ro = r + (a_highlight > 0.0 ? max(u_select_k, u_outline_k) : u_outline_k) * d;
+    if (u_shadow_soft == 1) ro = r * 1.5; // room for the feathered edge
     v_highlight = a_highlight;
     // Enlarge the quad so the perspective silhouette is always covered.
     float s = ro * 1.3 * d / sqrt(max(d * d - ro * ro, 1e-4));

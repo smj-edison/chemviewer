@@ -15,6 +15,13 @@ void main() {
     vec3 d = normalize(v_view_pos);
     float b = dot(d, v_center);
     float cc = dot(v_center, v_center);
+    if (u_shadow_soft == 1) {
+        // Feathered shadow: darkening factor by the ray's distance from the centre.
+        float dist = sqrt(max(cc - b * b, 0.0)) / v_radius;
+        o_color = vec4(mix(vec3(1.0), u_shadow_color, 1.0 - smoothstep(0.55, 1.45, dist)), 1.0);
+        gl_FragDepth = 0.999999;
+        return;
+    }
     float disc_o = b * b - (cc - v_outer * v_outer);
     if (disc_o < 0.0) discard;
     float disc_i = b * b - (cc - v_radius * v_radius);
@@ -24,6 +31,13 @@ void main() {
     // Normal of the inner sphere (clamped to its silhouette near the edge).
     vec3 n = normalize(p - v_center);
     vec3 body = shade(v_color.rgb, n, -d);
+    if (u_cel == 3) {
+        // Aqua-style glass cap: a soft-edged ellipse across the top,
+        // brightest at its crown.
+        vec2 q = n.xy;
+        float m = smoothstep(1.0, 0.9, length((q - vec2(-0.06, 0.42)) / vec2(0.66, 0.40)));
+        body = mix(body, vec3(1.0), m * (0.18 + 0.5 * smoothstep(0.02, 0.75, q.y)));
+    }
     if (u_cel == 2) {
         // Lighter dots of the same hue, up and to the right: a big one
         // and a small one. Placed on the disc (n.xy), so they scale
