@@ -64,6 +64,10 @@ fps: f32 = 15,
 loop_playback: bool = true,
 last_advance: Io.Timestamp = .zero,
 
+/// Recent displayed positions for rainbow trails, oldest first (owned).
+trail: std.ArrayList([]Vec3) = .empty,
+trail_index: usize = 0,
+
 scene_dirty: bool = true,
 bonds_dirty: bool = false,
 scene_radius: f32 = 10,
@@ -144,6 +148,7 @@ pub fn deinit(app: *App) void {
     app.cut_bonds.deinit(app.gpa);
     app.clearDiff();
     app.closeDocument();
+    app.trail.deinit(app.gpa);
     app.renderer.deinit();
 }
 
@@ -169,6 +174,7 @@ pub fn closeDocument(app: *App) void {
     d.bonds.deinit(app.gpa);
     app.gpa.free(d.path);
     app.doc = null;
+    app.clearTrail();
     app.scene_dirty = true;
 }
 
@@ -424,6 +430,7 @@ pub fn update(app: *App) void {
             }
             if (d.shown) |*old| old.deinit(app.gpa);
             d.shown = frame;
+            app.recordTrail(d.current, frame.positions);
             app.dropInvalidSelection();
             d.shown_index = d.current;
             app.bonds_dirty = true;
@@ -452,6 +459,32 @@ pub fn update(app: *App) void {
         app.scene_dirty = false;
         app.rebuildScene() catch |e| app.setStatus("Scene build failed: {t}", .{e});
     }
+}
+
+/// Remember a newly shown frame for trails. History restarts when the
+/// timeline jumps (scrubbing, looping) or the atom count changes.
+fn recordTrail(app: *App, index: usize, positions: []const Vec3) void {
+    const prev = app.trail.items;
+    const continues = prev.len > 0 and index == app.trail_index + 1 and prev[prev.len - 1].len == positions.len;
+    if (!continues) app.clearTrail();
+    app.trail_index = index;
+    const copy = app.gpa.dupe(Vec3, positions) catch return;
+    app.trail.append(app.gpa, copy) catch {
+        app.gpa.free(copy);
+        return;
+    };
+    const keep = app.trailKeep();
+    while (app.trail.items.len > keep) app.gpa.free(app.trail.orderedRemove(0));
+}
+
+/// Positions kept for a trail of `trail_length` segments.
+fn trailKeep(app: *const App) usize {
+    return @intCast(std.math.clamp(app.style.trail_length, 1, 60) + 1);
+}
+
+fn clearTrail(app: *App) void {
+    for (app.trail.items) |p| app.gpa.free(p);
+    app.trail.clearRetainingCapacity();
 }
 
 fn advancePlayback(app: *App) void {
@@ -513,6 +546,18 @@ fn rebuildScene(app: *App) !void {
     };
     const start = try r.addStructure(f.positions, f.numbers, d.bonds.items, app.style, null, &app.cut_bonds);
     r.highlight(start, app.selected());
+    if (app.style.trails) {
+        // The trail ends at the displayed positions, which edits may have moved.
+        const all = app.trail.items;
+        const t = all[all.len -| app.trailKeep()..];
+        if (t.len >= 2 and t[t.len - 1].len == f.positions.len) {
+            const hist = try app.gpa.alloc([]const Vec3, t.len);
+            defer app.gpa.free(hist);
+            for (t, hist) |p, *h| h.* = p;
+            hist[t.len - 1] = f.positions;
+            try r.addTrails(hist, app.style);
+        }
+    }
     if (app.style.show_cell) if (f.cell) |cell| try r.addCell(cell, app.style.theme.cellLine());
     try r.upload();
 }
@@ -1477,6 +1522,13 @@ fn inspector(app: *App, timeline_h: f32) void {
     }
     if (c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0)) app.scene_dirty = true;
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
+    if (c.igCheckbox("Rainbow trails", &app.style.trails)) app.scene_dirty = true;
+    ui.tooltip("Atoms leave a rainbow streak behind them while frames play or step forward.");
+    if (app.style.trails) {
+        c.igSameLine(0, -1);
+        c.igSetNextItemWidth(c.igGetContentRegionAvail().x);
+        if (c.igSliderInt("##trail", &app.style.trail_length, 2, 40, "%d frames", 0)) app.scene_dirty = true;
+    }
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
 
     if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit.", .{});

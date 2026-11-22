@@ -16,6 +16,8 @@ const App = @import("app/App.zig");
 const Args = struct {
     file: ?[]const u8 = null,
     frame: ?usize = null,
+    /// Step through this many frames up to --frame first, building a trail.
+    trail: usize = 0,
     diff_ref: ?usize = null,
     screenshot: ?[]const u8 = null,
     width: c_int = 1400,
@@ -47,12 +49,14 @@ fn parseArgs(argv: []const []const u8) !Args {
         const eql = std.mem.eql;
         if (eql(u8, arg, "--frame") or eql(u8, arg, "--diff-ref") or eql(u8, arg, "--screenshot") or eql(u8, arg, "--size") or eql(u8, arg, "--ui-scale") or
             eql(u8, arg, "--select") or eql(u8, arg, "--set") or eql(u8, arg, "--save") or
-            eql(u8, arg, "--cut") or eql(u8, arg, "--add"))
+            eql(u8, arg, "--cut") or eql(u8, arg, "--add") or eql(u8, arg, "--trail"))
         {
             i += 1;
             if (i >= argv.len) return error.MissingArgumentValue;
             const v = argv[i];
-            if (eql(u8, arg, "--frame")) {
+            if (eql(u8, arg, "--trail")) {
+                a.trail = try std.fmt.parseInt(usize, v, 10);
+            } else if (eql(u8, arg, "--frame")) {
                 a.frame = (try std.fmt.parseInt(usize, v, 10)) -| 1;
             } else if (eql(u8, arg, "--diff-ref")) {
                 a.diff_ref = (try std.fmt.parseInt(usize, v, 10)) -| 1;
@@ -125,7 +129,7 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
-            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
+            \\usage: chemviewer [FILE] [--frame N [--trail K]] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
             \\                  [--ui-scale X] [--no-ui] [--light | --dark] [--flat] [--atom-numbers]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\                  [--cut I,J]... [--add FRAGMENT_FILE]
@@ -191,7 +195,7 @@ pub fn main(init: std.process.Init) !void {
 
     var startup: Startup = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };
     if (args.file != null) {
-        if (args.diff_ref) |r| app.setFrame(r) else if (args.frame) |f| app.setFrame(f);
+        if (args.diff_ref) |r| app.setFrame(r) else if (args.frame) |f| app.setFrame(f -| args.trail);
     }
 
     while (!app.quit_requested) {
@@ -326,6 +330,12 @@ const Startup = struct {
                 }
             },
             .target => if (app.isSettled()) {
+                // --trail: walk forward one frame at a time up to --frame.
+                const goal = s.args.frame orelse 0;
+                if (s.args.trail > 0 and app.doc.?.current < goal) {
+                    app.setFrame(app.doc.?.current + 1);
+                    return false;
+                }
                 try s.script(app);
                 s.phase = .settle;
             },

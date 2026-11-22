@@ -114,6 +114,10 @@ pub const Style = struct {
     /// colouring (0 = linear, 1 = flat plateaus). See `cv.color.snap`.
     snap: f32 = 0.7,
     show_cell: bool = true,
+    /// Rainbow streaks behind atoms as frames play.
+    trails: bool = true,
+    /// Frames of history a trail covers.
+    trail_length: c_int = 20,
 
     /// Element colour: the same in every theme and style.
     pub fn atomColor(s: Style, z: u8) [3]f32 {
@@ -402,6 +406,37 @@ pub fn addStructure(
         if (ca[3] < 0.99) try r.translucent.append(r.gpa, inst) else try r.bonds.append(r.gpa, inst);
     }
     return start;
+}
+
+/// Rainbow trails: for each atom, a tapering, fading streak through its
+/// positions in `history` (oldest first, the displayed frame last). The
+/// newest segment is red; the tail runs through the rainbow to violet.
+pub fn addTrails(r: *Renderer, history: []const []const Vec3, style: Style) !void {
+    if (history.len < 2) return;
+    const n = history[history.len - 1].len;
+    const segs = history.len - 1;
+    for (0..segs) |k| {
+        if (history[k].len != n or history[k + 1].len != n) continue;
+        // 0 = newest segment, 1 = oldest.
+        const age = (@as(f32, @floatFromInt(segs - 1 - k)) + 0.5) / @as(f32, @floatFromInt(segs));
+        const rgb = cv.color.oklchToSrgb(.{ .l = 0.68, .c = 0.20, .h = 25 + 290 * age });
+        const alpha = 0.95 * std.math.pow(f32, 1 - age, 0.4);
+        const radius = style.bondRadius() * (1.1 - 0.7 * age);
+        for (history[k], history[k + 1]) |a, b| {
+            const d = b - a;
+            // Skip atoms that barely moved (and jumps, e.g. wrapping across a cell).
+            const len2 = @reduce(.Add, d * d);
+            if (len2 < 1e-10 or len2 > 4) continue;
+            try r.translucent.append(r.gpa, .{
+                .a = a,
+                .b = b,
+                .radius = radius,
+                .outline = 0,
+                .color_a = .{ rgb[0], rgb[1], rgb[2], alpha },
+                .color_b = .{ rgb[0], rgb[1], rgb[2], alpha },
+            });
+        }
+    }
 }
 
 pub fn addCell(r: *Renderer, cell: [3]Vec3, rgba: [4]f32) !void {
