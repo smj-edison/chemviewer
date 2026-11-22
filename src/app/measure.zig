@@ -31,22 +31,6 @@ fn valueField(id: [:0]const u8, value: f64, fmt: [:0]const u8, width: f32) ?f64 
     return null;
 }
 
-/// Small -/+ nudge buttons. Shift = 10x step. Returns the signed delta.
-fn nudge(id: [:0]const u8, step: f64) ?f64 {
-    const big = (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0;
-    const s = if (big) step * 10 else step;
-    c.igPushID_Str(id.ptr);
-    defer c.igPopID();
-    var out: ?f64 = null;
-    c.igSameLine(0, 2);
-    if (c.igSmallButton("-")) out = -s;
-    ui.tooltip("Decrease (Shift: 10x)");
-    c.igSameLine(0, 2);
-    if (c.igSmallButton("+")) out = s;
-    ui.tooltip("Increase (Shift: 10x)");
-    return out;
-}
-
 fn modeSelector(app: *App, last_label: []const u8) void {
     c.igSameLine(0, c.igGetFontSize() * 1.5);
     c.igAlignTextToFramePadding();
@@ -126,7 +110,6 @@ pub fn bar(app: *App) void {
             if (valueField("##dist", dist, "%.5f", fs * 7)) |v| app.applyEdit(.{ .distance = v });
             c.igSameLine(0, 4);
             ui.text("Å", .{});
-            if (nudge("dist", 0.01)) |dv| app.applyEdit(.{ .distance = dist + dv });
             if (app.bondCharacter(sel[0], sel[1])) |ch| {
                 c.igSameLine(0, fs);
                 ui.textDisabled("bond character {d:.2}", .{ch});
@@ -176,7 +159,6 @@ fn angleFields(app: *App, comptime id: []const u8, rad: f64, kind: AngleKind) vo
     if (valueField("##" ++ id ++ "deg", deg, "%.3f", fs * 6.5)) |v| submit(app, kind, std.math.degreesToRadians(v));
     c.igSameLine(0, 4);
     ui.text("°", .{});
-    if (nudge(id ++ "n", 1)) |dv| submit(app, kind, std.math.degreesToRadians(deg + dv));
     c.igSameLine(0, fs);
     if (valueField("##" ++ id ++ "rad", rad, "%.6f", fs * 6.5)) |v| submit(app, kind, v);
     c.igSameLine(0, 4);
