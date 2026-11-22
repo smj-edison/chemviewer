@@ -163,7 +163,9 @@ Display has two independent choices. The theme (light/dark) owns the
 background, bond palette, accents and UI colours. The style (cel/flat) owns
 shading, drop shadows, depth fade and atom size. Element colours are the same
 everywhere: familiar hues (red O, blue N, green halogens, yellow S, orange P,
-gold Au) with teal carbon, the hue CPK leaves free. Their lightness is
+gold Au) with teal carbon, the hue CPK leaves free (in the Jmol/GaussView
+scheme only noble gases and the 4d metals use it; here those get muted
+colours). Their lightness is
 spread so bonded pairs stay distinguishable under simulated colour-vision
 deficiencies. The flat style, inspired
 by Kurzgesagt's flat illustrations, draws solid-colour atoms with highlight
@@ -171,3 +173,18 @@ dots, no outlines, flat drop shadows and a depth fade toward the background. Smo
 dropped: cel and flat cover what it offered. The light background is a
 low-chroma blue-grey, and both bond palettes move monotonically away from the
 background (see docs/BONDS.md and docs/style-refs/kurzgesagt/README.md).
+
+### D19 — Colour shows the family; labels resolve look-alikes
+No palette can give ~100 elements distinguishable colours: people tell apart
+roughly a dozen at a glance, fewer with colour-vision deficiencies. Even
+GaussView/Jmol's full table only encodes the family, with near-identical
+neighbours (Ru/Rh, the lanthanides). So: the familiar elements and a few
+catalysis metals (Cu, Ag, Pt, Au) get hand-picked colours; every other
+element gets a muted colour for its family, so it can't pass for C, N or O.
+Identity is then resolved per structure: if two elements present could be
+mistaken for each other (worst-case OKLab distance below 0.07 across normal
+vision and simulated protanopia, deuteranopia and tritanopia), the rarer
+one's atoms get their element symbol drawn on them. A lone rare element is
+not labelled (the inspector's element key names it), and H/C/N/O never
+trigger labels against the everyday organic elements (unit-tested), so
+labels stay rare and clutter stays low.

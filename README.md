@@ -6,6 +6,11 @@ OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
 - **No bond guessing.** Every pair that *could* be bonded gets a link,
   coloured by a continuous bond character (0 → single → double → triple)
   based on per-pair Pyykkö reference lengths. See [docs/BONDS.md](docs/BONDS.md).
+- **Colour-blind-aware colours.** Bond order reads from lightness alone, so it
+  survives greyscale printing and any colour vision. Element colours stay
+  distinct under simulated colour blindness; when two elements in a structure
+  could still be mistaken for each other, the rarer one is labelled with its
+  symbol (View > Element labels). The inspector shows an element key.
 - **Instant scrubbing.** A timeline with an energy plot you can click or drag.
   Large trajectories are streamed from disk with background prefetch.
 - **Diffing.** Superimpose the current frame onto a reference frame
