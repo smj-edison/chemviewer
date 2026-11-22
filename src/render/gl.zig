@@ -26,6 +26,7 @@ pub const FRONT: Enum = 0x0404;
 pub const BACK: Enum = 0x0405;
 pub const LEQUAL: Enum = 0x0203;
 pub const LESS: Enum = 0x0201;
+pub const ONE: Enum = 1;
 pub const SRC_ALPHA: Enum = 0x0302;
 pub const ONE_MINUS_SRC_ALPHA: Enum = 0x0303;
 pub const FLOAT: Enum = 0x1406;
@@ -73,6 +74,7 @@ const Fns = struct {
     GetUniformLocation: *const fn (Uint, [*:0]const u8) callconv(.c) Int,
     Uniform1f: *const fn (Int, Float) callconv(.c) void,
     Uniform1i: *const fn (Int, Int) callconv(.c) void,
+    Uniform2f: *const fn (Int, Float, Float) callconv(.c) void,
     Uniform3f: *const fn (Int, Float, Float, Float) callconv(.c) void,
     UniformMatrix4fv: *const fn (Int, Sizei, Boolean, [*]const Float) callconv(.c) void,
     GenVertexArrays: *const fn (Sizei, [*]Uint) callconv(.c) void,

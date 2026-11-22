@@ -1454,6 +1454,9 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igRadioButton_IntPtr("Light", &theme, 0)) app.scene_dirty = true;
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Dark", &theme, 1)) app.scene_dirty = true;
+    c.igSameLine(0, -1);
+    if (c.igRadioButton_IntPtr("Kurzgesagt", &theme, 2)) app.scene_dirty = true;
+    ui.tooltip("Experimental: flat, saturated colours on a starry indigo sky.");
     app.style.theme = @fromBackingInt(@intCast(theme));
     c.igSameLine(0, c.igGetFontSize() * 1.5);
     var shading: c_int = @backingInt(app.style.shading);
