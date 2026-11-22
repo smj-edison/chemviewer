@@ -6,7 +6,7 @@
 //!                          rotation about the group centre if there is no base)
 //!   Alt + right drag       twist about the base→grabbed axis (or the view axis)
 //!   Alt + middle drag,     translate in the view plane
-//!   Alt + Shift + left
+//!   Alt + Shift + left/right
 //!
 //! Positions are always recomputed from the snapshot taken when the drag
 //! started, so there is no drift.

@@ -566,10 +566,12 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             if (want_mouse) return;
             const mods0 = c.SDL_GetModState();
             if ((mods0 & c.SDL_KMOD_ALT) != 0 and app.drag == null) {
+                // Shift with any button translates, as for the camera.
+                const shift0 = (mods0 & c.SDL_KMOD_SHIFT) != 0;
                 const kind: drag_mod.Kind = switch (ev.button.button) {
-                    c.SDL_BUTTON_LEFT => if ((mods0 & c.SDL_KMOD_SHIFT) != 0) .translate else .rotate,
+                    c.SDL_BUTTON_LEFT => if (shift0) .translate else .rotate,
                     c.SDL_BUTTON_MIDDLE => .translate,
-                    c.SDL_BUTTON_RIGHT => .twist,
+                    c.SDL_BUTTON_RIGHT => if (shift0) .translate else .twist,
                     else => return,
                 };
                 app.drag_button = ev.button.button;
@@ -617,12 +619,12 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             if (want_mouse) return;
             const m = ev.motion;
             // GaussView-style: left = rotate, right = roll (horizontal) and
-            // zoom (vertical), middle or Shift+left = translate.
+            // zoom (vertical), middle or Shift + any button = translate.
             const shift = (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0;
             const left = (m.state & c.SDL_BUTTON_LMASK) != 0;
             const right = (m.state & c.SDL_BUTTON_RMASK) != 0;
             const middle = (m.state & c.SDL_BUTTON_MMASK) != 0;
-            if (middle or (left and shift)) {
+            if (middle or (shift and (left or right))) {
                 var h: c_int = 0;
                 _ = c.SDL_GetWindowSize(app.window, null, &h);
                 app.camera.pan(m.xrel, m.yrel, @floatFromInt(h));
@@ -1470,7 +1472,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
 
-    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle or Shift+left drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit.", .{});
+    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit.", .{});
 }
 
 fn composition(app: *App, f: Frame) void {

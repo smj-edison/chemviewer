@@ -140,7 +140,7 @@ selects everything.
 
 ### D17 — Alt turns camera gestures into fragment gestures
 As in GaussView, holding Alt applies the mouse to atoms instead of the camera:
-left drag rotates, right drag twists, middle (or Shift+left) translates. The
+left drag rotates, right drag twists, middle (or Shift + left/right) translates. The
 moving group (`drag.chooseGroup`): grabbing a selected atom moves the whole
 selection as one rigid body about its centre (a single selected atom brings its
 molecule). With exactly one atom selected (the base), grabbing an unselected
