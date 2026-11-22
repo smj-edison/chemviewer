@@ -7,6 +7,7 @@ const std = @import("std");
 const cv = @import("chemviewer");
 const vk = @import("vulkan");
 const Gpu = @import("Gpu.zig");
+const glass_layers = @import("glass_layers.zig");
 const math = cv.math;
 const Vec3 = math.Vec3;
 const Mat4 = math.Mat4;
@@ -130,8 +131,8 @@ pub const Shading = enum(c_int) {
     /// of a sky dome (or, in the dark theme, an aurora night) with bubbles.
     aero,
     /// Experimental: inspired by Apple's "Liquid Glass". Translucent tinted
-    /// glass atoms that refract everything behind them (other atoms, bonds,
-    /// the backdrop; see `GlassLayers`), with bright rims; no outlines.
+    /// glass atoms and bonds that refract everything behind them (other
+    /// glass, the backdrop; see `GlassLayers`), with bright rims; no outlines.
     glass,
 
     /// Shader lighting mode (`u_cel` in shaders/common.glsl).
@@ -507,13 +508,16 @@ const Slot = struct {
     lines: Gpu.Buffer = .{},
     /// `Renderer.generation` of the instance data in the buffers.
     generation: u64 = 0,
-    /// Glass atoms in layer order (`GlassLayers.order`), and its stamp.
-    glass: Gpu.Buffer = .{},
+    /// Glass atoms and bonds in layer order (`GlassLayers`), and
+    /// their stamp.
+    glass_atoms: Gpu.Buffer = .{},
+    glass_bonds: Gpu.Buffer = .{},
     glass_stamp: u64 = 0,
 
     fn deinit(s: *Slot, gpu: *const Gpu) void {
         s.uniforms.deinit(gpu);
-        s.glass.deinit(gpu);
+        s.glass_atoms.deinit(gpu);
+        s.glass_bonds.deinit(gpu);
         s.atoms.deinit(gpu);
         s.bonds.deinit(gpu);
         s.lines.deinit(gpu);
@@ -1045,7 +1049,8 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
 
     if (p.style.shading == .flat and !soft) r.drawShadows(frame, p, slot, false);
 
-    // Glass atoms come last, after everything they can be seen through.
+    // Glass atoms and bonds come last, after everything they can be seen
+    // through (`drawGlass`).
     if (n_atoms > 0 and !glass) {
         cmd.bindPipeline(.graphics, r.pipes.sphere);
         cmd.bindVertexBuffers(0, &.{ r.quad.buffer, slot.atoms.buffer }, &.{ 0, 0 });
@@ -1056,7 +1061,7 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
         cmd.bindVertexBuffers(0, &.{ r.cyl_vbo.buffer, slot.bonds.buffer }, &.{ 0, 0 });
         cmd.bindIndexBuffer(r.cyl_ibo.buffer, 0, .uint16);
     }
-    if (n_opaque > 0) {
+    if (n_opaque > 0 and !glass) {
         cmd.bindPipeline(.graphics, r.pipes.cylinder);
         r.push(cmd, .{ .outline_k = outline_k });
         cmd.drawIndexed(cyl_count, n_opaque, 0, 0, 0);
@@ -1092,7 +1097,7 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
             cmd.setDepthWriteEnable(.true);
         }
     }
-    if (glass and n_atoms > 0) try r.drawGlassAtoms(frame, slot);
+    if (glass and n_atoms + n_opaque > 0) try r.drawGlass(frame, slot);
     if (r.profile) |*prof| {
         prof.stamp(frame, 2);
         prof.pending[frame.slot] = true;
@@ -1209,151 +1214,211 @@ fn bindSceneCopy(r: *Renderer, frame: Gpu.Frame) void {
     }}, null);
 }
 
-/// Glass atoms, translucent: an atom refracts whatever is behind it,
-/// including other glass atoms. The scene can only be sampled from a copy,
-/// so atoms are drawn in layers with a snapshot of the scene before each.
-/// Going from far to near, every atom goes one layer above the farthest-
-/// placed atoms it overlaps on screen; atoms sharing a layer never overlap,
-/// so each one's snapshot already holds everything behind it. Layers are
-/// capped (`max_layers`): beyond that, overlapping atoms share the last
-/// one and the nearer hides the farther, as with opaque atoms.
+/// Glass, translucent: atoms and bonds refract whatever is behind them,
+/// other glass included. The scene can only be sampled from a copy, so they
+/// are drawn in layers with a snapshot before each (see glass_layers.zig).
+/// A bond sorts by its midpoint, so it usually lands between its two atoms.
+/// (Splitting bonds into halves sorts them more finely, but the second half
+/// then refracts the first one's open end: a dark notch at the midpoint.)
+/// Layers are capped (`max_layers`): beyond that, overlapping objects share
+/// the last one and the nearer hides the farther.
 const GlassLayers = struct {
-    const max_layers = 16;
-    /// Above this, one layer (atoms still see bonds and the backdrop).
-    const max_atoms = 20000;
-    const none = std.math.maxInt(u32);
+    const max_layers = 24;
+    /// Above this many objects (atoms plus bonds): two layers, bonds
+    /// then atoms, so atoms still show the bonds through them.
+    const max_items = 40000;
 
-    /// Atom instances grouped by layer, farthest layer first.
-    order: std.ArrayList(AtomInstance) = .empty,
-    /// End (exclusive) of each layer in `order`.
-    ends: [max_layers]u32 = undefined,
+    /// Instances grouped by layer, farthest layer first.
+    atoms: std.ArrayList(AtomInstance) = .empty,
+    bonds: std.ArrayList(BondInstance) = .empty,
+    /// End (exclusive) of each layer in `atoms` and `bonds`.
+    atom_ends: [max_layers]u32 = undefined,
+    bond_ends: [max_layers]u32 = undefined,
+    /// Framebuffer area each layer's glass covers, plus how far its
+    /// refraction reaches: only this much of the scene is copied for it.
+    rects: [max_layers]vk.Rect2D = undefined,
     count: u32 = 0,
     /// Inputs of the last layering; null forces a new one.
     key: ?Key = null,
-    /// Bumped when `order` changes (frame slots compare it).
+    /// Bumped when the instances change (frame slots compare it).
     stamp: u64 = 0,
     // Scratch.
-    discs: std.ArrayList(Disc) = .empty,
-    next: std.ArrayList(u32) = .empty,
-    heads: std.AutoHashMapUnmanaged(u64, u32) = .empty,
+    items: std.ArrayList(glass_layers.Item) = .empty,
+    scratch: glass_layers.Scratch = .{},
 
-    const Key = struct { view: [16]f32, height: i32, fovy: f32, generation: u64 };
-    /// An atom on screen, in pixels from the centre, and its view depth.
-    const Disc = struct { x: f32, y: f32, r: f32, z: f32, index: u32, layer: u32 = 0 };
+    const Key = struct { view: [16]f32, width: i32, height: i32, fovy: f32, generation: u64 };
 
     fn deinit(g: *GlassLayers, gpa: Allocator) void {
-        g.order.deinit(gpa);
-        g.discs.deinit(gpa);
-        g.next.deinit(gpa);
-        g.heads.deinit(gpa);
-    }
-
-    fn farther(_: void, a: Disc, b: Disc) bool {
-        return a.z > b.z;
-    }
-
-    fn cellKey(x: i32, y: i32) u64 {
-        return (@as(u64, @as(u32, @bitCast(x))) << 32) | @as(u32, @bitCast(y));
+        g.atoms.deinit(gpa);
+        g.bonds.deinit(gpa);
+        g.items.deinit(gpa);
+        g.scratch.deinit(gpa);
     }
 };
 
-/// Re-sorts the glass atoms into layers if the view or the scene changed.
+/// Re-sorts the glass atoms and bonds into layers if the view or the scene
+/// changed.
 fn layerGlass(r: *Renderer, p: DrawParams) !void {
     const G = GlassLayers;
     const g = &r.glass;
-    const key: G.Key = .{ .view = @bitCast(p.view.m), .height = p.height, .fovy = p.fovy, .generation = r.generation };
+    const key: G.Key = .{ .view = @bitCast(p.view.m), .width = p.width, .height = p.height, .fovy = p.fovy, .generation = r.generation };
     if (g.key != null and std.meta.eql(g.key.?, key)) return;
     g.key = null;
     const gpa = r.gpa;
     const atoms = r.uploaded.atoms.items;
-    try g.order.resize(gpa, atoms.len);
+    const bonds = r.uploaded.bonds.items[0..r.uploaded.opaque_bonds];
+    try g.atoms.resize(gpa, atoms.len);
+    try g.bonds.resize(gpa, bonds.len);
     g.stamp += 1;
-    if (atoms.len > G.max_atoms) {
-        @memcpy(g.order.items, atoms);
-        g.ends[0] = @intCast(atoms.len);
-        g.count = 1;
+    if (atoms.len + bonds.len > G.max_items) {
+        @memcpy(g.atoms.items, atoms);
+        @memcpy(g.bonds.items, bonds);
+        g.bond_ends[0] = @intCast(bonds.len);
+        g.bond_ends[1] = @intCast(bonds.len);
+        g.atom_ends[0] = 0;
+        g.atom_ends[1] = @intCast(atoms.len);
+        g.count = 2;
+        const full: vk.Rect2D = .{ .offset = .{ .x = 0, .y = 0 }, .extent = .{ .width = @intCast(@max(p.width, 1)), .height = @intCast(@max(p.height, 1)) } };
+        g.rects[0] = full;
+        g.rects[1] = full;
         g.key = key;
         return;
     }
 
+    // Screen positions in pixels from the centre.
     const f = @as(f32, @floatFromInt(@max(p.height, 1))) / (2 * @tan(p.fovy / 2));
-    try g.discs.resize(gpa, atoms.len);
-    var max_r: f32 = 1;
-    for (atoms, g.discs.items, 0..) |a, *d, i| {
-        const c = p.view.transformPoint(a.center);
-        const z = @max(-c[2], 1e-3);
-        // Margin for the anti-aliased edge and the selection ring.
-        const rad = a.radius / z * f + 4;
-        d.* = .{ .x = c[0] / z * f, .y = c[1] / z * f, .r = rad, .z = z, .index = @intCast(i) };
-        max_r = @max(max_r, rad);
-    }
-    std.mem.sort(G.Disc, g.discs.items, {}, G.farther);
-
-    // Grid of cells at least as wide as any two radii, so overlapping
-    // discs are always in neighbouring cells.
-    const cell = 2 * max_r;
-    g.heads.clearRetainingCapacity();
-    try g.next.resize(gpa, atoms.len);
-    var counts: [G.max_layers]u32 = @splat(0);
-    for (g.discs.items, 0..) |*d, i| {
-        const cx: i32 = @intFromFloat(std.math.clamp(@floor(d.x / cell), -1e6, 1e6));
-        const cy: i32 = @intFromFloat(std.math.clamp(@floor(d.y / cell), -1e6, 1e6));
-        var layer: u32 = 0;
-        var dy: i32 = -1;
-        while (dy <= 1) : (dy += 1) {
-            var dx: i32 = -1;
-            while (dx <= 1) : (dx += 1) {
-                var j = g.heads.get(G.cellKey(cx + dx, cy + dy)) orelse continue;
-                while (j != G.none) : (j = g.next.items[j]) {
-                    const o = g.discs.items[j];
-                    const ex = o.x - d.x;
-                    const ey = o.y - d.y;
-                    const rr = o.r + d.r;
-                    if (ex * ex + ey * ey < rr * rr) layer = @max(layer, o.layer + 1);
-                }
-            }
+    const Proj = struct { xy: @Vector(2, f32), z: f32 };
+    const project = struct {
+        fn at(view: Mat4, pt: Vec3, scale: f32) Proj {
+            const c = view.transformPoint(pt);
+            const z = @max(-c[2], 1e-3);
+            return .{ .xy = .{ c[0] / z * scale, c[1] / z * scale }, .z = z };
         }
-        d.layer = @min(layer, G.max_layers - 1);
-        counts[d.layer] += 1;
-        const gop = try g.heads.getOrPut(gpa, G.cellKey(cx, cy));
-        g.next.items[i] = if (gop.found_existing) gop.value_ptr.* else G.none;
-        gop.value_ptr.* = @intCast(i);
+    }.at;
+    try g.items.resize(gpa, atoms.len + bonds.len);
+    for (atoms, g.items.items[0..atoms.len], 0..) |at, *it, i| {
+        const q = project(p.view, at.center, f);
+        // Margin for the anti-aliased edge and the selection ring.
+        it.* = .{ .a = q.xy, .b = q.xy, .r = at.radius / q.z * f + 4, .z = q.z, .index = @intCast(i), .bond = false };
     }
+    for (bonds, g.items.items[atoms.len..], 0..) |h, *it, i| {
+        // Sorted by its midpoint.
+        const qa = project(p.view, h.a, f);
+        const qb = project(p.view, h.b, f);
+        it.* = .{ .a = qa.xy, .b = qb.xy, .r = h.radius / @min(qa.z, qb.z) * f + 2, .z = 0.5 * (qa.z + qb.z), .index = @intCast(i), .bond = true };
+    }
+    std.mem.sort(glass_layers.Item, g.items.items, {}, glass_layers.farther);
+    const half_w = 0.5 * @as(f32, @floatFromInt(@max(p.width, 1)));
+    const half_h = 0.5 * @as(f32, @floatFromInt(@max(p.height, 1)));
+    try glass_layers.assign(gpa, &g.scratch, g.items.items, half_w, half_h, G.max_layers);
 
-    var starts: [G.max_layers]u32 = undefined;
-    var sum: u32 = 0;
-    g.count = 0;
-    for (counts, 0..) |n, l| {
-        starts[l] = sum;
-        sum += n;
-        g.ends[l] = sum;
-        if (n > 0) g.count = @intCast(l + 1);
+    // Counting sort by layer, atoms and bonds separately.
+    var na: [G.max_layers]u32 = @splat(0);
+    var nb: [G.max_layers]u32 = @splat(0);
+    for (g.items.items) |it| {
+        if (it.bond) nb[it.layer] += 1 else na[it.layer] += 1;
     }
-    for (g.discs.items) |d| {
-        g.order.items[starts[d.layer]] = atoms[d.index];
-        starts[d.layer] += 1;
+    var sa: [G.max_layers]u32 = undefined;
+    var sb: [G.max_layers]u32 = undefined;
+    var ta: u32 = 0;
+    var tb: u32 = 0;
+    g.count = 0;
+    for (0..G.max_layers) |l| {
+        sa[l] = ta;
+        sb[l] = tb;
+        ta += na[l];
+        tb += nb[l];
+        g.atom_ends[l] = ta;
+        g.bond_ends[l] = tb;
+        if (na[l] + nb[l] > 0) g.count = @intCast(l + 1);
+    }
+    // Each layer's screen area: its items, widened by how far refraction
+    // can shift what they show (up to about the reach in glass.glsl,
+    // 2 * thickness + 0.4 Å, times the deflection at the rim).
+    var lo: [G.max_layers]@Vector(2, f32) = @splat(@splat(std.math.inf(f32)));
+    var hi: [G.max_layers]@Vector(2, f32) = @splat(@splat(-std.math.inf(f32)));
+    for (g.items.items) |it| {
+        const m: @Vector(2, f32) = @splat(3 * it.r + 0.6 * f / it.z + 8);
+        lo[it.layer] = @min(lo[it.layer], @min(it.a, it.b) - m);
+        hi[it.layer] = @max(hi[it.layer], @max(it.a, it.b) + m);
+    }
+    for (0..g.count) |l| {
+        // Centred, y up to framebuffer pixels, y down.
+        const x0 = std.math.clamp(lo[l][0] + half_w, 0, 2 * half_w);
+        const x1 = std.math.clamp(hi[l][0] + half_w, 0, 2 * half_w);
+        const y0 = std.math.clamp(half_h - hi[l][1], 0, 2 * half_h);
+        const y1 = std.math.clamp(half_h - lo[l][1], 0, 2 * half_h);
+        const ix: i32 = @intFromFloat(@floor(x0));
+        const iy: i32 = @intFromFloat(@floor(y0));
+        g.rects[l] = .{
+            .offset = .{ .x = ix, .y = iy },
+            .extent = .{
+                .width = @intCast(@max(@as(i32, @intFromFloat(@ceil(x1))) - ix, 0)),
+                .height = @intCast(@max(@as(i32, @intFromFloat(@ceil(y1))) - iy, 0)),
+            },
+        };
+    }
+    for (g.items.items) |it| {
+        if (it.bond) {
+            g.bonds.items[sb[it.layer]] = bonds[it.index];
+            sb[it.layer] += 1;
+        } else {
+            g.atoms.items[sa[it.layer]] = atoms[it.index];
+            sa[it.layer] += 1;
+        }
     }
     g.key = key;
 }
 
+fn clampRect(rc: vk.Rect2D, extent: vk.Extent2D) vk.Rect2D {
+    const x: u32 = @min(@as(u32, @intCast(rc.offset.x)), extent.width);
+    const y: u32 = @min(@as(u32, @intCast(rc.offset.y)), extent.height);
+    return .{
+        .offset = .{ .x = @intCast(x), .y = @intCast(y) },
+        .extent = .{ .width = @min(rc.extent.width, extent.width - x), .height = @min(rc.extent.height, extent.height - y) },
+    };
+}
+
 /// Draws the glass layers (see `GlassLayers`), snapshotting the scene
 /// before each. Inside the scene pass.
-fn drawGlassAtoms(r: *Renderer, frame: Gpu.Frame, slot: *Slot) !void {
+fn drawGlass(r: *Renderer, frame: Gpu.Frame, slot: *Slot) !void {
     const g = &r.glass;
     if (slot.glass_stamp != g.stamp) {
-        try r.fill(&slot.glass, std.mem.sliceAsBytes(g.order.items));
+        try r.fill(&slot.glass_atoms, std.mem.sliceAsBytes(g.atoms.items));
+        try r.fill(&slot.glass_bonds, std.mem.sliceAsBytes(g.bonds.items));
         slot.glass_stamp = g.stamp;
     }
     const cmd = frame.cmd;
-    // Bound state carries over between render pass instances.
-    cmd.bindPipeline(.graphics, r.pipes.sphere);
-    cmd.bindVertexBuffers(0, &.{ r.quad.buffer, slot.glass.buffer }, &.{ 0, 0 });
+    // Push constants and bound state carry over between render pass instances.
     r.push(cmd, .{ .glass_scene = 1 });
-    var start: u32 = 0;
-    for (g.ends[0..g.count]) |end| {
-        r.gpu.snapshotScene(frame);
-        cmd.draw(4, end - start, 0, start);
-        start = end;
+    var a0: u32 = 0;
+    var b0: u32 = 0;
+    for (g.atom_ends[0..g.count], g.bond_ends[0..g.count], g.rects[0..g.count]) |a1, b1, rect| {
+        defer {
+            a0 = a1;
+            b0 = b1;
+        }
+        if (a1 == a0 and b1 == b0) continue;
+        // The resize check in `layerGlass` keys on the size, but the
+        // framebuffer can still lag the window by a frame.
+        const area = clampRect(rect, frame.extent);
+        // Entirely off screen: nothing it shows is seen.
+        if (area.extent.width > 0 and area.extent.height > 0) r.gpu.snapshotScene(frame, area);
+        if (a1 > a0) {
+            cmd.bindPipeline(.graphics, r.pipes.sphere);
+            cmd.bindVertexBuffers(0, &.{ r.quad.buffer, slot.glass_atoms.buffer }, &.{ 0, 0 });
+            cmd.draw(4, a1 - a0, 0, a0);
+        }
+        if (b1 > b0) {
+            // Solid glass rods: back faces would show the inside of the tube
+            // through its open ends.
+            cmd.bindPipeline(.graphics, r.pipes.cylinder);
+            cmd.bindVertexBuffers(0, &.{ r.cyl_vbo.buffer, slot.glass_bonds.buffer }, &.{ 0, 0 });
+            cmd.bindIndexBuffer(r.cyl_ibo.buffer, 0, .uint16);
+            cmd.setCullMode(.{ .back = true });
+            cmd.drawIndexed(cylinder_segments * 6, b1 - b0, 0, 0, b0);
+            cmd.setCullMode(.{});
+        }
     }
 }
 

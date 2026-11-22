@@ -2,12 +2,12 @@
 // that refracts the backdrop behind them, with a bright specular rim on the
 // side facing the light and a softer caustic glow on the far side.
 //
-// Atoms (u_glass_scene = 1) are translucent: they refract a copy of the
-// scene drawn so far (binding 2), which holds the backdrop, the bonds and
-// every glass atom behind them (Renderer.GlassLayers draws them in layers
-// with a fresh copy before each). Bonds are drawn before any atom, so they
-// see only the backdrop cache (binding 1; with the pattern off it holds the
-// plain background).
+// Atoms and bonds (u_glass_scene = 1) are translucent: they refract a copy
+// of the scene drawn so far (binding 2), which holds the backdrop and all
+// the glass behind them (Renderer.GlassLayers draws them in layers with a
+// fresh copy before each). Faint, alpha-blended contacts are drawn before
+// any glass and see only the backdrop cache (binding 1; with the pattern
+// off it holds the plain background).
 
 layout(set = 0, binding = 1) uniform sampler2D u_backdrop;
 layout(set = 0, binding = 2) uniform sampler2D u_scene;
