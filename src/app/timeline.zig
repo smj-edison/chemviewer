@@ -77,8 +77,11 @@ fn energyPlot(app: *App, d: *App.Document) void {
         app.setFrame(@intFromFloat(@round(t * @as(f32, @floatFromInt(n - 1)))));
     }
 
-    const light = app.style.theme == .light;
-    const accent = if (light) ui.rgba(0.12, 0.35, 0.80, 0.95) else ui.rgba(0.45, 0.75, 1.0, 0.9);
+    const accent = switch (app.style.theme) {
+        .light => ui.rgba(0.12, 0.35, 0.80, 0.95),
+        .dark => ui.rgba(0.45, 0.75, 1.0, 0.9),
+        .pony => ui.rgba(0.61, 0.36, 0.90, 0.95), // #9B5DE5, lavender
+    };
     const label_col = c.igGetColorU32_Col(c.ImGuiCol_Text, 0.55);
     c.ImDrawList_AddRectFilled(dl, p0, p1, c.igGetColorU32_Col(c.ImGuiCol_FrameBg, 1), 3, 0);
 
@@ -144,7 +147,11 @@ fn energyPlot(app: *App, d: *App.Document) void {
             c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), ui.rgba(0.90, 0.20, 0.20, 0.9), 2, 0);
         }
         const x = xf(d.current, n, p0.x, w);
-        c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), if (light) ui.rgba(0.85, 0.45, 0.0, 1) else ui.rgba(1, 0.85, 0.3, 1), 2, 0);
+        c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), switch (app.style.theme) {
+            .light => ui.rgba(0.85, 0.45, 0.0, 1),
+            .dark => ui.rgba(1, 0.85, 0.3, 1),
+            .pony => ui.rgba(0.90, 0.15, 0.60, 1),
+        }, 2, 0);
         if (scanned < n) {
             // Thin progress bar for the background energy scan.
             const t = @as(f32, @floatFromInt(scanned)) / @as(f32, @floatFromInt(n));

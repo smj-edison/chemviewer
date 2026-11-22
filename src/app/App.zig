@@ -212,7 +212,7 @@ fn install(app: *App, opened: cv.source.Opened, path: []const u8) !void {
         if (src.frameCount() == 1) "" else "s",
     });
     var title_buf: [512]u8 = undefined;
-    const title = ui.printZ(&title_buf, "chemviewer — {s}", .{std.fs.path.basename(path)}) catch "chemviewer";
+    const title = ui.printZ(&title_buf, "chemviewer \u{1F984} {s}", .{std.fs.path.basename(path)}) catch "chemviewer";
     _ = c.SDL_SetWindowTitle(app.window, title.ptr);
 }
 
@@ -1420,6 +1420,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (!c.igBegin("Inspector", &app.show_inspector, 0)) return;
     c.igPushItemWidth(c.igGetContentRegionAvail().x * 0.55);
     defer c.igPopItemWidth();
+    if (app.style.theme == .pony) ui.rainbowBanner("Pony Edition");
 
     if (app.doc) |d| {
         c.igSeparatorText("File");
@@ -1460,8 +1461,10 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igRadioButton_IntPtr("Light", &theme, 0)) app.scene_dirty = true;
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Dark", &theme, 1)) app.scene_dirty = true;
+    c.igSameLine(0, -1);
+    if (c.igRadioButton_IntPtr("Pony", &theme, 2)) app.scene_dirty = true;
+    ui.tooltip("Pastel pinks, rainbow bonds and sparkles.");
     app.style.theme = @fromBackingInt(@intCast(theme));
-    c.igSameLine(0, c.igGetFontSize() * 1.5);
     var shading: c_int = @backingInt(app.style.shading);
     if (c.igRadioButton_IntPtr("Cel", &shading, 0)) app.scene_dirty = true;
     ui.tooltip("Toon bands with outlines.");

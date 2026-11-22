@@ -22,15 +22,23 @@ pub const BondColoring = enum(c_int) {
     element,
 };
 
-/// Light or dark: owns the background, bond palette, accents and outlines.
+/// Light, dark or pony: owns the background, bond palette, accents and outlines.
 pub const Theme = enum(c_int) {
     light,
     dark,
+    /// Pastel pinks, rainbow bonds and sparkles (experimental branch).
+    pony,
+
+    /// Dark text and darker-is-stronger ramps (light and pony).
+    pub fn isLight(t: Theme) bool {
+        return t != .dark;
+    }
 
     pub fn palette(t: Theme) cv.color.Palette {
         return switch (t) {
             .light => cv.color.light_palette,
             .dark => cv.color.dark_palette,
+            .pony => cv.color.pony_palette,
         };
     }
 
@@ -42,6 +50,7 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.10, 0.11, 0.13 },
             .dark => .{ 0.0, 0.0, 0.0 },
+            .pony => .{ 0.2234, 0.0918, 0.2768 }, // #391747, deep plum
         };
     }
 
@@ -50,6 +59,7 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.7858, 0.8304, 0.8886 }, // #C8D4E3, OKLCh (0.865, 0.024, 255)
             .dark => .{ 0.055, 0.058, 0.075 }, // OKLCh ≈ (0.17, 0.01, 265)
+            .pony => .{ 0.9291, 0.8020, 0.8819 }, // #EDCDE1, OKLCh (0.88, 0.045, 340)
         };
     }
 
@@ -58,6 +68,7 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.93, 0.45, 0.0 },
             .dark => .{ 1.0, 0.72, 0.2 },
+            .pony => .{ 0.8985, 0.1452, 0.6039 }, // #E5259A, hot pink
         };
     }
 
@@ -65,6 +76,7 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.30, 0.32, 0.36, 1 },
             .dark => .{ 0.60, 0.60, 0.65, 1 },
+            .pony => .{ 0.4139, 0.2469, 0.5264, 1 }, // #6A3F86, grape
         };
     }
 };
@@ -88,7 +100,7 @@ pub const Shading = enum(c_int) {
 };
 
 pub const Style = struct {
-    theme: Theme = .light,
+    theme: Theme = .pony,
     shading: Shading = .cel,
     /// Outline width in screen pixels (logical; scaled by pixel density). 0 = none.
     outline_px: f32 = 2.0,
@@ -159,6 +171,8 @@ gpa: Allocator,
 sphere_prog: gl.Uint,
 cylinder_prog: gl.Uint,
 line_prog: gl.Uint,
+backdrop_prog: gl.Uint,
+backdrop_vao: gl.Uint = 0,
 sphere_vao: gl.Uint = 0,
 cylinder_vao: gl.Uint = 0,
 line_vao: gl.Uint = 0,
@@ -191,8 +205,10 @@ pub fn init(gpa: Allocator) !Renderer {
         .sphere_prog = try gl.compileProgram(shaders.sphere_vs, shaders.sphere_fs),
         .cylinder_prog = try gl.compileProgram(shaders.cylinder_vs, shaders.cylinder_fs),
         .line_prog = try gl.compileProgram(shaders.line_vs, shaders.line_fs),
+        .backdrop_prog = try gl.compileProgram(shaders.backdrop_vs, shaders.backdrop_fs),
     };
     const f = &gl.f;
+    f.GenVertexArrays(1, @ptrCast(&r.backdrop_vao));
     var vaos: [3]gl.Uint = undefined;
     f.GenVertexArrays(3, &vaos);
     r.sphere_vao = vaos[0];
@@ -265,11 +281,13 @@ pub fn deinit(r: *Renderer) void {
     const f = &gl.f;
     const vaos = [_]gl.Uint{ r.sphere_vao, r.cylinder_vao, r.line_vao };
     f.DeleteVertexArrays(vaos.len, &vaos);
+    f.DeleteVertexArrays(1, @ptrCast(&r.backdrop_vao));
     const bufs = [_]gl.Uint{ r.quad_vbo, r.cyl_vbo, r.cyl_ibo, r.atom_vbo, r.bond_vbo, r.line_vbo };
     f.DeleteBuffers(bufs.len, &bufs);
     f.DeleteProgram(r.sphere_prog);
     f.DeleteProgram(r.cylinder_prog);
     f.DeleteProgram(r.line_prog);
+    f.DeleteProgram(r.backdrop_prog);
     r.atoms.deinit(r.gpa);
     r.bonds.deinit(r.gpa);
     r.translucent.deinit(r.gpa);
@@ -483,6 +501,7 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     f.Viewport(0, 0, p.width, p.height);
     f.ClearColor(bg[0], bg[1], bg[2], 1);
     f.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if (p.style.theme == .pony) r.drawBackdrop(p);
     f.Enable(gl.DEPTH_TEST);
     f.DepthFunc(gl.LESS);
     f.DepthMask(gl.TRUE);
@@ -549,6 +568,22 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
         f.Disable(gl.BLEND);
     }
     f.BindVertexArray(0);
+}
+
+/// Pony theme: gradient + sparkles behind everything. The gradient brackets
+/// the theme background, so fog and flat shadows still blend into it.
+fn drawBackdrop(r: *Renderer, p: DrawParams) void {
+    const f = &gl.f;
+    f.Disable(gl.DEPTH_TEST);
+    f.DepthMask(gl.FALSE);
+    f.UseProgram(r.backdrop_prog);
+    // Lavender at the top, pink at the bottom: OKLCh (0.955, 0.025, 300) and (0.925, 0.035, 350).
+    f.Uniform3f(f.GetUniformLocation(r.backdrop_prog, "u_top"), 0.9505, 0.9283, 0.9999);
+    f.Uniform3f(f.GetUniformLocation(r.backdrop_prog, "u_bottom"), 0.9789, 0.8676, 0.9154);
+    f.Uniform1f(f.GetUniformLocation(r.backdrop_prog, "u_px"), p.pixel_density);
+    f.BindVertexArray(r.backdrop_vao);
+    f.DrawArrays(gl.TRIANGLES, 0, 3);
+    f.DepthMask(gl.TRUE);
 }
 
 /// Flat style: every opaque atom and bond as a flat silhouette in a darker

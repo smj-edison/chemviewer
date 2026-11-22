@@ -94,6 +94,31 @@ pub fn gradientLegend(theme: Renderer.Theme, snap_strength: f32) void {
     c.igDummy(v2(w, h + c.igGetFontSize() + 4));
 }
 
+/// Pony theme: six pastel rainbow stripes with a caption centred on them.
+pub fn rainbowBanner(caption: [:0]const u8) void {
+    const dl = c.igGetWindowDrawList();
+    const p = c.igGetCursorScreenPos();
+    const w = c.igGetContentRegionAvail().x;
+    const fs = c.igGetFontSize();
+    const stripe = fs * 0.3;
+    // Red, orange, yellow, green, blue, violet, softened toward the pink panel.
+    const stripes = [_][3]f32{
+        .{ 1.00, 0.55, 0.65 }, .{ 1.00, 0.72, 0.50 }, .{ 1.00, 0.90, 0.55 },
+        .{ 0.62, 0.90, 0.68 }, .{ 0.55, 0.78, 1.00 }, .{ 0.75, 0.62, 0.98 },
+    };
+    for (stripes, 0..) |s, i| {
+        const y = p.y + @as(f32, @floatFromInt(i)) * stripe;
+        c.ImDrawList_AddRectFilled(dl, v2(p.x, y), v2(p.x + w, y + stripe + 0.5), rgba(s[0], s[1], s[2], 1), 0, 0);
+    }
+    const h = stripe * stripes.len;
+    const ts = c.igCalcTextSize(caption.ptr, null, false, -1);
+    const tp = v2(p.x + (w - ts.x) / 2, p.y + (h - ts.y) / 2);
+    const pad = fs * 0.4;
+    c.ImDrawList_AddRectFilled(dl, v2(tp.x - pad, tp.y - 1), v2(tp.x + ts.x + pad, tp.y + ts.y + 1), rgba(0.99, 0.95, 0.97, 0.92), fs, 0);
+    c.ImDrawList_AddText_Vec2(dl, tp, c.igGetColorU32_Col(c.ImGuiCol_Text, 1), caption.ptr, null);
+    c.igDummy(v2(w, h + 4));
+}
+
 fn blend(col: [4]f32, bg: [3]f32) u32 {
     const a = col[3];
     return rgba(

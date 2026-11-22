@@ -222,3 +222,47 @@ pub const line_fs =
     \\out vec4 o_color;
     \\void main() { o_color = v_color; }
 ;
+
+/// Pony theme backdrop: a soft vertical gradient strewn with pastel
+/// four-point sparkles. One oversized triangle, no vertex buffers.
+pub const backdrop_vs =
+    \\#version 330 core
+    \\out vec2 v_uv;
+    \\void main() {
+    \\    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    \\    v_uv = p;
+    \\    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    \\}
+;
+
+pub const backdrop_fs =
+    \\#version 330 core
+    \\in vec2 v_uv;
+    \\uniform vec3 u_top;
+    \\uniform vec3 u_bottom;
+    \\uniform float u_px;
+    \\out vec4 o_color;
+    \\float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    \\vec3 rainbow(float h) {
+    \\    return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+    \\}
+    \\void main() {
+    \\    vec3 col = mix(u_bottom, u_top, clamp(v_uv.y, 0.0, 1.0));
+    \\    float cell = 84.0 * u_px;
+    \\    vec2 fc = gl_FragCoord.xy;
+    \\    vec2 id = floor(fc / cell);
+    \\    if (hash(id) < 0.30) {
+    \\        // Centre in the inner half of the cell so a sparkle never crosses into a neighbour.
+    \\        vec2 c = (id + 0.25 + 0.5 * vec2(hash(id + 3.1), hash(id + 7.7))) * cell;
+    \\        float r = cell * (0.08 + 0.14 * hash(id + 1.3));
+    \\        vec2 a = abs(fc - c) / r;
+    \\        // Astroid: a four-pointed sparkle.
+    \\        float s = 1.0 - (sqrt(a.x) + sqrt(a.y));
+    \\        float w = max(fwidth(s), 1e-3);
+    \\        float k = smoothstep(-w, w, s);
+    \\        vec3 tint = mix(rainbow(hash(id + 5.5)), vec3(1.0), 0.45);
+    \\        col = mix(col, tint, 0.75 * k);
+    \\    }
+    \\    o_color = vec4(col, 1.0);
+    \\}
+;

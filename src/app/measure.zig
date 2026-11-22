@@ -261,7 +261,7 @@ fn atomLabelsInner(app: *App) !void {
     }.farFirst);
 
     const dl = c.igGetBackgroundDrawList_Nil();
-    const light = app.style.theme == .light;
+    const light = app.style.theme.isLight();
     for (labels.items) |l| {
         const d = discs[l.i];
         var buf: [16]u8 = undefined;

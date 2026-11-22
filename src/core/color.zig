@@ -213,6 +213,20 @@ pub const dark_palette: Palette = .{
     },
 };
 
+/// Pony: cotton-candy pink. Bonds sweep a rainbow (pink -> lemon -> sky
+/// blue -> purple -> deep magenta) while still darkening monotonically with
+/// order, so the scale keeps working in greyscale.
+pub const pony_palette: Palette = .{
+    .background = .{ 0.9777, 0.8861, 0.9336 }, // #F9E2EE, OKLCh (0.935, 0.030, 345)
+    .stops = &.{
+        .{ .at = 0.0, .lch = .{ .l = 0.935, .c = 0.030, .h = 345 } }, // = background
+        .{ .at = 0.5, .lch = .{ .l = 0.86, .c = 0.11, .h = 95 } }, // lemon
+        .{ .at = 1.0, .lch = .{ .l = 0.68, .c = 0.11, .h = 235 } }, // single: sky blue
+        .{ .at = 2.0, .lch = .{ .l = 0.50, .c = 0.15, .h = 305 } }, // double: purple
+        .{ .at = 3.0, .lch = .{ .l = 0.30, .c = 0.13, .h = 335 } }, // triple: deep magenta
+    },
+};
+
 pub const BondColor = struct { rgb: Rgb, alpha: f32 };
 
 /// Colour (sRGB) and opacity for a bond of the given (raw) character.
@@ -261,8 +275,8 @@ test "snap is monotonic, continuous, and fixes integers" {
     try std.testing.expect(snap(1.05, 0.7) - 1 < 0.05);
 }
 
-test "bond palette contrast rises with bond character (both themes)" {
-    for ([_]Palette{ light_palette, dark_palette }) |pal| {
+test "bond palette contrast rises with bond character (all themes)" {
+    for ([_]Palette{ light_palette, dark_palette, pony_palette }) |pal| {
         const bg_l = srgbToOklab(pal.background).l;
         // The first stop sits on the background.
         try std.testing.expectApproxEqAbs(bg_l, pal.stops[0].lch.l, 0.02);

@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, GL context, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--light | --dark] [--flat] [--atom-numbers]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
 //!                   [--cut I,J]... [--add FRAGMENT_FILE]
 //!
@@ -22,6 +22,7 @@ const Args = struct {
     height: c_int = 900,
     ui_scale: ?f32 = null,
     no_ui: bool = false,
+    light: bool = false,
     dark: bool = false,
     flat: bool = false,
     atom_numbers: bool = false,
@@ -92,6 +93,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             }
         } else if (eql(u8, arg, "--atom-numbers")) {
             a.atom_numbers = true;
+        } else if (eql(u8, arg, "--light")) {
+            a.light = true;
         } else if (eql(u8, arg, "--dark")) {
             a.dark = true;
         } else if (eql(u8, arg, "--flat")) {
@@ -123,7 +126,7 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+            \\                  [--ui-scale X] [--no-ui] [--light | --dark] [--flat] [--atom-numbers]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\                  [--cut I,J]... [--add FRAGMENT_FILE]
             \\
@@ -147,7 +150,7 @@ pub fn main(init: std.process.Init) !void {
 
     const win_flags = c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY |
         (if (args.screenshot != null) c.SDL_WINDOW_HIDDEN else 0);
-    const window = c.SDL_CreateWindow("chemviewer", args.width, args.height, win_flags) orelse
+    const window = c.SDL_CreateWindow("chemviewer \u{1F984} Pony Edition", args.width, args.height, win_flags) orelse
         return sdlFail("SDL_CreateWindow");
     defer c.SDL_DestroyWindow(window);
     const gl_ctx = c.SDL_GL_CreateContext(window) orelse blk: {
@@ -180,6 +183,7 @@ pub fn main(init: std.process.Init) !void {
     var app = try App.init(io, gpa, window);
     defer app.deinit();
     if (args.ui_scale) |u| app.ui_scale = u;
+    if (args.light) app.style.theme = .light;
     if (args.dark) app.style.theme = .dark;
     if (args.flat) app.style.shading = .flat;
     app.show_atom_numbers = args.atom_numbers;
@@ -203,6 +207,7 @@ pub fn main(init: std.process.Init) !void {
             switch (app.style.theme) {
                 .light => lightImGuiColors(),
                 .dark => c.igStyleColorsDark(null),
+                .pony => ponyImGuiColors(),
             }
         }
 
@@ -446,4 +451,46 @@ fn lightImGuiColors() void {
     set(col, c.ImGuiCol_PlotHistogram, 0xFF2E7E, 1);
     set(col, c.ImGuiCol_Text, 0x2A1F66, 1);
     set(col, c.ImGuiCol_TextDisabled, 0x8A7FB8, 1);
+}
+
+/// Pony theme: candy-pink panels, lavender buttons, hot-pink and grape
+/// accents, deep plum text. Every fill stays a light tint under dark text.
+fn ponyImGuiColors() void {
+    lightImGuiColors();
+    const col = &c.igGetStyle().*.Colors;
+    const set = struct {
+        fn f(cs: anytype, i: c_int, hex: u24, a: f32) void {
+            cs[@intCast(i)] = .{
+                .x = @as(f32, @floatFromInt((hex >> 16) & 0xFF)) / 255.0,
+                .y = @as(f32, @floatFromInt((hex >> 8) & 0xFF)) / 255.0,
+                .z = @as(f32, @floatFromInt(hex & 0xFF)) / 255.0,
+                .w = a,
+            };
+        }
+    }.f;
+    set(col, c.ImGuiCol_WindowBg, 0xFDF1F7, 0.96);
+    set(col, c.ImGuiCol_PopupBg, 0xFDF1F7, 0.98);
+    set(col, c.ImGuiCol_MenuBarBg, 0xF7D9EA, 1);
+    set(col, c.ImGuiCol_TitleBg, 0xF7D9EA, 1);
+    set(col, c.ImGuiCol_TitleBgActive, 0xE4CCFF, 1);
+    set(col, c.ImGuiCol_TitleBgCollapsed, 0xF7D9EA, 1);
+    set(col, c.ImGuiCol_Border, 0xEDCDE1, 0.9);
+    set(col, c.ImGuiCol_Separator, 0xE7B8D6, 1);
+    set(col, c.ImGuiCol_FrameBg, 0xFAE3F0, 1);
+    set(col, c.ImGuiCol_FrameBgHovered, 0xF5D3E8, 1);
+    set(col, c.ImGuiCol_FrameBgActive, 0xEDCDE1, 1);
+    set(col, c.ImGuiCol_Button, 0xE4D4FF, 1);
+    set(col, c.ImGuiCol_ButtonHovered, 0xFFD3EA, 1);
+    set(col, c.ImGuiCol_ButtonActive, 0xFFB0D8, 1);
+    set(col, c.ImGuiCol_Header, 0xE4D4FF, 1);
+    set(col, c.ImGuiCol_HeaderHovered, 0xFFD3EA, 1);
+    set(col, c.ImGuiCol_HeaderActive, 0xFFB0D8, 1);
+    set(col, c.ImGuiCol_CheckMark, 0xE5259A, 1);
+    set(col, c.ImGuiCol_SliderGrab, 0x9B5DE5, 1);
+    set(col, c.ImGuiCol_SliderGrabActive, 0xE5259A, 1);
+    set(col, c.ImGuiCol_ScrollbarGrab, 0xE4C2E0, 1);
+    set(col, c.ImGuiCol_PlotLines, 0x9B5DE5, 1);
+    set(col, c.ImGuiCol_PlotHistogram, 0xE5259A, 1);
+    set(col, c.ImGuiCol_Text, 0x4A1F5C, 1);
+    set(col, c.ImGuiCol_TextDisabled, 0xA07AB0, 1);
 }
