@@ -401,7 +401,7 @@ const Startup = struct {
                 return @as(f64, @floatFromInt(ns)) / 1e6 / @as(f64, @floatFromInt(frames));
             }
         }.f;
-        const motif = if (app.style.shading == .flat) @tagName(app.style.backdrop) else "-";
+        const motif = if (app.style.background_pattern) @tagName(app.style.backdrop) else "none";
         std.debug.print("{d}x{d} {s}/{s}: background {d:.3} ms, scene {d:.3} ms ({d} frames)\n", .{
             w, h, @tagName(app.style.shading), motif, ms(prof.background_ns, prof.frames), ms(prof.scene_ns, prof.frames), prof.frames,
         });

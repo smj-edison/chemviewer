@@ -53,44 +53,35 @@ pub const Theme = enum(c_int) {
         };
     }
 
-    /// Colours for the background pattern (`shaders.background_fs`).
-    /// `ink` is the main tone and `deep` a stronger one (cell rims, nuclei);
-    /// `light` sits on the other side of the background; `glow_a`/`glow_b`
-    /// tint the space backdrop's bokeh and haze. Cel style gets faint rings
-    /// and dots only a few percent off the background.
-    pub fn backdrop(t: Theme, shading: Shading) Backdrop {
-        const bg: @Vector(3, f32) = t.background();
-        const k = struct {
-            fn off(v: @Vector(3, f32), d: f32) [3]f32 {
-                return @min(@max(v + @as(@Vector(3, f32), @splat(d)), @as(@Vector(3, f32), @splat(0))), @as(@Vector(3, f32), @splat(1)));
-            }
-            fn hex(h: u24) [3]f32 {
+    /// Colours for the background pattern (`shaders.background_fs`), the
+    /// same in both shadings. `ink` is the main tone and `deep` a stronger
+    /// one (cell rims, nuclei); `light` sits on the other side of the
+    /// background; `glow_a`/`glow_b` tint the space backdrop's bokeh and haze.
+    pub fn backdrop(t: Theme) Backdrop {
+        const hex = struct {
+            fn f(h: u24) [3]f32 {
                 return .{
                     @as(f32, @floatFromInt((h >> 16) & 0xFF)) / 255.0,
                     @as(f32, @floatFromInt((h >> 8) & 0xFF)) / 255.0,
                     @as(f32, @floatFromInt(h & 0xFF)) / 255.0,
                 };
             }
-        };
-        if (shading == .flat) return switch (t) {
+        }.f;
+        return switch (t) {
             .light => .{
-                .ink = k.hex(0xC5D1E1),
-                .deep = k.hex(0xAEBDD3),
-                .light = k.hex(0xF3F6FA),
-                .glow_a = k.hex(0xF6CFE2), // blush pink
-                .glow_b = k.hex(0xCFCBF6), // lavender
+                .ink = hex(0xC5D1E1),
+                .deep = hex(0xAEBDD3),
+                .light = hex(0xF3F6FA),
+                .glow_a = hex(0xF6CFE2), // blush pink
+                .glow_b = hex(0xCFCBF6), // lavender
             },
             .dark => .{
-                .ink = k.hex(0x22252F),
-                .deep = k.hex(0x2C3040),
-                .light = k.hex(0xB8C0E0),
-                .glow_a = k.hex(0x9A3A6E), // muted magenta
-                .glow_b = k.hex(0x2F5E9E), // muted blue
+                .ink = hex(0x22252F),
+                .deep = hex(0x2C3040),
+                .light = hex(0xB8C0E0),
+                .glow_a = hex(0x9A3A6E), // muted magenta
+                .glow_b = hex(0x2F5E9E), // muted blue
             },
-        };
-        return switch (t) {
-            .light => .{ .ink = k.off(bg, -0.06), .deep = k.off(bg, -0.10), .light = k.off(bg, 0.03), .glow_a = k.off(bg, -0.06), .glow_b = k.off(bg, -0.06) },
-            .dark => .{ .ink = k.off(bg, 0.06), .deep = k.off(bg, 0.10), .light = k.off(bg, 0.10), .glow_a = k.off(bg, 0.06), .glow_b = k.off(bg, 0.06) },
         };
     }
 
@@ -118,7 +109,7 @@ pub const Backdrop = struct {
     glow_b: [3]f32,
 };
 
-/// Background motif for the flat style.
+/// Background motif (both shadings).
 pub const BackdropKind = enum(c_int) {
     /// Out-of-focus cells: soft blobs with a membrane rim and a nucleus.
     cells,
@@ -162,7 +153,7 @@ pub const Style = struct {
     /// Pattern behind the molecule that turns with the camera (see
     /// `shaders.background_fs`). Off gives the plain solid background.
     background_pattern: bool = true,
-    /// Motif behind the flat style.
+    /// Motif behind the molecule.
     backdrop: BackdropKind = .cells,
     /// Depth-of-field strength for the background pattern (0 = sharp).
     background_blur: f32 = 0.6,
@@ -701,7 +692,6 @@ const BackgroundCache = struct {
         anchor: [3]f32,
         radius: f32,
         theme: Theme,
-        shading: Shading,
         backdrop: BackdropKind,
         blur: f32,
     };
@@ -753,7 +743,6 @@ fn drawBackground(r: *Renderer, p: DrawParams) void {
         .anchor = p.bg_anchor,
         .radius = p.bg_radius,
         .theme = p.style.theme,
-        .shading = p.style.shading,
         .backdrop = p.style.backdrop,
         .blur = p.style.background_blur,
     };
@@ -799,13 +788,9 @@ fn renderBackdrop(r: *Renderer, p: DrawParams, res: f32) void {
     f.Uniform1f(f.GetUniformLocation(prog, "u_radius"), p.bg_radius);
     // Circle of confusion at infinity, in target pixels (~36 logical px).
     f.Uniform1f(f.GetUniformLocation(prog, "u_coc_px"), 36 * p.pixel_density * p.style.background_blur * res);
-    const mode: c_int = if (p.style.shading != .flat) 1 else switch (p.style.backdrop) {
-        .cells => 2,
-        .space => 3,
-    };
-    f.Uniform1i(f.GetUniformLocation(prog, "u_mode"), mode);
+    f.Uniform1i(f.GetUniformLocation(prog, "u_mode"), @backingInt(p.style.backdrop));
     const bg = p.style.theme.background();
-    const bd = p.style.theme.backdrop(p.style.shading);
+    const bd = p.style.theme.backdrop();
     f.Uniform3f(f.GetUniformLocation(prog, "u_bg"), bg[0], bg[1], bg[2]);
     inline for (.{ "u_ink", "u_deep", "u_light", "u_glow_a", "u_glow_b" }, .{ bd.ink, bd.deep, bd.light, bd.glow_a, bd.glow_b }) |name, col| {
         f.Uniform3f(f.GetUniformLocation(prog, name), col[0], col[1], col[2]);

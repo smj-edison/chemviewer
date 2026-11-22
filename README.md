@@ -66,7 +66,7 @@ SDL_VIDEO_DRIVER=offscreen zig-out/bin/chemviewer traj.traj \
 
 Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`, `--flat` (flat style), `--atom-numbers`,
 `--ui-scale X`, `--no-bg-pattern` (plain background), `--backdrop cells|space`
-(flat style backdrop), `--bg-blur K` (backdrop depth of field, default 0.6), and
+(backdrop motif), `--bg-blur K` (backdrop depth of field, default 0.6), and
 a camera pose for scripted screenshots: `--orbit DX,DY` and `--pan DX,DY` (mouse
 drag in pixels), `--zoom STEPS` (wheel steps).
 

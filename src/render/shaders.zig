@@ -236,12 +236,12 @@ pub const line_fs =
 /// the view is fitted), so it turns with the camera and, being nearer or
 /// farther, shifts at its own rate when panning and zooming (parallax).
 ///
-/// u_mode 1: faint rings and dots (cel style).
-/// u_mode 2: flat style "cells", as if seen through a macro lens with a
-///   shallow depth of field: big blurred cells with a membrane rim and a
-///   nucleus, sharper small ones nearer, drifting vesicles.
-/// u_mode 3: flat style "space", equally out of focus: nebula haze, glowing
-///   bokeh discs and a few four-point sparkle stars.
+/// The same backdrop sits behind both shadings, as if seen through a macro
+/// lens with a shallow depth of field:
+/// u_mode 0: "cells": big blurred cells with a membrane rim and a nucleus,
+///   sharper small ones nearer, drifting vesicles.
+/// u_mode 1: "space": nebula haze, glowing bokeh discs and a few four-point
+///   sparkle stars.
 pub const background_vs =
     \\#version 330 core
     \\out vec2 v_ndc;
@@ -327,8 +327,8 @@ pub const background_fs =
     \\// Those are visited in ascending lattice order, so overlapping
     \\// translucent features composite in the same order everywhere (no seams).
     \\
-    \\// Plain discs or rings (light/dark themes).
-    \\vec3 dots(vec3 col, vec3 p, float density, vec2 rad, float aa, float alpha, float seed, int ring,
+    \\// Plain discs (vesicles, dust).
+    \\vec3 dots(vec3 col, vec3 p, float density, vec2 rad, float aa, float alpha, float seed,
     \\          vec3 ca, vec3 cb) {
     \\    vec3 cell_ = floor(p);
     \\    vec3 base_ = cell_ - 1.0 + step(0.5, p - cell_);
@@ -340,10 +340,8 @@ pub const background_fs =
     \\        float r = mix(rad.x, rad.y, fract(h.w * 17.0 / density));
     \\        aa = min(aa, 0.7 - r); // stay inside the 2x2x2 search
     \\        float d = length(p - c);
-    \\        if (d >= r + max(0.11 * r, aa) + aa) continue; // out of reach: skip the shading
-    \\        float a = ring == 1
-    \\            ? 1.0 - smoothstep(max(0.11 * r, aa) - aa, max(0.11 * r, aa) + aa, abs(d - r))
-    \\            : 1.0 - smoothstep(r - aa, r + aa, d);
+    \\        if (d >= r + aa) continue; // out of reach: skip the shading
+    \\        float a = 1.0 - smoothstep(r - aa, r + aa, d);
     \\        col = mix(col, fract(h.x * 7.0 + h.z * 3.0) < 0.7 ? ca : cb, a * alpha);
     \\    }
     \\    return col;
@@ -435,7 +433,7 @@ pub const background_fs =
     \\    ray_dir = normalize(Rt * normalize(vec3(v_ndc * u_tan, -1.0)));
     \\    vec3 col = u_bg;
     \\    float vig = smoothstep(0.4, 1.6, length(v_ndc));
-    \\    if (u_mode == 2) {
+    \\    if (u_mode == 0) {
     \\        col = mix(col, u_ink, 0.25 * vig);
     \\        // Far: big, heavily defocused cells.
     \\        float s1 = 2.6;
@@ -445,8 +443,8 @@ pub const background_fs =
     \\        col = cells(col, shellDir(7.0) * s2, 0.30, vec2(0.16, 0.30), 0.03, dof(7.0, s2, 1.0), 0.45, 11.0);
     \\        // Near: drifting vesicles, soft.
     \\        float s3 = 16.0;
-    \\        col = dots(col, shellDir(4.8) * s3, 0.22, vec2(0.05, 0.11), dof(4.8, s3, 1.0), 0.40, 29.0, 0, u_deep, u_light);
-    \\    } else if (u_mode == 3) {
+    \\        col = dots(col, shellDir(4.8) * s3, 0.22, vec2(0.05, 0.11), dof(4.8, s3, 1.0), 0.40, 29.0, u_deep, u_light);
+    \\    } else {
     \\        // Nebula haze: slow noise, tinted toward the two glow colours.
     \\        vec3 hd = shellDir(14.0);
     \\        float n1 = noise(hd * 2.2) * 0.6 + noise(hd * 4.7 + 7.0) * 0.4;
@@ -464,13 +462,7 @@ pub const background_fs =
     \\        float s3 = 7.0;
     \\        col = stars(col, shellDir(5.0) * s3, 0.07, vec2(0.16, 0.30), dof(5.0, s3, 0.25), 0.45, 23.0);
     \\        float s4 = 30.0;
-    \\        col = dots(col, shellDir(9.0) * s4, 0.25, vec2(0.04, 0.08), dof(9.0, s4, 0.5), 0.35, 37.0, 0, u_light, u_glow_b);
-    \\    } else if (u_mode == 1) {
-    \\        // Cel style is crisp: no depth of field.
-    \\        float s1 = 9.0;
-    \\        col = dots(col, shellDir(7.0) * s1, 0.30, vec2(0.10, 0.22), dof(7.0, s1, 0.0), 0.40, 5.0, 1, u_ink, u_light);
-    \\        float s2 = 22.0;
-    \\        col = dots(col, shellDir(5.0) * s2, 0.30, vec2(0.05, 0.09), dof(5.0, s2, 0.0), 0.40, 17.0, 0, u_ink, u_light);
+    \\        col = dots(col, shellDir(9.0) * s4, 0.25, vec2(0.04, 0.08), dof(9.0, s4, 0.5), 0.35, 37.0, u_light, u_glow_b);
     \\    }
     \\    o_color = vec4(col, 1.0);
     \\}
