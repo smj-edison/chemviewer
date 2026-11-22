@@ -53,6 +53,47 @@ pub const Theme = enum(c_int) {
         };
     }
 
+    /// Colours for the background pattern (`shaders.background_fs`).
+    /// `ink` is the main tone and `deep` a stronger one (cell rims, nuclei);
+    /// `light` sits on the other side of the background; `glow_a`/`glow_b`
+    /// tint the space backdrop's bokeh and haze. Cel style gets faint rings
+    /// and dots only a few percent off the background.
+    pub fn backdrop(t: Theme, shading: Shading) Backdrop {
+        const bg: @Vector(3, f32) = t.background();
+        const k = struct {
+            fn off(v: @Vector(3, f32), d: f32) [3]f32 {
+                return @min(@max(v + @as(@Vector(3, f32), @splat(d)), @as(@Vector(3, f32), @splat(0))), @as(@Vector(3, f32), @splat(1)));
+            }
+            fn hex(h: u24) [3]f32 {
+                return .{
+                    @as(f32, @floatFromInt((h >> 16) & 0xFF)) / 255.0,
+                    @as(f32, @floatFromInt((h >> 8) & 0xFF)) / 255.0,
+                    @as(f32, @floatFromInt(h & 0xFF)) / 255.0,
+                };
+            }
+        };
+        if (shading == .flat) return switch (t) {
+            .light => .{
+                .ink = k.hex(0xC5D1E1),
+                .deep = k.hex(0xAEBDD3),
+                .light = k.hex(0xF3F6FA),
+                .glow_a = k.hex(0xF6CFE2), // blush pink
+                .glow_b = k.hex(0xCFCBF6), // lavender
+            },
+            .dark => .{
+                .ink = k.hex(0x22252F),
+                .deep = k.hex(0x2C3040),
+                .light = k.hex(0xB8C0E0),
+                .glow_a = k.hex(0x9A3A6E), // muted magenta
+                .glow_b = k.hex(0x2F5E9E), // muted blue
+            },
+        };
+        return switch (t) {
+            .light => .{ .ink = k.off(bg, -0.06), .deep = k.off(bg, -0.10), .light = k.off(bg, 0.03), .glow_a = k.off(bg, -0.06), .glow_b = k.off(bg, -0.06) },
+            .dark => .{ .ink = k.off(bg, 0.06), .deep = k.off(bg, 0.10), .light = k.off(bg, 0.10), .glow_a = k.off(bg, 0.06), .glow_b = k.off(bg, 0.06) },
+        };
+    }
+
     /// Selection accent (rings, labels, measurement lines).
     pub fn accent(t: Theme) [3]f32 {
         return switch (t) {
@@ -67,6 +108,22 @@ pub const Theme = enum(c_int) {
             .dark => .{ 0.60, 0.60, 0.65, 1 },
         };
     }
+};
+
+pub const Backdrop = struct {
+    ink: [3]f32,
+    deep: [3]f32,
+    light: [3]f32,
+    glow_a: [3]f32,
+    glow_b: [3]f32,
+};
+
+/// Background motif for the flat style.
+pub const BackdropKind = enum(c_int) {
+    /// Out-of-focus cells: soft blobs with a membrane rim and a nucleus.
+    cells,
+    /// Out-of-focus space: glowing bokeh, faint nebula haze, sparkle stars.
+    space,
 };
 
 /// How atoms and bonds are drawn; works with either theme.
@@ -102,6 +159,13 @@ pub const Style = struct {
     /// colouring (0 = linear, 1 = flat plateaus). See `cv.color.snap`.
     snap: f32 = 0.7,
     show_cell: bool = true,
+    /// Pattern behind the molecule that turns with the camera (see
+    /// `shaders.background_fs`). Off gives the plain solid background.
+    background_pattern: bool = true,
+    /// Motif behind the flat style.
+    backdrop: BackdropKind = .cells,
+    /// Depth-of-field strength for the background pattern (0 = sharp).
+    background_blur: f32 = 0.6,
 
     /// Element colour: the same in every theme and style.
     pub fn atomColor(s: Style, z: u8) [3]f32 {
@@ -159,6 +223,8 @@ gpa: Allocator,
 sphere_prog: gl.Uint,
 cylinder_prog: gl.Uint,
 line_prog: gl.Uint,
+background_prog: gl.Uint,
+background_vao: gl.Uint = 0,
 sphere_vao: gl.Uint = 0,
 cylinder_vao: gl.Uint = 0,
 line_vao: gl.Uint = 0,
@@ -191,13 +257,15 @@ pub fn init(gpa: Allocator) !Renderer {
         .sphere_prog = try gl.compileProgram(shaders.sphere_vs, shaders.sphere_fs),
         .cylinder_prog = try gl.compileProgram(shaders.cylinder_vs, shaders.cylinder_fs),
         .line_prog = try gl.compileProgram(shaders.line_vs, shaders.line_fs),
+        .background_prog = try gl.compileProgram(shaders.background_vs, shaders.background_fs),
     };
     const f = &gl.f;
-    var vaos: [3]gl.Uint = undefined;
-    f.GenVertexArrays(3, &vaos);
+    var vaos: [4]gl.Uint = undefined;
+    f.GenVertexArrays(4, &vaos);
     r.sphere_vao = vaos[0];
     r.cylinder_vao = vaos[1];
     r.line_vao = vaos[2];
+    r.background_vao = vaos[3]; // no attributes: the shader uses gl_VertexID
     var bufs: [6]gl.Uint = undefined;
     f.GenBuffers(6, &bufs);
     r.quad_vbo = bufs[0];
@@ -263,13 +331,14 @@ fn instanceAttrib(loc: gl.Uint, n: gl.Int, stride: usize, offset: usize) void {
 
 pub fn deinit(r: *Renderer) void {
     const f = &gl.f;
-    const vaos = [_]gl.Uint{ r.sphere_vao, r.cylinder_vao, r.line_vao };
+    const vaos = [_]gl.Uint{ r.sphere_vao, r.cylinder_vao, r.line_vao, r.background_vao };
     f.DeleteVertexArrays(vaos.len, &vaos);
     const bufs = [_]gl.Uint{ r.quad_vbo, r.cyl_vbo, r.cyl_ibo, r.atom_vbo, r.bond_vbo, r.line_vbo };
     f.DeleteBuffers(bufs.len, &bufs);
     f.DeleteProgram(r.sphere_prog);
     f.DeleteProgram(r.cylinder_prog);
     f.DeleteProgram(r.line_prog);
+    f.DeleteProgram(r.background_prog);
     r.atoms.deinit(r.gpa);
     r.bonds.deinit(r.gpa);
     r.translucent.deinit(r.gpa);
@@ -444,6 +513,10 @@ pub const DrawParams = struct {
     /// Physical pixels per logical pixel (HiDPI).
     pixel_density: f32 = 1,
     style: Style,
+    /// Fixed world anchor and scene radius for the background pattern
+    /// (`Camera.bg_anchor` / `bg_radius`).
+    bg_anchor: Vec3 = .{ 0, 0, 0 },
+    bg_radius: f32 = 1,
     /// Filled in by `draw`: world units per framebuffer pixel at unit depth.
     world_per_px: f32 = 0,
     /// Filled in by `draw`: view-depth range of the scene (flat style fade).
@@ -467,8 +540,11 @@ fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
     f.Uniform3f(f.GetUniformLocation(prog, "u_fog_color"), bg[0], bg[1], bg[2]);
     f.Uniform2f(f.GetUniformLocation(prog, "u_fog_range"), p.fog_range[0], p.fog_range[1]);
     f.Uniform1f(f.GetUniformLocation(prog, "u_fog_amount"), 0.45);
-    const sc = p.style.theme.shadow();
-    f.Uniform3f(f.GetUniformLocation(prog, "u_shadow_color"), sc[0], sc[1], sc[2]);
+    // Shadows multiply what is behind them (see `drawShadows`): the factor
+    // turns the plain background into exactly the theme's shadow colour.
+    const sc: @Vector(3, f32) = p.style.theme.shadow();
+    const ratio = sc / @max(@as(@Vector(3, f32), bg), @as(@Vector(3, f32), @splat(1e-3)));
+    f.Uniform3f(f.GetUniformLocation(prog, "u_shadow_color"), ratio[0], ratio[1], ratio[2]);
     f.Uniform2f(f.GetUniformLocation(prog, "u_shadow_offset"), 0, 0);
     f.Uniform1f(f.GetUniformLocation(prog, "u_shadow_pass"), 0);
 }
@@ -483,6 +559,7 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     f.Viewport(0, 0, p.width, p.height);
     f.ClearColor(bg[0], bg[1], bg[2], 1);
     f.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if (p.style.background_pattern) r.drawBackground(p);
     f.Enable(gl.DEPTH_TEST);
     f.DepthFunc(gl.LESS);
     f.DepthMask(gl.TRUE);
@@ -551,15 +628,61 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     f.BindVertexArray(0);
 }
 
-/// Flat style: every opaque atom and bond as a flat silhouette in a darker
-/// shade of the background, offset down and to the right. Drawn first,
-/// without depth, so the molecule covers its own shadow.
+fn drawBackground(r: *Renderer, p: DrawParams) void {
+    const f = &gl.f;
+    const prog = r.background_prog;
+    f.UseProgram(prog);
+    f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_view"), 1, gl.FALSE, @ptrCast(&p.view.m));
+    const t = @tan(p.fovy / 2);
+    const aspect = @as(f32, @floatFromInt(p.width)) / @as(f32, @floatFromInt(@max(p.height, 1)));
+    f.Uniform2f(f.GetUniformLocation(prog, "u_tan"), t * aspect, t);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_px"), p.world_per_px);
+    f.Uniform3f(f.GetUniformLocation(prog, "u_anchor"), p.bg_anchor[0], p.bg_anchor[1], p.bg_anchor[2]);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_radius"), p.bg_radius);
+    // Circle of confusion at infinity, in framebuffer pixels (~36 logical px).
+    f.Uniform1f(f.GetUniformLocation(prog, "u_coc_px"), 36 * p.pixel_density * p.style.background_blur);
+    const mode: c_int = if (p.style.shading != .flat) 1 else switch (p.style.backdrop) {
+        .cells => 2,
+        .space => 3,
+    };
+    f.Uniform1i(f.GetUniformLocation(prog, "u_mode"), mode);
+    const bg = p.style.theme.background();
+    const bd = p.style.theme.backdrop(p.style.shading);
+    f.Uniform3f(f.GetUniformLocation(prog, "u_bg"), bg[0], bg[1], bg[2]);
+    inline for (.{ "u_ink", "u_deep", "u_light", "u_glow_a", "u_glow_b" }, .{ bd.ink, bd.deep, bd.light, bd.glow_a, bd.glow_b }) |name, col| {
+        f.Uniform3f(f.GetUniformLocation(prog, name), col[0], col[1], col[2]);
+    }
+    f.Disable(gl.DEPTH_TEST);
+    f.DepthMask(gl.FALSE);
+    f.BindVertexArray(r.background_vao);
+    f.DrawArrays(gl.TRIANGLES, 0, 3);
+    f.DepthMask(gl.TRUE);
+    f.Enable(gl.DEPTH_TEST);
+}
+
+/// Flat style: every opaque atom and bond as a flat silhouette, offset down
+/// and to the right, drawn first so the molecule covers its own shadow.
+/// Shadows multiply what is behind them, so they read over the backdrop
+/// pattern too. Every shadow fragment is written at one fixed depth with
+/// LESS, so overlapping silhouettes darken a pixel only once.
 fn drawShadows(r: *Renderer, p: DrawParams) void {
     const f = &gl.f;
     const px = 6 * p.pixel_density;
     const off: [2]f32 = .{ 2 * px / @as(f32, @floatFromInt(@max(p.width, 1))), -2 * px / @as(f32, @floatFromInt(@max(p.height, 1))) };
-    f.Disable(gl.DEPTH_TEST);
-    f.DepthMask(gl.FALSE);
+    f.Enable(gl.DEPTH_TEST);
+    f.DepthFunc(gl.LESS);
+    f.DepthMask(gl.TRUE);
+    f.Enable(gl.BLEND);
+    f.BlendFunc(gl.DST_COLOR, gl.ZERO);
+    if (r.uploaded_atoms > 0) {
+        setCommon(r.sphere_prog, p, 0);
+        setShadow(r.sphere_prog, off);
+        f.BindVertexArray(r.sphere_vao);
+        f.Enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+        f.DrawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, @intCast(r.uploaded_atoms));
+        f.Disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+        setShadow(r.sphere_prog, null);
+    }
     if (r.uploaded_opaque_bonds > 0) {
         setCommon(r.cylinder_prog, p, 0);
         setShadow(r.cylinder_prog, off);
@@ -567,18 +690,8 @@ fn drawShadows(r: *Renderer, p: DrawParams) void {
         f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, @intCast(r.uploaded_opaque_bonds));
         setShadow(r.cylinder_prog, null);
     }
-    if (r.uploaded_atoms > 0) {
-        setCommon(r.sphere_prog, p, 0);
-        setShadow(r.sphere_prog, off);
-        f.BindVertexArray(r.sphere_vao);
-        f.Enable(gl.BLEND);
-        f.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        f.DrawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, @intCast(r.uploaded_atoms));
-        f.Disable(gl.BLEND);
-        setShadow(r.sphere_prog, null);
-    }
-    f.DepthMask(gl.TRUE);
-    f.Enable(gl.DEPTH_TEST);
+    f.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    f.Disable(gl.BLEND);
 }
 
 fn setShadow(prog: gl.Uint, offset: ?[2]f32) void {
