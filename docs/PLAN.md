@@ -156,3 +156,9 @@ bytes (not frame count) evicts old ones. Scrubbing never blocks the render loop.
 - Vibrational modes from Gaussian/ORCA outputs (animated)
 - Colour by property (forces, charges, per-atom energies from .traj calculator data)
 - Export screenshots / movies
+- Light mode background: adopt the pale blue-grey from the experimental
+  `kurzgesagt-style` branch, `#DFE7EF` = OKLCh (0.925, 0.014, 250), in place
+  of the current near-white. The user likes it in general. Re-check the light
+  bond palette (its first stop must match the new background, and the
+  contrast test must still pass), the carbon colour, the outline colour and the
+  ImGui light colours against it.
