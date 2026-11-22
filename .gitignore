@@ -2,3 +2,5 @@ zig-out/
 .zig-cache/
 *.png
 zig-pkg/
+docs/style-refs/**/*.jpg
+renders/

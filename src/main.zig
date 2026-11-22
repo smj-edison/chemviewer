@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, GL context, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--atom-numbers]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
 //!                   [--cut I,J]... [--add FRAGMENT_FILE]
 //!
@@ -23,6 +23,7 @@ const Args = struct {
     ui_scale: ?f32 = null,
     no_ui: bool = false,
     dark: bool = false,
+    flat: bool = false,
     atom_numbers: bool = false,
     /// Startup script: select atoms (1-based), set their distance (Å) or
     /// angle/dihedral (degrees), save the frame as XYZ.
@@ -93,6 +94,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.atom_numbers = true;
         } else if (eql(u8, arg, "--dark")) {
             a.dark = true;
+        } else if (eql(u8, arg, "--flat")) {
+            a.flat = true;
         } else if (eql(u8, arg, "--no-ui")) {
             a.no_ui = true;
         } else if (eql(u8, arg, "-h") or eql(u8, arg, "--help")) {
@@ -120,7 +123,7 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark] [--atom-numbers]
+            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\                  [--cut I,J]... [--add FRAGMENT_FILE]
             \\
@@ -178,6 +181,7 @@ pub fn main(init: std.process.Init) !void {
     defer app.deinit();
     if (args.ui_scale) |u| app.ui_scale = u;
     if (args.dark) app.style.theme = .dark;
+    if (args.flat) app.style.shading = .flat;
     app.show_atom_numbers = args.atom_numbers;
     if (args.file) |f| app.openFile(f);
 
@@ -197,7 +201,7 @@ pub fn main(init: std.process.Init) !void {
         if (applied_theme != app.style.theme) {
             applied_theme = app.style.theme;
             switch (app.style.theme) {
-                .light => c.igStyleColorsLight(null),
+                .light => lightImGuiColors(),
                 .dark => c.igStyleColorsDark(null),
             }
         }
@@ -403,4 +407,43 @@ test {
     _ = @import("app/lasso.zig");
     _ = @import("app/drag.zig");
     _ = @import("app/occlusion.zig");
+}
+
+/// Light ImGui colours on the blue-grey of the light theme, with violet and
+/// pink accents. Dark text sits on every fill, so fills stay light tints.
+fn lightImGuiColors() void {
+    c.igStyleColorsLight(null);
+    const col = &c.igGetStyle().*.Colors;
+    const set = struct {
+        fn f(cs: anytype, i: c_int, hex: u24, a: f32) void {
+            cs[@intCast(i)] = .{
+                .x = @as(f32, @floatFromInt((hex >> 16) & 0xFF)) / 255.0,
+                .y = @as(f32, @floatFromInt((hex >> 8) & 0xFF)) / 255.0,
+                .z = @as(f32, @floatFromInt(hex & 0xFF)) / 255.0,
+                .w = a,
+            };
+        }
+    }.f;
+    set(col, c.ImGuiCol_WindowBg, 0xF4F7FA, 0.96);
+    set(col, c.ImGuiCol_PopupBg, 0xF4F7FA, 0.98);
+    set(col, c.ImGuiCol_MenuBarBg, 0xE6ECF3, 1);
+    set(col, c.ImGuiCol_TitleBg, 0xE6ECF3, 1);
+    set(col, c.ImGuiCol_TitleBgActive, 0xD9D3FF, 1);
+    set(col, c.ImGuiCol_Border, 0xC8D4E3, 0.8);
+    set(col, c.ImGuiCol_FrameBg, 0xE3E9F1, 1);
+    set(col, c.ImGuiCol_FrameBgHovered, 0xD6DFEA, 1);
+    set(col, c.ImGuiCol_FrameBgActive, 0xC8D4E3, 1);
+    set(col, c.ImGuiCol_Button, 0xD9D3FF, 1);
+    set(col, c.ImGuiCol_ButtonHovered, 0xFFCFE2, 1);
+    set(col, c.ImGuiCol_ButtonActive, 0xFFB0CF, 1);
+    set(col, c.ImGuiCol_Header, 0xD9D3FF, 1);
+    set(col, c.ImGuiCol_HeaderHovered, 0xFFCFE2, 1);
+    set(col, c.ImGuiCol_HeaderActive, 0xFFB0CF, 1);
+    set(col, c.ImGuiCol_CheckMark, 0x5540F0, 1);
+    set(col, c.ImGuiCol_SliderGrab, 0x5540F0, 1);
+    set(col, c.ImGuiCol_SliderGrabActive, 0xFF2E7E, 1);
+    set(col, c.ImGuiCol_PlotLines, 0x5540F0, 1);
+    set(col, c.ImGuiCol_PlotHistogram, 0xFF2E7E, 1);
+    set(col, c.ImGuiCol_Text, 0x2A1F66, 1);
+    set(col, c.ImGuiCol_TextDisabled, 0x8A7FB8, 1);
 }

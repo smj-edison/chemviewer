@@ -240,7 +240,7 @@ fn atomNumbersInner(app: *App) !void {
     defer gpa.free(discs);
     for (pos, f.numbers, discs) |p, z, *d| {
         const depth = cv.math.dot(p - eye, forward);
-        const r = cv.elements.displayRadius(z) * app.style.atom_scale;
+        const r = app.style.atomRadius(z);
         const q = proj.toScreen(p) orelse {
             d.* = .{ .x = -1e9, .y = -1e9, .rpx = 0, .z = depth, .r = r };
             continue;

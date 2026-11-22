@@ -22,6 +22,7 @@ pub const BondColoring = enum(c_int) {
     element,
 };
 
+/// Light or dark: owns the background, bond palette, accents and outlines.
 pub const Theme = enum(c_int) {
     light,
     dark,
@@ -44,14 +45,12 @@ pub const Theme = enum(c_int) {
         };
     }
 
-    /// Element colour, adjusted per theme where the default would blend
-    /// with bonds: carbon is lifted well above the single-bond grey.
-    pub fn atomColor(t: Theme, z: u8) [3]f32 {
-        if (z == 6) return switch (t) {
-            .light => .{ 0.71, 0.71, 0.72 }, // OKLab L ≈ 0.77 vs single bonds 0.50
-            .dark => .{ 0.77, 0.77, 0.78 }, // OKLab L ≈ 0.82 vs single bonds 0.58
+    /// Flat style's drop-shadow colour: a deeper shade of the background.
+    pub fn shadow(t: Theme) [3]f32 {
+        return switch (t) {
+            .light => .{ 0.7858, 0.8304, 0.8886 }, // #C8D4E3, OKLCh (0.865, 0.024, 255)
+            .dark => .{ 0.055, 0.058, 0.075 }, // OKLCh ≈ (0.17, 0.01, 265)
         };
-        return cv.elements.colorRgb(z);
     }
 
     /// Selection accent (rings, labels, measurement lines).
@@ -70,11 +69,55 @@ pub const Theme = enum(c_int) {
     }
 };
 
+/// Element colours, shared by both styles. They keep the hues chemists know (red O,
+/// blue N, green halogens, yellow S, orange P, gold Au) and give carbon
+/// teal: the one hue CPK leaves free (only the rare noble gases use cyan),
+/// and VMD's carbon colour. Anything not listed is its CPK hue made bright
+/// and saturated.
+fn elementColor(z: u8) [3]f32 {
+    const hex: ?u24 = switch (z) {
+        1 => 0xFFFFFF, // H
+        5 => 0xFF9A7A, // B: salmon
+        6 => 0x00B3C2, // C: teal, OKLCh (0.70, 0.125, 205)
+        7 => 0x5560F6, // N: periwinkle blue
+        8 => 0xE94646, // O: coral red, OKLCh (0.63, 0.20, 25); apart from orange P
+        9 => 0x7BD84A, // F: lime
+        14 => 0xC58A5A, // Si: clay
+        15 => 0xFF7A1A, // P: orange
+        16 => 0xE6E04A, // S: lemon (greener than gold)
+        17 => 0x2FBF5F, // Cl: green
+        35 => 0xA8325A, // Br: wine
+        53 => 0x8A3FE0, // I: purple
+        79 => 0xFFC21A, // Au: gold yellow, well apart from orange P
+        else => null,
+    };
+    if (hex) |h| return .{
+        @as(f32, @floatFromInt((h >> 16) & 0xFF)) / 255.0,
+        @as(f32, @floatFromInt((h >> 8) & 0xFF)) / 255.0,
+        @as(f32, @floatFromInt(h & 0xFF)) / 255.0,
+    };
+    var lch = cv.color.labToLch(cv.color.srgbToOklab(cv.elements.colorRgb(z)));
+    lch.l = std.math.clamp(lch.l, 0.50, 0.75);
+    lch.c = @max(lch.c * 1.5, 0.14);
+    return cv.color.oklchToSrgb(lch);
+}
+
+/// How atoms and bonds are drawn; works with either theme.
 pub const Shading = enum(c_int) {
-    /// Flat lighting bands and outlines.
+    /// Toon bands with outlines.
     cel,
-    /// Smooth Blinn-Phong with highlights.
-    smooth,
+    /// Inspired by Kurzgesagt's flat illustrations: solid fills with
+    /// highlight dots, no outlines, flat drop shadows, depth shown by fading
+    /// toward the background, chunkier atoms.
+    flat,
+
+    /// Shader lighting mode (`u_cel` in shaders.zig).
+    pub fn lightingMode(sh: Shading) c_int {
+        return switch (sh) {
+            .cel => 1,
+            .flat => 2,
+        };
+    }
 };
 
 pub const Style = struct {
@@ -92,6 +135,24 @@ pub const Style = struct {
     /// colouring (0 = linear, 1 = flat plateaus). See `cv.color.snap`.
     snap: f32 = 0.7,
     show_cell: bool = true,
+
+    /// Element colour: the same in every theme and style.
+    pub fn atomColor(s: Style, z: u8) [3]f32 {
+        _ = s;
+        return elementColor(z);
+    }
+
+    /// Drawn (and picked) atom radius. Flat uses chunkier atoms, like the
+    /// overlapping discs in Kurzgesagt's molecules.
+    pub fn atomRadius(s: Style, z: u8) f32 {
+        const k: f32 = if (s.shading == .flat) 1.3 else 1.0;
+        return cv.elements.displayRadius(z) * s.atom_scale * k;
+    }
+
+    pub fn bondRadius(s: Style) f32 {
+        const k: f32 = if (s.shading == .flat) 1.3 else 1.0;
+        return s.bond_radius * k;
+    }
 };
 
 pub const Tint = struct {
@@ -151,6 +212,9 @@ uploaded_atoms: usize = 0,
 uploaded_opaque_bonds: usize = 0,
 uploaded_translucent_bonds: usize = 0,
 uploaded_lines: usize = 0,
+/// Bounding sphere of the uploaded atoms (for the flat style's depth fade).
+bounds_center: Vec3 = .{ 0, 0, 0 },
+bounds_radius: f32 = 1,
 /// Bond to draw highlighted (key as in `App.pairKey`), set before building.
 selected_bond: ?u64 = null,
 
@@ -296,10 +360,10 @@ pub fn addStructure(
     const start = r.atoms.items.len;
     try r.atoms.ensureUnusedCapacity(r.gpa, positions.len);
     for (positions, numbers) |p, z| {
-        const rgb = tinted(style.theme.atomColor(z), tint);
+        const rgb = tinted(style.atomColor(z), tint);
         r.atoms.appendAssumeCapacity(.{
             .center = p,
-            .radius = cv.elements.displayRadius(z) * style.atom_scale,
+            .radius = style.atomRadius(z),
             .color = .{ rgb[0], rgb[1], rgb[2], 1 },
         });
     }
@@ -321,8 +385,8 @@ pub fn addStructure(
             },
             .element => {
                 const alpha = @min(ch, 1.0);
-                const ra = tinted(style.theme.atomColor(numbers[b.a]), tint);
-                const rb = tinted(style.theme.atomColor(numbers[b.b]), tint);
+                const ra = tinted(style.atomColor(numbers[b.a]), tint);
+                const rb = tinted(style.atomColor(numbers[b.b]), tint);
                 ca = .{ ra[0], ra[1], ra[2], alpha };
                 cb = .{ rb[0], rb[1], rb[2], alpha };
             },
@@ -345,7 +409,7 @@ pub fn addStructure(
         const inst: BondInstance = .{
             .a = positions[b.a],
             .b = positions[b.b],
-            .radius = style.bond_radius * radius_scale,
+            .radius = style.bondRadius() * radius_scale,
             .outline = outline,
             .color_a = ca,
             .color_b = cb,
@@ -376,6 +440,18 @@ pub fn upload(r: *Renderer) !void {
     f.BindBuffer(gl.ARRAY_BUFFER, r.atom_vbo);
     f.BufferData(gl.ARRAY_BUFFER, @intCast(r.atoms.items.len * @sizeOf(AtomInstance)), r.atoms.items.ptr, gl.DYNAMIC_DRAW);
     r.uploaded_atoms = r.atoms.items.len;
+    if (r.atoms.items.len > 0) {
+        var lo: Vec3 = r.atoms.items[0].center;
+        var hi: Vec3 = lo;
+        for (r.atoms.items) |a| {
+            lo = @min(lo, @as(Vec3, a.center));
+            hi = @max(hi, @as(Vec3, a.center));
+        }
+        r.bounds_center = (lo + hi) * @as(Vec3, @splat(0.5));
+        var rad: f32 = 0;
+        for (r.atoms.items) |a| rad = @max(rad, math.length(@as(Vec3, a.center) - r.bounds_center) + a.radius);
+        r.bounds_radius = @max(rad, 1);
+    }
 
     // Opaque bonds followed by translucent ones in a single buffer.
     r.uploaded_opaque_bonds = r.bonds.items.len;
@@ -403,6 +479,8 @@ pub const DrawParams = struct {
     style: Style,
     /// Filled in by `draw`: world units per framebuffer pixel at unit depth.
     world_per_px: f32 = 0,
+    /// Filled in by `draw`: view-depth range of the scene (flat style fade).
+    fog_range: [2]f32 = .{ 0, 1 },
 };
 
 fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
@@ -410,7 +488,7 @@ fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
     f.UseProgram(prog);
     f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_view"), 1, gl.FALSE, @ptrCast(&p.view.m));
     f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_proj"), 1, gl.FALSE, @ptrCast(&p.proj.m));
-    f.Uniform1i(f.GetUniformLocation(prog, "u_cel"), @intFromBool(p.style.shading == .cel));
+    f.Uniform1i(f.GetUniformLocation(prog, "u_cel"), p.style.shading.lightingMode());
     f.Uniform1f(f.GetUniformLocation(prog, "u_outline_k"), outline_k);
     f.Uniform1i(f.GetUniformLocation(prog, "u_outline_pass"), 0);
     const oc = p.style.theme.outline();
@@ -418,12 +496,22 @@ fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
     const ac = p.style.theme.accent();
     f.Uniform3f(f.GetUniformLocation(prog, "u_select_color"), ac[0], ac[1], ac[2]);
     f.Uniform1f(f.GetUniformLocation(prog, "u_select_k"), 3.5 * p.pixel_density * p.world_per_px);
+    const bg = p.style.theme.background();
+    f.Uniform3f(f.GetUniformLocation(prog, "u_fog_color"), bg[0], bg[1], bg[2]);
+    f.Uniform2f(f.GetUniformLocation(prog, "u_fog_range"), p.fog_range[0], p.fog_range[1]);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_fog_amount"), 0.45);
+    const sc = p.style.theme.shadow();
+    f.Uniform3f(f.GetUniformLocation(prog, "u_shadow_color"), sc[0], sc[1], sc[2]);
+    f.Uniform2f(f.GetUniformLocation(prog, "u_shadow_offset"), 0, 0);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_shadow_pass"), 0);
 }
 
 pub fn draw(r: *Renderer, params: DrawParams) void {
     const f = &gl.f;
     var p = params;
     p.world_per_px = 2 * @tan(p.fovy / 2) / @as(f32, @floatFromInt(@max(p.height, 1)));
+    const center_depth = -(p.view.transformPoint(r.bounds_center))[2];
+    p.fog_range = .{ center_depth - r.bounds_radius, center_depth + r.bounds_radius };
     const bg = p.style.theme.background();
     f.Viewport(0, 0, p.width, p.height);
     f.ClearColor(bg[0], bg[1], bg[2], 1);
@@ -437,6 +525,8 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     // Outline width in world units per unit of view depth (constant on screen).
     const outlines = p.style.shading == .cel and p.style.outline_px > 0;
     const outline_k: f32 = if (outlines) p.style.outline_px * p.pixel_density * p.world_per_px else 0;
+
+    if (p.style.shading == .flat) r.drawShadows(p);
 
     if (r.uploaded_atoms > 0) {
         setCommon(r.sphere_prog, p, outline_k);
@@ -492,6 +582,43 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
         f.Disable(gl.BLEND);
     }
     f.BindVertexArray(0);
+}
+
+/// Flat style: every opaque atom and bond as a flat silhouette in a darker
+/// shade of the background, offset down and to the right. Drawn first,
+/// without depth, so the molecule covers its own shadow.
+fn drawShadows(r: *Renderer, p: DrawParams) void {
+    const f = &gl.f;
+    const px = 6 * p.pixel_density;
+    const off: [2]f32 = .{ 2 * px / @as(f32, @floatFromInt(@max(p.width, 1))), -2 * px / @as(f32, @floatFromInt(@max(p.height, 1))) };
+    f.Disable(gl.DEPTH_TEST);
+    f.DepthMask(gl.FALSE);
+    if (r.uploaded_opaque_bonds > 0) {
+        setCommon(r.cylinder_prog, p, 0);
+        setShadow(r.cylinder_prog, off);
+        f.BindVertexArray(r.cylinder_vao);
+        f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, @intCast(r.uploaded_opaque_bonds));
+        setShadow(r.cylinder_prog, null);
+    }
+    if (r.uploaded_atoms > 0) {
+        setCommon(r.sphere_prog, p, 0);
+        setShadow(r.sphere_prog, off);
+        f.BindVertexArray(r.sphere_vao);
+        f.Enable(gl.BLEND);
+        f.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        f.DrawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, @intCast(r.uploaded_atoms));
+        f.Disable(gl.BLEND);
+        setShadow(r.sphere_prog, null);
+    }
+    f.DepthMask(gl.TRUE);
+    f.Enable(gl.DEPTH_TEST);
+}
+
+fn setShadow(prog: gl.Uint, offset: ?[2]f32) void {
+    const f = &gl.f;
+    const o = offset orelse .{ 0, 0 };
+    f.Uniform2f(f.GetUniformLocation(prog, "u_shadow_offset"), o[0], o[1]);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_shadow_pass"), if (offset != null) 1 else 0);
 }
 
 fn rebaseBondAttribs(base: usize) void {

@@ -87,8 +87,9 @@ ray-cast in the same impostor pass. Bond outlines are an "inverted hull"
 (inflated cylinders, back faces only), weighted per bond by its character so
 outlines fade in and out with forming and breaking bonds. Outline width is given in logical
 pixels and multiplied by the pixel density. Sphere silhouettes use
-alpha-to-coverage when MSAA is available. Smooth (Blinn-Phong) shading and
-the dark theme remain options.
+alpha-to-coverage when MSAA is available. The dark theme remains an option.
+*Revised (kurzgesagt-style branch):* smooth (Blinn-Phong) shading is removed;
+see D18.
 
 ### D14 — Editing internal coordinates moves groups
 Setting a distance, angle or dihedral moves the moving atom's whole group:
@@ -156,3 +157,15 @@ the base preserved. With a base atom, the grabbed atom follows the cursor on
 its sphere around the base, keeping to the hemisphere it started on.
 Positions are recomputed from the drag-start snapshot every motion, so there
 is no drift. The whole drag is one undo entry.
+
+### D18 — Theme and style are independent; flat style
+Display has two independent choices. The theme (light/dark) owns the
+background, bond palette, accents and UI colours. The style (cel/flat) owns
+shading, drop shadows, depth fade and atom size. Element colours are the same
+everywhere: familiar hues (red O, blue N, green halogens, yellow S, orange P,
+gold Au) with teal carbon, the hue CPK leaves free. The flat style, inspired
+by Kurzgesagt's flat illustrations, draws solid-colour atoms with highlight
+dots, no outlines, flat drop shadows and a depth fade toward the background. Smooth shading was
+dropped: cel and flat cover what it offered. The light background is a
+low-chroma blue-grey, and both bond palettes move monotonically away from the
+background (see docs/BONDS.md and docs/style-refs/kurzgesagt/README.md).

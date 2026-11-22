@@ -1,6 +1,6 @@
 //! Perceptual colour: sRGB <-> OKLab / OKLCh (Björn Ottosson, 2020), plus the
-//! bond-character palette built in OKLCh so perceived lightness rises with
-//! bond order. See docs/BONDS.md.
+//! bond-character palettes built in OKLCh so contrast with the background
+//! rises with bond order. See docs/BONDS.md.
 const std = @import("std");
 
 pub const Rgb = [3]f32;
@@ -130,25 +130,38 @@ pub const Palette = struct {
     }
 };
 
-/// Light background: higher bond order = darker = more contrast.
+// Both palettes follow the same rules:
+// - the first stop is the background, and lightness moves monotonically
+//   away from it up to triple, so the scale reads correctly in greyscale and
+//   agrees with the opacity fade of weak contacts;
+// - the move is front-loaded (a stop at 0.5), so thermally stretched bonds
+//   just below single (C-H in MD frames) still stand clear of the background;
+// - low chroma, so the atoms carry the colour, and no hues that atoms own
+//   (teal C in the flat style, blue N, red O, gold Au, yellow S).
+// Bonds go warm grey -> dusty plum -> deep indigo on light, and the mirror
+// image, warm grey -> mauve -> pale lavender, on dark.
+
+/// Light: a pale, low-chroma blue-grey; bonds darken with order.
 pub const light_palette: Palette = .{
-    .background = .{ 0.955, 0.958, 0.965 }, // OKLab L ≈ 0.97
+    .background = .{ 0.8762, 0.9065, 0.9390 }, // #DFE7EF, OKLCh (0.925, 0.014, 250)
     .stops = &.{
-        .{ .at = 0.0, .lch = .{ .l = 0.968, .c = 0.000, .h = 255 } }, // = background
-        .{ .at = 1.0, .lch = .{ .l = 0.50, .c = 0.015, .h = 255 } }, // single: neutral grey
-        .{ .at = 2.0, .lch = .{ .l = 0.42, .c = 0.170, .h = 262 } }, // double: strong blue
-        .{ .at = 3.0, .lch = .{ .l = 0.32, .c = 0.180, .h = 325 } }, // triple: deep magenta
+        .{ .at = 0.0, .lch = .{ .l = 0.925, .c = 0.014, .h = 250 } }, // = background
+        .{ .at = 0.5, .lch = .{ .l = 0.72, .c = 0.020, .h = 60 } },
+        .{ .at = 1.0, .lch = .{ .l = 0.58, .c = 0.035, .h = 60 } }, // single: warm grey
+        .{ .at = 2.0, .lch = .{ .l = 0.44, .c = 0.090, .h = 330 } }, // double: dusty plum
+        .{ .at = 3.0, .lch = .{ .l = 0.28, .c = 0.120, .h = 280 } }, // triple: deep indigo
     },
 };
 
-/// Dark background: higher bond order = brighter = more contrast.
+/// Dark: bonds lighten with order (= more contrast).
 pub const dark_palette: Palette = .{
     .background = .{ 0.105, 0.11, 0.13 }, // OKLab L ≈ 0.228
     .stops = &.{
         .{ .at = 0.0, .lch = .{ .l = 0.228, .c = 0.010, .h = 265 } }, // = background
-        .{ .at = 1.0, .lch = .{ .l = 0.58, .c = 0.020, .h = 250 } }, // single: neutral grey
-        .{ .at = 2.0, .lch = .{ .l = 0.79, .c = 0.130, .h = 225 } }, // double: clear blue
-        .{ .at = 3.0, .lch = .{ .l = 0.93, .c = 0.120, .h = 95 } }, // triple: bright pale gold
+        .{ .at = 0.5, .lch = .{ .l = 0.43, .c = 0.018, .h = 60 } },
+        .{ .at = 1.0, .lch = .{ .l = 0.57, .c = 0.032, .h = 60 } }, // single: warm grey
+        .{ .at = 2.0, .lch = .{ .l = 0.73, .c = 0.080, .h = 330 } }, // double: mauve
+        .{ .at = 3.0, .lch = .{ .l = 0.89, .c = 0.060, .h = 290 } }, // triple: pale lavender
     },
 };
 
