@@ -95,6 +95,54 @@ pub fn mixLch(a: Lch, b: Lch, t: f32) Lch {
     return .{ .l = a.l + (b.l - a.l) * t, .c = a.c + (b.c - a.c) * t, .h = h };
 }
 
+// ------------------------------------------------------- colour vision
+
+pub const Vision = enum { normal, protanopia, deuteranopia, tritanopia };
+
+/// Machado, Oliveira & Fernandes (2009) full-severity matrices, applied in
+/// linear RGB.
+const cvd_matrices = [_][3][3]f32{
+    .{ .{ 1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, 0, 1 } },
+    .{ .{ 0.152286, 1.052583, -0.204868 }, .{ 0.114503, 0.786281, 0.099216 }, .{ -0.003882, -0.048116, 1.051998 } },
+    .{ .{ 0.367322, 0.860646, -0.227968 }, .{ 0.280085, 0.672501, 0.047413 }, .{ -0.011820, 0.042940, 0.968881 } },
+    .{ .{ 1.255528, -0.076749, -0.178779 }, .{ -0.078411, 0.930809, 0.147602 }, .{ 0.004733, 0.691367, 0.303900 } },
+};
+
+/// How an sRGB colour looks with the given colour vision, as OKLab.
+pub fn simulate(rgb: Rgb, vision: Vision) Lab {
+    const m = cvd_matrices[@backingInt(vision)];
+    const lin: Rgb = .{ toLinear(rgb[0]), toLinear(rgb[1]), toLinear(rgb[2]) };
+    var out: Rgb = undefined;
+    for (0..3) |i| {
+        const v = m[i][0] * lin[0] + m[i][1] * lin[1] + m[i][2] * lin[2];
+        out[i] = toGamma(std.math.clamp(v, 0, 1));
+    }
+    return srgbToOklab(out);
+}
+
+fn labDistance(a: Lab, b: Lab) f32 {
+    const dl = a.l - b.l;
+    const da = a.a - b.a;
+    const db = a.b - b.b;
+    return @sqrt(dl * dl + da * da + db * db);
+}
+
+/// Smallest OKLab distance between two colours across normal vision and
+/// the three dichromacies: how alike they can look to anyone.
+pub fn worstCaseDistance(a: Rgb, b: Rgb) f32 {
+    var worst: f32 = std.math.inf(f32);
+    for (std.enums.values(Vision)) |v| worst = @min(worst, labDistance(simulate(a, v), simulate(b, v)));
+    return worst;
+}
+
+/// Below this worst-case OKLab distance, two flat-coloured atoms are easy
+/// to mistake for each other at a glance.
+pub const confusable_distance: f32 = 0.07;
+
+pub fn confusable(a: Rgb, b: Rgb) bool {
+    return worstCaseDistance(a, b) < confusable_distance;
+}
+
 // ------------------------------------------------------------------ bonds
 
 /// Soft staircase: plateaus around whole bond orders, steeper in between.
@@ -230,4 +278,18 @@ test "bond palette contrast rises with bond character (both themes)" {
         try std.testing.expect(prev > 0.6);
         try std.testing.expectEqual(@as(f32, 0), bondColor(pal, 0, 0.7).alpha);
     }
+}
+
+test "colour-vision simulation" {
+    // Normal vision is the identity.
+    const c: Rgb = .{ 0.2, 0.6, 0.9 };
+    const n = simulate(c, .normal);
+    const ref = srgbToOklab(c);
+    try std.testing.expectApproxEqAbs(ref.l, n.l, 1e-4);
+    // Red and green collapse under deuteranopia but not for normal vision.
+    const red: Rgb = .{ 0.8, 0.35, 0.1 };
+    const green: Rgb = .{ 0.45, 0.55, 0.1 };
+    try std.testing.expect(labDistance(simulate(red, .normal), simulate(green, .normal)) > 0.1);
+    try std.testing.expect(confusable(red, green));
+    try std.testing.expect(!confusable(.{ 1, 1, 1 }, .{ 0, 0, 0 }));
 }
