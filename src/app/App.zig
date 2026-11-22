@@ -1472,6 +1472,23 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (app.style.shading == .cel) {
         _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
     }
+    _ = c.igCheckbox("Background pattern", &app.style.background_pattern);
+    ui.tooltip("Pattern behind the molecule that turns with the camera.");
+    if (app.style.background_pattern) {
+        if (app.style.shading == .flat) {
+            c.igSameLine(0, -1);
+            var kind: c_int = @backingInt(app.style.backdrop);
+            _ = c.igRadioButton_IntPtr("Cells", &kind, 0);
+            c.igSameLine(0, -1);
+            _ = c.igRadioButton_IntPtr("Space", &kind, 1);
+            ui.tooltip("Backdrop motif, out of focus as if seen up close: cells (blobs with membranes and nuclei) or space (glowing bokeh, haze, sparkle stars).");
+            app.style.backdrop = @fromBackingInt(@intCast(kind));
+        }
+        if (app.style.shading == .flat) {
+            _ = c.igSliderFloat("Background blur", &app.style.background_blur, 0, 2.5, "%.2f", 0);
+            ui.tooltip("Depth of field: the molecule stays in focus and the backdrop blurs with distance. Zooming in blurs it more.");
+        }
+    }
     if (c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0)) app.scene_dirty = true;
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();

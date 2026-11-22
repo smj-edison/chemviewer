@@ -2,6 +2,8 @@
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
 //!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+//!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
+//!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
 //!                   [--cut I,J]... [--add FRAGMENT_FILE]
 //!
@@ -24,6 +26,14 @@ const Args = struct {
     no_ui: bool = false,
     dark: bool = false,
     flat: bool = false,
+    no_bg_pattern: bool = false,
+    bg_blur: ?f32 = null,
+    backdrop: ?[]const u8 = null,
+    /// Camera pose for scripted screenshots, applied after loading:
+    /// orbit by a mouse drag of (dx, dy) pixels, zoom by wheel steps, pan by pixels.
+    orbit: ?[2]f32 = null,
+    zoom: ?f32 = null,
+    pan: ?[2]f32 = null,
     atom_numbers: bool = false,
     /// Startup script: select atoms (1-based), set their distance (Å) or
     /// angle/dihedral (degrees), save the frame as XYZ.
@@ -46,12 +56,28 @@ fn parseArgs(argv: []const []const u8) !Args {
         const eql = std.mem.eql;
         if (eql(u8, arg, "--frame") or eql(u8, arg, "--diff-ref") or eql(u8, arg, "--screenshot") or eql(u8, arg, "--size") or eql(u8, arg, "--ui-scale") or
             eql(u8, arg, "--select") or eql(u8, arg, "--set") or eql(u8, arg, "--save") or
-            eql(u8, arg, "--cut") or eql(u8, arg, "--add"))
+            eql(u8, arg, "--cut") or eql(u8, arg, "--add") or
+            eql(u8, arg, "--orbit") or eql(u8, arg, "--zoom") or eql(u8, arg, "--pan") or
+            eql(u8, arg, "--backdrop") or eql(u8, arg, "--bg-blur"))
         {
             i += 1;
             if (i >= argv.len) return error.MissingArgumentValue;
             const v = argv[i];
-            if (eql(u8, arg, "--frame")) {
+            if (eql(u8, arg, "--orbit") or eql(u8, arg, "--pan")) {
+                var it = std.mem.splitScalar(u8, v, ',');
+                const xy: [2]f32 = .{
+                    try std.fmt.parseFloat(f32, it.next() orelse return error.BadPose),
+                    try std.fmt.parseFloat(f32, it.next() orelse return error.BadPose),
+                };
+                if (eql(u8, arg, "--orbit")) a.orbit = xy else a.pan = xy;
+            } else if (eql(u8, arg, "--zoom")) {
+                a.zoom = try std.fmt.parseFloat(f32, v);
+            } else if (eql(u8, arg, "--bg-blur")) {
+                a.bg_blur = try std.fmt.parseFloat(f32, v);
+            } else if (eql(u8, arg, "--backdrop")) {
+                if (!eql(u8, v, "cells") and !eql(u8, v, "space")) return error.BadBackdrop;
+                a.backdrop = v;
+            } else if (eql(u8, arg, "--frame")) {
                 a.frame = (try std.fmt.parseInt(usize, v, 10)) -| 1;
             } else if (eql(u8, arg, "--diff-ref")) {
                 a.diff_ref = (try std.fmt.parseInt(usize, v, 10)) -| 1;
@@ -96,6 +122,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.dark = true;
         } else if (eql(u8, arg, "--flat")) {
             a.flat = true;
+        } else if (eql(u8, arg, "--no-bg-pattern")) {
+            a.no_bg_pattern = true;
         } else if (eql(u8, arg, "--no-ui")) {
             a.no_ui = true;
         } else if (eql(u8, arg, "-h") or eql(u8, arg, "--help")) {
@@ -124,6 +152,8 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
             \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+            \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
+            \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\                  [--cut I,J]... [--add FRAGMENT_FILE]
             \\
@@ -182,6 +212,9 @@ pub fn main(init: std.process.Init) !void {
     if (args.ui_scale) |u| app.ui_scale = u;
     if (args.dark) app.style.theme = .dark;
     if (args.flat) app.style.shading = .flat;
+    if (args.no_bg_pattern) app.style.background_pattern = false;
+    if (args.bg_blur) |b| app.style.background_blur = b;
+    if (args.backdrop) |b| app.style.backdrop = if (std.mem.eql(u8, b, "space")) .space else .cells;
     app.show_atom_numbers = args.atom_numbers;
     if (args.file) |f| app.openFile(f);
 
@@ -224,6 +257,8 @@ pub fn main(init: std.process.Init) !void {
             .fovy = app.camera.fovy,
             .pixel_density = @max(c.SDL_GetWindowPixelDensity(window), 1),
             .style = app.style,
+            .bg_anchor = app.camera.bg_anchor,
+            .bg_radius = app.camera.bg_radius,
         });
         if (!args.no_ui) c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
 
@@ -342,6 +377,9 @@ const Startup = struct {
     }
 
     fn script(s: *Startup, app: *App) !void {
+        if (s.args.orbit) |o| app.camera.orbit(o[0], o[1]);
+        if (s.args.zoom) |z| app.camera.zoom(z);
+        if (s.args.pan) |d| app.camera.pan(d[0], d[1], @floatFromInt(s.args.height));
         if (s.args.add) |path| try app.addFragmentFile(path);
         for (s.args.cuts[0..s.args.cuts_len]) |pair| {
             app.clearSelection();

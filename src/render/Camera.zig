@@ -12,6 +12,10 @@ target: Vec3 = .{ 0, 0, 0 },
 distance: f32 = 20,
 rotation: Quat = .identity,
 fovy: f32 = std.math.degreesToRadians(35.0),
+/// Fixed world anchor and size for the background pattern, set on `fit` so
+/// the pattern does not drift as frames or edits change the scene bounds.
+bg_anchor: Vec3 = .{ 0, 0, 0 },
+bg_radius: f32 = 1,
 
 pub fn view(c: Camera) Mat4 {
     return Mat4.translation(.{ 0, 0, -c.distance })
@@ -65,6 +69,8 @@ pub fn zoom(c: *Camera, wheel: f32) void {
 pub fn fit(c: *Camera, center: Vec3, radius: f32) void {
     c.target = center;
     c.distance = @max(radius, 1.0) / @sin(c.fovy / 2) * 1.12;
+    c.bg_anchor = center;
+    c.bg_radius = @max(radius, 1.0);
 }
 
 pub const Ray = struct { origin: Vec3, dir: Vec3 };
