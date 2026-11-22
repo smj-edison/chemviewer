@@ -499,10 +499,14 @@ fn advancePlayback(app: *App) void {
     const now = Io.Timestamp.now(app.io, .awake);
     if (app.interpolate) return app.advanceInterpolated(d, now);
     const period_ns: i96 = @intFromFloat(1e9 / @max(app.fps, 0.1));
-    if (app.last_advance.durationTo(now).nanoseconds < period_ns) return;
+    const late = app.last_advance.durationTo(now).nanoseconds;
+    if (late < period_ns) return;
     // Don't run ahead of the loader: wait until the current frame is on screen.
     if (d.shown_index != d.current) return;
-    app.last_advance = now;
+    // Keep exact time: step the schedule by one period rather than
+    // restarting it at `now`, which lost up to a display frame per step.
+    // Resync if far behind (loading stalls, or fps above the display rate).
+    app.last_advance = if (late < 2 * period_ns) app.last_advance.addDuration(.{ .nanoseconds = period_ns }) else now;
     if (d.current + 1 < d.frameCount()) {
         d.current += 1;
     } else if (app.loop_playback) {
@@ -522,18 +526,22 @@ fn advanceInterpolated(app: *App, d: *Document, now: Io.Timestamp) void {
     if (d.shown_index != d.current) return;
     const dt: f32 = @min(@as(f32, @floatFromInt(dt_ns)) / 1e9, 0.1);
     const n = d.frameCount();
-    const pos = app.interp_t + dt * app.fps;
+    // Never more than one step per rendered frame, like stepped playback:
+    // skipping steps would make the motion faster and jumpier than stepping.
+    // At or above the display rate each frame is simply the next real step.
+    const inc = dt * app.fps;
+    const pos = if (inc >= 1) 1 else app.interp_t + inc;
     if (pos < 1) {
         // Blend only once the next step is here; otherwise hold.
         if (app.nextReady() or app.interp_t > 0) app.setInterp(pos);
         return;
     }
     // Crossed into a later step (several at high fps on a slow display).
-    const steps: usize = @intFromFloat(@floor(pos));
+    const steps: usize = @min(@as(usize, @intFromFloat(@floor(pos))), 1);
     // Carry the leftover fraction so the step rate matches the fps. Blending
     // resumes once the new step's successor is loaded (`displayPositions`
     // draws the plain step until then).
-    var rest = pos - @as(f32, @floatFromInt(steps));
+    var rest = if (inc >= 1) 0 else pos - @as(f32, @floatFromInt(steps));
     if (d.current + steps < n) {
         d.current += steps;
     } else if (app.loop_playback) {

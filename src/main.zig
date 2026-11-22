@@ -2,7 +2,7 @@
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
 //!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero]
-//!                   [--play] [--interpolate] [--atom-numbers]
+//!                   [--play] [--interpolate] [--fps N] [--atom-numbers]
 //!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
 //!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -32,6 +32,7 @@ const Args = struct {
     /// Start playing (optionally interpolated) once the file is open.
     play: bool = false,
     interpolate: bool = false,
+    fps: ?f32 = null,
     no_bg_pattern: bool = false,
     bg_blur: ?f32 = null,
     backdrop: ?[]const u8 = null,
@@ -69,14 +70,16 @@ fn parseArgs(argv: []const []const u8) !Args {
         const eql = std.mem.eql;
         if (eql(u8, arg, "--frame") or eql(u8, arg, "--diff-ref") or eql(u8, arg, "--screenshot") or eql(u8, arg, "--size") or eql(u8, arg, "--ui-scale") or
             eql(u8, arg, "--select") or eql(u8, arg, "--set") or eql(u8, arg, "--save") or
-            eql(u8, arg, "--cut") or eql(u8, arg, "--add") or
+            eql(u8, arg, "--cut") or eql(u8, arg, "--add") or eql(u8, arg, "--fps") or
             eql(u8, arg, "--orbit") or eql(u8, arg, "--zoom") or eql(u8, arg, "--pan") or
             eql(u8, arg, "--backdrop") or eql(u8, arg, "--bg-blur") or eql(u8, arg, "--profile"))
         {
             i += 1;
             if (i >= argv.len) return error.MissingArgumentValue;
             const v = argv[i];
-            if (eql(u8, arg, "--orbit") or eql(u8, arg, "--pan")) {
+            if (eql(u8, arg, "--fps")) {
+                a.fps = try std.fmt.parseFloat(f32, v);
+            } else if (eql(u8, arg, "--orbit") or eql(u8, arg, "--pan")) {
                 var it = std.mem.splitScalar(u8, v, ',');
                 const xy: [2]f32 = .{
                     try std.fmt.parseFloat(f32, it.next() orelse return error.BadPose),
@@ -175,7 +178,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
             \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero]
-            \\                  [--play] [--interpolate] [--atom-numbers]
+            \\                  [--play] [--interpolate] [--fps N] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
             \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -234,6 +237,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.aero) app.style.shading = .aero;
     if (args.flat_pop) app.style.flat_pop = true;
     app.interpolate = args.interpolate;
+    if (args.fps) |v| app.fps = v;
     if (args.no_bg_pattern) app.style.background_pattern = false;
     if (args.bg_blur) |b| app.style.background_blur = b;
     if (args.backdrop) |b| app.style.backdrop = if (std.mem.eql(u8, b, "space")) .space else .cells;
