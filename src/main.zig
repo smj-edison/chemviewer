@@ -1,4 +1,4 @@
-//! chemviewer entry point: window, GL context, ImGui, and the main loop.
+//! chemviewer entry point: window, Vulkan device, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
 //!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
@@ -12,7 +12,7 @@
 const std = @import("std");
 const Io = std.Io;
 const c = @import("c");
-const gl = @import("render/gl.zig");
+const Gpu = @import("render/Gpu.zig");
 const App = @import("app/App.zig");
 
 const Args = struct {
@@ -143,10 +143,6 @@ fn parseArgs(argv: []const []const u8) !Args {
     return a;
 }
 
-fn sdlGetProc(name: [*:0]const u8) ?*const anyopaque {
-    return @ptrCast(c.SDL_GL_GetProcAddress(name));
-}
-
 fn sdlFail(what: []const u8) error{SdlError} {
     std.log.err("{s}: {s}", .{ what, c.SDL_GetError() });
     return error.SdlError;
@@ -173,32 +169,13 @@ pub fn main(init: std.process.Init) !void {
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer c.SDL_Quit();
 
-    _ = c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    _ = c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    _ = c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_PROFILE_MASK, c.SDL_GL_CONTEXT_PROFILE_CORE);
-    // macOS only provides 3.2+ core contexts when forward-compatible is requested.
-    _ = c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_FLAGS, c.SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
-    _ = c.SDL_GL_SetAttribute(c.SDL_GL_DOUBLEBUFFER, 1);
-    _ = c.SDL_GL_SetAttribute(c.SDL_GL_DEPTH_SIZE, 24);
-    _ = c.SDL_GL_SetAttribute(c.SDL_GL_MULTISAMPLEBUFFERS, 1);
-    _ = c.SDL_GL_SetAttribute(c.SDL_GL_MULTISAMPLESAMPLES, 4);
-
-    const win_flags = c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY |
+    const win_flags = c.SDL_WINDOW_VULKAN | c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY |
         (if (args.screenshot != null or args.profile != null) c.SDL_WINDOW_HIDDEN else 0);
     const window = c.SDL_CreateWindow("chemviewer", args.width, args.height, win_flags) orelse
         return sdlFail("SDL_CreateWindow");
     defer c.SDL_DestroyWindow(window);
-    const gl_ctx = c.SDL_GL_CreateContext(window) orelse blk: {
-        // Some drivers (and the offscreen backend) reject multisampling.
-        _ = c.SDL_GL_SetAttribute(c.SDL_GL_MULTISAMPLEBUFFERS, 0);
-        _ = c.SDL_GL_SetAttribute(c.SDL_GL_MULTISAMPLESAMPLES, 0);
-        break :blk c.SDL_GL_CreateContext(window) orelse return sdlFail("SDL_GL_CreateContext");
-    };
-    defer _ = c.SDL_GL_DestroyContext(gl_ctx);
-    _ = c.SDL_GL_MakeCurrent(window, gl_ctx);
-    _ = c.SDL_GL_SetSwapInterval(1);
-    try gl.load(sdlGetProc);
-    gl.f.Enable(gl.MULTISAMPLE);
+    const gpu = try Gpu.init(gpa, window);
+    defer gpu.deinit();
 
     // ---- Dear ImGui
     c.cvImGuiCreateContext();
@@ -209,13 +186,25 @@ pub fn main(init: std.process.Init) !void {
     style.*.FrameRounding = 3;
     var ui_scale: UiScale = .{ .base = style.* };
     var applied_theme: ?@import("render/Renderer.zig").Theme = null;
-    if (!c.ImGui_ImplSDL3_InitForOpenGL(window, gl_ctx)) return error.ImGuiInit;
+    if (!c.ImGui_ImplSDL3_InitForVulkan(window)) return error.ImGuiInit;
     defer c.ImGui_ImplSDL3_Shutdown();
-    if (!c.ImGui_ImplOpenGL3_Init("#version 330")) return error.ImGuiInit;
-    defer c.ImGui_ImplOpenGL3_Shutdown();
+    if (!c.cvImGuiVulkanInit(&.{
+        .api_version = @bitCast(Gpu.api_version),
+        .get_instance_proc_addr = @constCast(gpu.getInstanceProcAddr()),
+        .instance = @ptrCast(gpu.instance.handle),
+        .physical_device = @ptrCast(gpu.pdev),
+        .device = @ptrCast(gpu.dev.handle),
+        .queue = @ptrCast(gpu.queue),
+        .queue_family = gpu.queue_family,
+        .image_count = gpu.imageCount(),
+        .color_format = @intCast(@backingInt(gpu.surface_format.format)),
+    })) return error.ImGuiInit;
+    defer c.cvImGuiVulkanShutdown();
+    // Runs first: nothing may be in flight when ImGui and the app free GPU objects.
+    defer gpu.waitIdle();
 
     // ---- App
-    var app = try App.init(io, gpa, window);
+    var app = try App.init(io, gpa, window, gpu);
     defer app.deinit();
     if (args.ui_scale) |u| app.ui_scale = u;
     if (args.dark) app.style.theme = .dark;
@@ -247,17 +236,18 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        c.ImGui_ImplOpenGL3_NewFrame();
+        c.cvImGuiVulkanNewFrame();
         c.ImGui_ImplSDL3_NewFrame();
         c.igNewFrame();
         app.drawUi();
         c.igRender();
 
-        var w: c_int = 0;
-        var h: c_int = 0;
-        _ = c.SDL_GetWindowSizeInPixels(window, &w, &h);
+        // Nothing to draw into while minimized.
+        const frame = try gpu.beginFrame() orelse continue;
+        const w: c_int = @intCast(frame.extent.width);
+        const h: c_int = @intCast(frame.extent.height);
         const aspect = @as(f32, @floatFromInt(w)) / @as(f32, @floatFromInt(@max(h, 1)));
-        app.renderer.draw(.{
+        try app.renderer.draw(frame, .{
             .view = app.camera.view(),
             .proj = app.camera.projection(aspect, app.scene_radius),
             .width = w,
@@ -268,10 +258,20 @@ pub fn main(init: std.process.Init) !void {
             .bg_anchor = app.camera.bg_anchor,
             .bg_radius = app.camera.bg_radius,
         });
-        if (!args.no_ui) c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
+        gpu.beginUiPass(frame);
+        if (!args.no_ui) c.cvImGuiVulkanRender(@ptrCast(frame.cmd.handle));
+        gpu.endUiPass(frame);
 
-        if (try startup.step(&app, io, w, h)) break;
-        _ = c.SDL_GL_SwapWindow(window);
+        const action = try startup.step(&app, io, w, h);
+        try gpu.endFrame(frame, action == .screenshot);
+        switch (action) {
+            .none => {},
+            .exit => break,
+            .screenshot => {
+                try savePng(io, gpu, args.screenshot.?, frame.extent);
+                break;
+            },
+        }
     }
 }
 
@@ -342,9 +342,11 @@ const Startup = struct {
     phase: enum { reference, target, settle, done } = .reference,
     settle_frames: u32 = 0,
 
-    /// Returns true when the app should exit.
-    fn step(s: *Startup, app: *App, io: Io, w: c_int, h: c_int) !bool {
-        if (s.phase == .done) return false;
+    const Action = enum { none, exit, screenshot };
+
+    /// Called once per frame before it is submitted.
+    fn step(s: *Startup, app: *App, io: Io, w: c_int, h: c_int) !Action {
+        if (s.phase == .done) return .none;
         if (s.start.untilNow(io, .awake).toSeconds() > 30) {
             std.log.err("startup: timed out waiting for frame", .{});
             return error.Timeout;
@@ -368,21 +370,18 @@ const Startup = struct {
                 s.phase = .settle;
             },
             .settle => {
-                if (s.args.profile) |n| return s.profile(app, n, w, h);
+                if (s.args.profile) |n| return if (s.profile(app, n, w, h)) .exit else .none;
                 if (s.args.screenshot == null) {
                     s.phase = .done;
-                    return false;
+                    return .none;
                 }
                 // A few frames for ImGui windows to size themselves and the scene to rebuild.
                 s.settle_frames += 1;
-                if (s.settle_frames >= 4) {
-                    try savePng(io, s.args.screenshot.?, w, h);
-                    return true;
-                }
+                if (s.settle_frames >= 4) return .screenshot;
             },
             .done => {},
         }
-        return false;
+        return .none;
     }
 
     /// Orbits the camera a little every frame (so nothing can be cached) and
@@ -393,9 +392,9 @@ const Startup = struct {
         if (s.settle_frames == 4) Renderer.Profile.begin(&app.renderer);
         if (s.settle_frames <= 4) return false;
         if (!s.args.profile_static) app.camera.orbit(4, 1);
-        const prof = app.renderer.profile.?;
+        const prof = app.renderer.profile orelse return true; // no timestamps: logged
         if (prof.frames < n) return false;
-        _ = Renderer.Profile.end(&app.renderer);
+        // The pool is freed with the renderer: this frame still writes to it.
         const ms = struct {
             fn f(ns: u64, frames: u32) f64 {
                 return @as(f64, @floatFromInt(ns)) / 1e6 / @as(f64, @floatFromInt(frames));
@@ -438,25 +437,12 @@ const Startup = struct {
     }
 };
 
-fn savePng(io: Io, path: []const u8, w: c_int, h: c_int) !void {
+fn savePng(io: Io, gpu: *const Gpu, path: []const u8, extent: @import("vulkan").Extent2D) !void {
     const gpa = std.heap.c_allocator;
-    const uw: usize = @intCast(w);
-    const uh: usize = @intCast(h);
-    const pixels = try gpa.alloc(u8, uw * uh * 4);
+    const pixels = try gpu.capturedPixels(gpa, extent);
     defer gpa.free(pixels);
-    gl.f.PixelStorei(gl.PACK_ALIGNMENT, 1);
-    gl.f.ReadPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels.ptr);
-    // GL rows are bottom-up.
-    const row = uw * 4;
-    const tmp = try gpa.alloc(u8, row);
-    defer gpa.free(tmp);
-    for (0..uh / 2) |y| {
-        const a = pixels[y * row ..][0..row];
-        const b = pixels[(uh - 1 - y) * row ..][0..row];
-        @memcpy(tmp, a);
-        @memcpy(a, b);
-        @memcpy(b, tmp);
-    }
+    const w: c_int = @intCast(extent.width);
+    const h: c_int = @intCast(extent.height);
     const surface = c.SDL_CreateSurfaceFrom(w, h, c.SDL_PIXELFORMAT_RGBA32, pixels.ptr, w * 4) orelse
         return sdlFail("SDL_CreateSurfaceFrom");
     defer c.SDL_DestroySurface(surface);

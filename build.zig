@@ -40,6 +40,19 @@ pub fn build(b: *std.Build) void {
     }
     const imgui_root = staged.getDirectory();
 
+    // Vulkan: headers (for ImGui's C++ backend) and the registry that
+    // vulkan-zig generates its bindings from, pinned together.
+    const vk_headers = b.dependency("vulkan_headers", .{});
+    const vulkan = b.dependency("vulkan", .{
+        .registry = vk_headers.path("registry/vk.xml"),
+    }).module("vulkan-zig");
+
+    const imgui_flags = [_][]const u8{
+        "-DIMGUI_IMPL_API=extern \"C\"",
+        "-DCIMGUI_USE_SDL3",
+        "-fno-exceptions",
+        "-fno-rtti",
+    };
     const imgui_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
@@ -60,18 +73,22 @@ pub fn build(b: *std.Build) void {
             "imgui/imgui_tables.cpp",
             "imgui/imgui_widgets.cpp",
             "imgui/backends/imgui_impl_sdl3.cpp",
-            "imgui/backends/imgui_impl_opengl3.cpp",
         },
-        .flags = &.{
-            "-DIMGUI_IMPL_API=extern \"C\"",
-            "-DCIMGUI_USE_SDL3",
-            "-DCIMGUI_USE_OPENGL3",
-            "-fno-exceptions",
-            "-fno-rtti",
-        },
+        .flags = &imgui_flags,
     });
+    imgui_mod.addIncludePath(vk_headers.path("include"));
     imgui_mod.addIncludePath(b.path("src/cshim"));
     imgui_mod.addCSourceFiles(.{ .root = b.path("src/cshim"), .files = &.{"imgui_shim.c"} });
+    // The Vulkan backend keeps C++ linkage (it overloads a function); Zig
+    // reaches it through the extern "C" wrappers in imgui_vulkan.cpp.
+    const vulkan_flags = [_][]const u8{
+        // Vulkan entry points come from SDL's loader at runtime, not by linking.
+        "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES",
+        "-fno-exceptions",
+        "-fno-rtti",
+    };
+    imgui_mod.addCSourceFiles(.{ .root = imgui_root, .files = &.{"imgui/backends/imgui_impl_vulkan.cpp"}, .flags = &vulkan_flags });
+    imgui_mod.addCSourceFiles(.{ .root = b.path("src/cshim"), .files = &.{"imgui_vulkan.cpp"}, .flags = &vulkan_flags });
     linkSdl(imgui_mod, sdl_lib);
     const imgui_lib = b.addLibrary(.{ .name = "cimgui", .root_module = imgui_mod });
 
@@ -95,9 +112,11 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "chemviewer", .module = core },
             .{ .name = "c", .module = c_mod },
+            .{ .name = "vulkan", .module = vulkan },
         },
     });
     linkSdl(exe_mod, sdl_lib);
+    addShaders(b, exe_mod);
     exe_mod.linkLibrary(imgui_lib);
 
     const exe = b.addExecutable(.{ .name = "chemviewer", .root_module = exe_mod });
@@ -131,6 +150,31 @@ pub fn build(b: *std.Build) void {
     // GUI-side math (camera, picking); links SDL/ImGui but needs no display.
     const exe_tests = b.addTest(.{ .root_module = exe_mod });
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+}
+
+/// Compiles the GLSL in src/render/shaders to SPIR-V with glslc (from the
+/// Vulkan SDK or the distribution's shaderc package). Each is importable as
+/// e.g. `@embedFile("sphere.vert.spv")`.
+fn addShaders(b: *std.Build, mod: *std.Build.Module) void {
+    const glslc = b.option([]const u8, "glslc", "Path to the glslc shader compiler") orelse "glslc";
+    const dir = "src/render/shaders";
+    const includes = [_][]const u8{ "common.glsl", "lighting.glsl" };
+    const stages = [_][]const u8{
+        "sphere.vert",     "sphere.frag",
+        "cylinder.vert",   "cylinder.frag",
+        "line.vert",       "line.frag",
+        "fullscreen.vert", "background.frag",
+        "blit.frag",
+    };
+    for (stages) |name| {
+        const cmd = b.addSystemCommand(&.{ glslc, "--target-env=vulkan1.3", "-O" });
+        cmd.addPrefixedDirectoryArg("-I", b.path(dir));
+        for (includes) |inc| cmd.addFileInput(b.path(b.fmt("{s}/{s}", .{ dir, inc })));
+        cmd.addArg("-o");
+        const spv = cmd.addOutputFileArg(b.fmt("{s}.spv", .{name}));
+        cmd.addFileArg(b.path(b.fmt("{s}/{s}", .{ dir, name })));
+        mod.addAnonymousImport(b.fmt("{s}.spv", .{name}), .{ .root_source_file = spv });
+    }
 }
 
 fn linkSdl(mod: *std.Build.Module, sdl_lib: ?*std.Build.Step.Compile) void {

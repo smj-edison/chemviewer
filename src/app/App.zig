@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const c = @import("c");
 const cv = @import("chemviewer");
 const Renderer = @import("../render/Renderer.zig");
+const Gpu = @import("../render/Gpu.zig");
 const Camera = @import("../render/Camera.zig");
 const ui = @import("ui.zig");
 const timeline = @import("timeline.zig");
@@ -130,8 +131,8 @@ pub const CutSet = std.AutoHashMapUnmanaged(u64, void);
 
 const max_undo = 100;
 
-pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window) !App {
-    return .{ .io = io, .gpa = gpa, .window = window, .renderer = try Renderer.init(gpa) };
+pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window, gpu: *Gpu) !App {
+    return .{ .io = io, .gpa = gpa, .window = window, .renderer = try Renderer.init(gpa, gpu) };
 }
 
 pub fn deinit(app: *App) void {

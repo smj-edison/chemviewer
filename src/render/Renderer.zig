@@ -1,12 +1,12 @@
 //! Draws atoms (sphere impostors), bonds (instanced cylinders) and cell edges.
 //!
 //! Usage per scene change: `clear`, then `addStructure` (once per layer,
-//! e.g. twice for a diff overlay) and `addCell`, then `upload`. `draw` can be
-//! called every frame without rebuilding anything.
+//! e.g. twice for a diff overlay) and `addCell`, then `upload`. `draw`
+//! records a frame (Vulkan, see `Gpu`) without rebuilding anything.
 const std = @import("std");
 const cv = @import("chemviewer");
-const gl = @import("gl.zig");
-const shaders = @import("shaders.zig");
+const vk = @import("vulkan");
+const Gpu = @import("Gpu.zig");
 const math = cv.math;
 const Vec3 = math.Vec3;
 const Mat4 = math.Mat4;
@@ -53,7 +53,7 @@ pub const Theme = enum(c_int) {
         };
     }
 
-    /// Colours for the background pattern (`shaders.background_fs`), the
+    /// Colours for the background pattern (shaders/background.frag), the
     /// same in both shadings. `ink` is the main tone and `deep` a stronger
     /// one (cell rims, nuclei); `light` sits on the other side of the
     /// background; `glow_a`/`glow_b` tint the space backdrop's bokeh and haze.
@@ -126,7 +126,7 @@ pub const Shading = enum(c_int) {
     /// toward the background, chunkier atoms.
     flat,
 
-    /// Shader lighting mode (`u_cel` in shaders.zig).
+    /// Shader lighting mode (`u_cel` in shaders/common.glsl).
     pub fn lightingMode(sh: Shading) c_int {
         return switch (sh) {
             .cel => 1,
@@ -151,7 +151,7 @@ pub const Style = struct {
     snap: f32 = 0.7,
     show_cell: bool = true,
     /// Pattern behind the molecule that turns with the camera (see
-    /// `shaders.background_fs`). Off gives the plain solid background.
+    /// shaders/background.frag). Off gives the plain solid background.
     background_pattern: bool = true,
     /// Motif behind the molecule.
     backdrop: BackdropKind = .cells,
@@ -211,35 +211,30 @@ const LineVertex = extern struct { pos: [3]f32, color: [4]f32 };
 const cylinder_segments = 16;
 
 gpa: Allocator,
-sphere_prog: gl.Uint,
-cylinder_prog: gl.Uint,
-line_prog: gl.Uint,
-background_prog: gl.Uint,
-background_blit_prog: gl.Uint,
-background_vao: gl.Uint = 0,
+gpu: *Gpu,
+set_layout: vk.DescriptorSetLayout,
+layout: vk.PipelineLayout,
+pool: vk.DescriptorPool,
+/// One per frame in flight: its uniforms and the backdrop cache.
+sets: [Gpu.frames_in_flight]vk.DescriptorSet,
+sampler: vk.Sampler,
+pipes: Pipelines,
+quad: Gpu.Buffer,
+cyl_vbo: Gpu.Buffer,
+cyl_ibo: Gpu.Buffer,
+slots: [Gpu.frames_in_flight]Slot = @splat(.{}),
 /// The backdrop, rendered at reduced resolution and only when its inputs
-/// change (see `drawBackground`).
+/// change (see `updateBackground`).
 bg_cache: BackgroundCache = .{},
-sphere_vao: gl.Uint = 0,
-cylinder_vao: gl.Uint = 0,
-line_vao: gl.Uint = 0,
-quad_vbo: gl.Uint = 0,
-cyl_vbo: gl.Uint = 0,
-cyl_ibo: gl.Uint = 0,
-atom_vbo: gl.Uint = 0,
-bond_vbo: gl.Uint = 0,
-line_vbo: gl.Uint = 0,
-cyl_index_count: gl.Sizei = 0,
 
 atoms: std.ArrayList(AtomInstance) = .empty,
 /// Opaque bonds first, then translucent ones (drawn without depth writes).
 bonds: std.ArrayList(BondInstance) = .empty,
 translucent: std.ArrayList(BondInstance) = .empty,
 lines: std.ArrayList(LineVertex) = .empty,
-uploaded_atoms: usize = 0,
-uploaded_opaque_bonds: usize = 0,
-uploaded_translucent_bonds: usize = 0,
-uploaded_lines: usize = 0,
+uploaded: Uploaded = .{},
+/// Bumped by `upload`; frame slots compare it to their own copy.
+generation: u64 = 1,
 /// GPU timing of the background pass and the rest of `draw` (`--profile`).
 profile: ?Profile = null,
 /// Bounding sphere of the uploaded atoms (for the flat style's depth fade).
@@ -247,136 +242,6 @@ bounds_center: Vec3 = .{ 0, 0, 0 },
 bounds_radius: f32 = 1,
 /// Bond to draw highlighted (key as in `App.pairKey`), set before building.
 selected_bond: ?u64 = null,
-
-pub fn init(gpa: Allocator) !Renderer {
-    var r: Renderer = .{
-        .gpa = gpa,
-        .sphere_prog = try gl.compileProgram(shaders.sphere_vs, shaders.sphere_fs),
-        .cylinder_prog = try gl.compileProgram(shaders.cylinder_vs, shaders.cylinder_fs),
-        .line_prog = try gl.compileProgram(shaders.line_vs, shaders.line_fs),
-        .background_prog = try gl.compileProgram(shaders.background_vs, shaders.background_fs),
-        .background_blit_prog = try gl.compileProgram(shaders.background_vs, shaders.background_blit_fs),
-    };
-    const f = &gl.f;
-    var vaos: [4]gl.Uint = undefined;
-    f.GenVertexArrays(4, &vaos);
-    r.sphere_vao = vaos[0];
-    r.cylinder_vao = vaos[1];
-    r.line_vao = vaos[2];
-    r.background_vao = vaos[3]; // no attributes: the shader uses gl_VertexID
-    var bufs: [6]gl.Uint = undefined;
-    f.GenBuffers(6, &bufs);
-    r.quad_vbo = bufs[0];
-    r.cyl_vbo = bufs[1];
-    r.cyl_ibo = bufs[2];
-    r.atom_vbo = bufs[3];
-    r.bond_vbo = bufs[4];
-    r.line_vbo = bufs[5];
-
-    // --- spheres: one quad, per-instance center/radius/color
-    f.BindVertexArray(r.sphere_vao);
-    const quad = [_]f32{ -1, -1, 1, -1, -1, 1, 1, 1 };
-    f.BindBuffer(gl.ARRAY_BUFFER, r.quad_vbo);
-    f.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(quad)), &quad, gl.STATIC_DRAW);
-    f.EnableVertexAttribArray(0);
-    f.VertexAttribPointer(0, 2, gl.FLOAT, gl.FALSE, 8, null);
-    f.BindBuffer(gl.ARRAY_BUFFER, r.atom_vbo);
-    instanceAttrib(1, 4, @sizeOf(AtomInstance), @offsetOf(AtomInstance, "center"));
-    instanceAttrib(2, 4, @sizeOf(AtomInstance), @offsetOf(AtomInstance, "color"));
-    instanceAttrib(3, 1, @sizeOf(AtomInstance), @offsetOf(AtomInstance, "highlight"));
-
-    // --- cylinders: side wall mesh, per-instance endpoints/colors
-    f.BindVertexArray(r.cylinder_vao);
-    var verts: [cylinder_segments * 2][3]f32 = undefined;
-    var idx: [cylinder_segments * 6]u16 = undefined;
-    for (0..cylinder_segments) |i| {
-        const th = @as(f32, @floatFromInt(i)) / cylinder_segments * 2 * std.math.pi;
-        verts[2 * i] = .{ @cos(th), @sin(th), 0 };
-        verts[2 * i + 1] = .{ @cos(th), @sin(th), 1 };
-        const a: u16 = @intCast(2 * i);
-        const b: u16 = @intCast(2 * ((i + 1) % cylinder_segments));
-        idx[6 * i ..][0..6].* = .{ a, b, a + 1, a + 1, b, b + 1 };
-    }
-    r.cyl_index_count = idx.len;
-    f.BindBuffer(gl.ARRAY_BUFFER, r.cyl_vbo);
-    f.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(verts)), &verts, gl.STATIC_DRAW);
-    f.EnableVertexAttribArray(0);
-    f.VertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 12, null);
-    f.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.cyl_ibo);
-    f.BufferData(gl.ELEMENT_ARRAY_BUFFER, @sizeOf(@TypeOf(idx)), &idx, gl.STATIC_DRAW);
-    f.BindBuffer(gl.ARRAY_BUFFER, r.bond_vbo);
-    instanceAttrib(1, 4, @sizeOf(BondInstance), @offsetOf(BondInstance, "a"));
-    instanceAttrib(2, 4, @sizeOf(BondInstance), @offsetOf(BondInstance, "b"));
-    instanceAttrib(3, 4, @sizeOf(BondInstance), @offsetOf(BondInstance, "color_a"));
-    instanceAttrib(4, 4, @sizeOf(BondInstance), @offsetOf(BondInstance, "color_b"));
-
-    // --- lines
-    f.BindVertexArray(r.line_vao);
-    f.BindBuffer(gl.ARRAY_BUFFER, r.line_vbo);
-    f.EnableVertexAttribArray(0);
-    f.VertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, @sizeOf(LineVertex), null);
-    f.EnableVertexAttribArray(1);
-    f.VertexAttribPointer(1, 4, gl.FLOAT, gl.FALSE, @sizeOf(LineVertex), @ptrFromInt(@offsetOf(LineVertex, "color")));
-    f.BindVertexArray(0);
-    return r;
-}
-
-fn instanceAttrib(loc: gl.Uint, n: gl.Int, stride: usize, offset: usize) void {
-    gl.f.EnableVertexAttribArray(loc);
-    gl.f.VertexAttribPointer(loc, n, gl.FLOAT, gl.FALSE, @intCast(stride), @ptrFromInt(offset));
-    gl.f.VertexAttribDivisor(loc, 1);
-}
-
-/// GPU time per pass, read back synchronously after each frame (stalls the
-/// pipeline, so only for measuring).
-pub const Profile = struct {
-    queries: [2]gl.Uint = .{ 0, 0 },
-    frames: u32 = 0,
-    background_ns: u64 = 0,
-    scene_ns: u64 = 0,
-
-    pub fn begin(r: *Renderer) void {
-        var q: [2]gl.Uint = undefined;
-        gl.f.GenQueries(2, &q);
-        r.profile = .{ .queries = q };
-    }
-
-    pub fn end(r: *Renderer) ?Profile {
-        const prof = r.profile orelse return null;
-        gl.f.DeleteQueries(2, &prof.queries);
-        r.profile = null;
-        return prof;
-    }
-
-    fn collect(prof: *Profile) void {
-        var a: u64 = 0;
-        var b: u64 = 0;
-        gl.f.GetQueryObjectui64v(prof.queries[0], gl.QUERY_RESULT, &a);
-        gl.f.GetQueryObjectui64v(prof.queries[1], gl.QUERY_RESULT, &b);
-        prof.background_ns += a;
-        prof.scene_ns += b;
-        prof.frames += 1;
-    }
-};
-
-pub fn deinit(r: *Renderer) void {
-    const f = &gl.f;
-    _ = Profile.end(r);
-    const vaos = [_]gl.Uint{ r.sphere_vao, r.cylinder_vao, r.line_vao, r.background_vao };
-    f.DeleteVertexArrays(vaos.len, &vaos);
-    const bufs = [_]gl.Uint{ r.quad_vbo, r.cyl_vbo, r.cyl_ibo, r.atom_vbo, r.bond_vbo, r.line_vbo };
-    f.DeleteBuffers(bufs.len, &bufs);
-    f.DeleteProgram(r.sphere_prog);
-    f.DeleteProgram(r.cylinder_prog);
-    f.DeleteProgram(r.line_prog);
-    f.DeleteProgram(r.background_prog);
-    f.DeleteProgram(r.background_blit_prog);
-    r.bg_cache.deinit();
-    r.atoms.deinit(r.gpa);
-    r.bonds.deinit(r.gpa);
-    r.translucent.deinit(r.gpa);
-    r.lines.deinit(r.gpa);
-}
 
 pub fn clear(r: *Renderer) void {
     r.atoms.clearRetainingCapacity();
@@ -505,10 +370,6 @@ pub fn addCell(r: *Renderer, cell: [3]Vec3, rgba: [4]f32) !void {
 }
 
 pub fn upload(r: *Renderer) !void {
-    const f = &gl.f;
-    f.BindBuffer(gl.ARRAY_BUFFER, r.atom_vbo);
-    f.BufferData(gl.ARRAY_BUFFER, @intCast(r.atoms.items.len * @sizeOf(AtomInstance)), r.atoms.items.ptr, gl.DYNAMIC_DRAW);
-    r.uploaded_atoms = r.atoms.items.len;
     if (r.atoms.items.len > 0) {
         var lo: Vec3 = r.atoms.items[0].center;
         var hi: Vec3 = lo;
@@ -522,17 +383,19 @@ pub fn upload(r: *Renderer) !void {
         r.bounds_radius = @max(rad, 1);
     }
 
+    // Snapshot: each frame slot copies it into its own buffers when it next
+    // draws (`syncSlot`), so frames still in flight keep their data.
+    const up = &r.uploaded;
+    up.atoms.clearRetainingCapacity();
+    try up.atoms.appendSlice(r.gpa, r.atoms.items);
     // Opaque bonds followed by translucent ones in a single buffer.
-    r.uploaded_opaque_bonds = r.bonds.items.len;
-    r.uploaded_translucent_bonds = r.translucent.items.len;
-    try r.bonds.appendSlice(r.gpa, r.translucent.items);
-    f.BindBuffer(gl.ARRAY_BUFFER, r.bond_vbo);
-    f.BufferData(gl.ARRAY_BUFFER, @intCast(r.bonds.items.len * @sizeOf(BondInstance)), r.bonds.items.ptr, gl.DYNAMIC_DRAW);
-    r.bonds.shrinkRetainingCapacity(r.uploaded_opaque_bonds);
-
-    f.BindBuffer(gl.ARRAY_BUFFER, r.line_vbo);
-    f.BufferData(gl.ARRAY_BUFFER, @intCast(r.lines.items.len * @sizeOf(LineVertex)), r.lines.items.ptr, gl.DYNAMIC_DRAW);
-    r.uploaded_lines = r.lines.items.len;
+    up.bonds.clearRetainingCapacity();
+    try up.bonds.appendSlice(r.gpa, r.bonds.items);
+    try up.bonds.appendSlice(r.gpa, r.translucent.items);
+    up.opaque_bonds = r.bonds.items.len;
+    up.lines.clearRetainingCapacity();
+    try up.lines.appendSlice(r.gpa, r.lines.items);
+    r.generation += 1;
 }
 
 pub const DrawParams = struct {
@@ -556,137 +419,671 @@ pub const DrawParams = struct {
     fog_range: [2]f32 = .{ 0, 1 },
 };
 
-fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
-    const f = &gl.f;
-    f.UseProgram(prog);
-    f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_view"), 1, gl.FALSE, @ptrCast(&p.view.m));
-    f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_proj"), 1, gl.FALSE, @ptrCast(&p.proj.m));
-    f.Uniform1i(f.GetUniformLocation(prog, "u_cel"), p.style.shading.lightingMode());
-    f.Uniform1f(f.GetUniformLocation(prog, "u_outline_k"), outline_k);
-    f.Uniform1i(f.GetUniformLocation(prog, "u_outline_pass"), 0);
-    const oc = p.style.theme.outline();
-    f.Uniform3f(f.GetUniformLocation(prog, "u_outline_color"), oc[0], oc[1], oc[2]);
-    const ac = p.style.theme.accent();
-    f.Uniform3f(f.GetUniformLocation(prog, "u_select_color"), ac[0], ac[1], ac[2]);
-    f.Uniform1f(f.GetUniformLocation(prog, "u_select_k"), 3.5 * p.pixel_density * p.world_per_px);
-    const bg = p.style.theme.background();
-    f.Uniform3f(f.GetUniformLocation(prog, "u_fog_color"), bg[0], bg[1], bg[2]);
-    f.Uniform2f(f.GetUniformLocation(prog, "u_fog_range"), p.fog_range[0], p.fog_range[1]);
-    f.Uniform1f(f.GetUniformLocation(prog, "u_fog_amount"), 0.45);
-    // Shadows multiply what is behind them (see `drawShadows`): the factor
-    // turns the plain background into exactly the theme's shadow colour.
-    const sc: @Vector(3, f32) = p.style.theme.shadow();
-    const ratio = sc / @max(@as(@Vector(3, f32), bg), @as(@Vector(3, f32), @splat(1e-3)));
-    f.Uniform3f(f.GetUniformLocation(prog, "u_shadow_color"), ratio[0], ratio[1], ratio[2]);
-    f.Uniform2f(f.GetUniformLocation(prog, "u_shadow_offset"), 0, 0);
-    f.Uniform1f(f.GetUniformLocation(prog, "u_shadow_pass"), 0);
+/// Per-frame uniforms: `Frame` in shaders/common.glsl (std140).
+const FrameUniforms = extern struct {
+    view: [16]f32,
+    proj: [16]f32,
+    outline_color: [3]f32,
+    fog_amount: f32,
+    select_color: [3]f32,
+    select_k: f32,
+    fog_color: [3]f32,
+    cel: i32,
+    shadow_color: [3]f32,
+    pad0: f32 = 0,
+    fog_range: [2]f32,
+    pad1: [2]f32 = .{ 0, 0 },
+    bg: [3]f32,
+    mode: i32,
+    ink: [3]f32,
+    radius: f32,
+    deep: [3]f32,
+    px: f32,
+    light: [3]f32,
+    coc_px: f32,
+    glow_a: [3]f32,
+    pad2: f32 = 0,
+    glow_b: [3]f32,
+    pad3: f32 = 0,
+    anchor: [3]f32,
+    pad4: f32 = 0,
+    tan: [2]f32,
+    pad5: [2]f32 = .{ 0, 0 },
+};
+
+/// Per-draw push constants: `Draw` in shaders/common.glsl.
+const Push = extern struct {
+    shadow_offset: [2]f32 = .{ 0, 0 },
+    shadow_pass: f32 = 0,
+    outline_k: f32 = 0,
+    outline_pass: i32 = 0,
+};
+
+comptime {
+    std.debug.assert(@sizeOf(FrameUniforms) == 336);
+    std.debug.assert(@offsetOf(FrameUniforms, "bg") == 208);
 }
 
-pub fn draw(r: *Renderer, params: DrawParams) void {
-    const f = &gl.f;
+const Pipelines = struct {
+    sphere: vk.Pipeline,
+    sphere_shadow: vk.Pipeline,
+    cylinder: vk.Pipeline,
+    cylinder_blend: vk.Pipeline,
+    cylinder_shadow: vk.Pipeline,
+    line: vk.Pipeline,
+    background: vk.Pipeline,
+    blit: vk.Pipeline,
+};
+
+/// Resources one frame in flight owns. Rewritten only after its fence (in
+/// `Gpu.beginFrame`) shows the GPU is done with them.
+const Slot = struct {
+    uniforms: Gpu.Buffer = .{},
+    atoms: Gpu.Buffer = .{},
+    bonds: Gpu.Buffer = .{},
+    lines: Gpu.Buffer = .{},
+    /// `Renderer.generation` of the instance data in the buffers.
+    generation: u64 = 0,
+
+    fn deinit(s: *Slot, gpu: *const Gpu) void {
+        s.uniforms.deinit(gpu);
+        s.atoms.deinit(gpu);
+        s.bonds.deinit(gpu);
+        s.lines.deinit(gpu);
+    }
+};
+
+/// The instance data of the last `upload`.
+const Uploaded = struct {
+    atoms: std.ArrayList(AtomInstance) = .empty,
+    bonds: std.ArrayList(BondInstance) = .empty,
+    opaque_bonds: usize = 0,
+    lines: std.ArrayList(LineVertex) = .empty,
+
+    fn deinit(u: *Uploaded, gpa: Allocator) void {
+        u.atoms.deinit(gpa);
+        u.bonds.deinit(gpa);
+        u.lines.deinit(gpa);
+    }
+};
+
+pub fn init(gpa: Allocator, gpu: *Gpu) !Renderer {
+    const dev = gpu.dev;
+    const set_layout = try dev.createDescriptorSetLayout(&.{
+        .binding_count = 2,
+        .p_bindings = &.{
+            .{
+                .binding = 0,
+                .descriptor_type = .uniform_buffer,
+                .descriptor_count = 1,
+                .stage_flags = .{ .vertex = true, .fragment = true },
+            },
+            .{
+                .binding = 1,
+                .descriptor_type = .combined_image_sampler,
+                .descriptor_count = 1,
+                .stage_flags = .{ .fragment = true },
+            },
+        },
+    }, null);
+    const layout = try dev.createPipelineLayout(&.{
+        .set_layout_count = 1,
+        .p_set_layouts = @ptrCast(&set_layout),
+        .push_constant_range_count = 1,
+        .p_push_constant_ranges = &.{.{
+            .stage_flags = .{ .vertex = true, .fragment = true },
+            .offset = 0,
+            .size = @sizeOf(Push),
+        }},
+    }, null);
+    const n = Gpu.frames_in_flight;
+    const pool = try dev.createDescriptorPool(&.{
+        .max_sets = n,
+        .pool_size_count = 2,
+        .p_pool_sizes = &.{
+            .{ .type = .uniform_buffer, .descriptor_count = n },
+            .{ .type = .combined_image_sampler, .descriptor_count = n },
+        },
+    }, null);
+    var sets: [n]vk.DescriptorSet = undefined;
+    const set_layouts: [n]vk.DescriptorSetLayout = @splat(set_layout);
+    try dev.allocateDescriptorSets(&.{
+        .descriptor_pool = pool,
+        .descriptor_set_count = n,
+        .p_set_layouts = &set_layouts,
+    }, &sets);
+
+    var r: Renderer = .{
+        .gpa = gpa,
+        .gpu = gpu,
+        .set_layout = set_layout,
+        .layout = layout,
+        .pool = pool,
+        .sets = sets,
+        .sampler = try dev.createSampler(&.{
+            .mag_filter = .linear,
+            .min_filter = .linear,
+            .mipmap_mode = .nearest,
+            .address_mode_u = .clamp_to_edge,
+            .address_mode_v = .clamp_to_edge,
+            .address_mode_w = .clamp_to_edge,
+            .mip_lod_bias = 0,
+            .anisotropy_enable = .false,
+            .max_anisotropy = 1,
+            .compare_enable = .false,
+            .compare_op = .always,
+            .min_lod = 0,
+            .max_lod = 0,
+            .border_color = .float_opaque_black,
+            .unnormalized_coordinates = .false,
+        }, null),
+        .pipes = try createPipelines(gpu, layout),
+        .quad = undefined,
+        .cyl_vbo = undefined,
+        .cyl_ibo = undefined,
+    };
+
+    // --- spheres: one quad, expanded per instance
+    const quad = [_]f32{ -1, -1, 1, -1, -1, 1, 1, 1 };
+    r.quad = try gpu.createBufferWith(std.mem.asBytes(&quad), .{ .vertex_buffer = true });
+
+    // --- cylinders: side wall mesh, per-instance endpoints/colors
+    var verts: [cylinder_segments * 2][3]f32 = undefined;
+    var idx: [cylinder_segments * 6]u16 = undefined;
+    for (0..cylinder_segments) |i| {
+        const th = @as(f32, @floatFromInt(i)) / cylinder_segments * 2 * std.math.pi;
+        verts[2 * i] = .{ @cos(th), @sin(th), 0 };
+        verts[2 * i + 1] = .{ @cos(th), @sin(th), 1 };
+        const a: u16 = @intCast(2 * i);
+        const b: u16 = @intCast(2 * ((i + 1) % cylinder_segments));
+        idx[6 * i ..][0..6].* = .{ a, b, a + 1, a + 1, b, b + 1 };
+    }
+    r.cyl_vbo = try gpu.createBufferWith(std.mem.asBytes(&verts), .{ .vertex_buffer = true });
+    r.cyl_ibo = try gpu.createBufferWith(std.mem.asBytes(&idx), .{ .index_buffer = true });
+
+    for (&r.slots, r.sets) |*s, set| {
+        s.uniforms = try gpu.createBuffer(@sizeOf(FrameUniforms), .{ .uniform_buffer = true }, .{ .host_visible = true, .host_coherent = true });
+        dev.updateDescriptorSets(&.{.{
+            .dst_set = set,
+            .dst_binding = 0,
+            .dst_array_element = 0,
+            .descriptor_count = 1,
+            .descriptor_type = .uniform_buffer,
+            .p_image_info = &.{},
+            .p_buffer_info = &.{.{ .buffer = s.uniforms.buffer, .offset = 0, .range = @sizeOf(FrameUniforms) }},
+            .p_texel_buffer_view = &.{},
+        }}, null);
+    }
+    return r;
+}
+
+pub fn deinit(r: *Renderer) void {
+    const gpu = r.gpu;
+    const dev = gpu.dev;
+    gpu.waitIdle();
+    _ = Profile.end(r);
+    inline for (@typeInfo(Pipelines).@"struct".field_names) |name| dev.destroyPipeline(@field(r.pipes, name), null);
+    for (&r.slots) |*s| s.deinit(gpu);
+    r.quad.deinit(gpu);
+    r.cyl_vbo.deinit(gpu);
+    r.cyl_ibo.deinit(gpu);
+    r.bg_cache.image.deinit(gpu);
+    dev.destroySampler(r.sampler, null);
+    dev.destroyDescriptorPool(r.pool, null);
+    dev.destroyPipelineLayout(r.layout, null);
+    dev.destroyDescriptorSetLayout(r.set_layout, null);
+    r.atoms.deinit(r.gpa);
+    r.bonds.deinit(r.gpa);
+    r.translucent.deinit(r.gpa);
+    r.lines.deinit(r.gpa);
+    r.uploaded.deinit(r.gpa);
+}
+
+const Blend = enum { none, alpha, multiply };
+
+const PipelineDesc = struct {
+    vert: vk.ShaderModule,
+    frag: vk.ShaderModule,
+    bindings: []const vk.VertexInputBindingDescription = &.{},
+    attributes: []const vk.VertexInputAttributeDescription = &.{},
+    topology: vk.PrimitiveTopology,
+    blend: Blend = .none,
+    alpha_to_coverage: bool = false,
+    depth_test: bool = true,
+    /// The backdrop cache (single-sampled half floats, no depth) instead of
+    /// the scene targets.
+    backdrop: bool = false,
+};
+
+const backdrop_format: vk.Format = .r16g16b16a16_sfloat;
+
+fn createPipeline(gpu: *const Gpu, layout: vk.PipelineLayout, d: PipelineDesc) !vk.Pipeline {
+    const stages = [_]vk.PipelineShaderStageCreateInfo{
+        .{ .stage = .{ .vertex = true }, .module = d.vert, .p_name = "main" },
+        .{ .stage = .{ .fragment = true }, .module = d.frag, .p_name = "main" },
+    };
+    const factors: [2]vk.BlendFactor = switch (d.blend) {
+        .none => .{ .one, .zero },
+        .alpha => .{ .src_alpha, .one_minus_src_alpha },
+        // Shadows multiply what is behind them.
+        .multiply => .{ .dst_color, .zero },
+    };
+    const attachment: vk.PipelineColorBlendAttachmentState = .{
+        .blend_enable = .fromBool(d.blend != .none),
+        .src_color_blend_factor = factors[0],
+        .dst_color_blend_factor = factors[1],
+        .color_blend_op = .add,
+        .src_alpha_blend_factor = factors[0],
+        .dst_alpha_blend_factor = factors[1],
+        .alpha_blend_op = .add,
+        .color_write_mask = .{ .r = true, .g = true, .b = true, .a = true },
+    };
+    const dynamic = [_]vk.DynamicState{ .viewport, .scissor, .cull_mode, .depth_write_enable };
+    const color_format = if (d.backdrop) backdrop_format else gpu.surface_format.format;
+    const rendering: vk.PipelineRenderingCreateInfo = .{
+        .view_mask = 0,
+        .color_attachment_count = 1,
+        .p_color_attachment_formats = @ptrCast(&color_format),
+        .depth_attachment_format = if (d.backdrop) .undefined else gpu.depth_format,
+        .stencil_attachment_format = .undefined,
+    };
+    var pipeline: vk.Pipeline = undefined;
+    _ = try gpu.dev.createGraphicsPipelines(.null, &.{.{
+        .p_next = &rendering,
+        .stage_count = stages.len,
+        .p_stages = &stages,
+        .p_vertex_input_state = &.{
+            .vertex_binding_description_count = @intCast(d.bindings.len),
+            .p_vertex_binding_descriptions = d.bindings.ptr,
+            .vertex_attribute_description_count = @intCast(d.attributes.len),
+            .p_vertex_attribute_descriptions = d.attributes.ptr,
+        },
+        .p_input_assembly_state = &.{ .topology = d.topology, .primitive_restart_enable = .false },
+        .p_viewport_state = &.{ .viewport_count = 1, .scissor_count = 1 },
+        .p_rasterization_state = &.{
+            .depth_clamp_enable = .false,
+            .rasterizer_discard_enable = .false,
+            .polygon_mode = .fill,
+            .cull_mode = .{},
+            // Counter-clockwise front faces, as in OpenGL: the flipped
+            // viewport keeps OpenGL's winding.
+            .front_face = .counter_clockwise,
+            .depth_bias_enable = .false,
+            .depth_bias_constant_factor = 0,
+            .depth_bias_clamp = 0,
+            .depth_bias_slope_factor = 0,
+            .line_width = 1,
+        },
+        .p_multisample_state = &.{
+            .rasterization_samples = if (d.backdrop) .{ .@"1" = true } else Gpu.samples,
+            .sample_shading_enable = .false,
+            .min_sample_shading = 0,
+            .alpha_to_coverage_enable = .fromBool(d.alpha_to_coverage),
+            .alpha_to_one_enable = .false,
+        },
+        .p_depth_stencil_state = &.{
+            .depth_test_enable = .fromBool(d.depth_test and !d.backdrop),
+            .depth_write_enable = .fromBool(d.depth_test and !d.backdrop),
+            .depth_compare_op = .less,
+            .depth_bounds_test_enable = .false,
+            .stencil_test_enable = .false,
+            .front = std.mem.zeroes(vk.StencilOpState),
+            .back = std.mem.zeroes(vk.StencilOpState),
+            .min_depth_bounds = 0,
+            .max_depth_bounds = 1,
+        },
+        .p_color_blend_state = &.{
+            .logic_op_enable = .false,
+            .logic_op = .copy,
+            .attachment_count = 1,
+            .p_attachments = @ptrCast(&attachment),
+            .blend_constants = .{ 0, 0, 0, 0 },
+        },
+        .p_dynamic_state = &.{ .dynamic_state_count = dynamic.len, .p_dynamic_states = &dynamic },
+        .layout = layout,
+        .subpass = 0,
+        .base_pipeline_index = -1,
+    }}, null, @ptrCast(&pipeline));
+    return pipeline;
+}
+
+fn createPipelines(gpu: *const Gpu, layout: vk.PipelineLayout) !Pipelines {
+    const dev = gpu.dev;
+    const mods = .{
+        .sphere_vs = try gpu.createShaderModule("sphere.vert.spv"),
+        .sphere_fs = try gpu.createShaderModule("sphere.frag.spv"),
+        .cylinder_vs = try gpu.createShaderModule("cylinder.vert.spv"),
+        .cylinder_fs = try gpu.createShaderModule("cylinder.frag.spv"),
+        .line_vs = try gpu.createShaderModule("line.vert.spv"),
+        .line_fs = try gpu.createShaderModule("line.frag.spv"),
+        .fullscreen_vs = try gpu.createShaderModule("fullscreen.vert.spv"),
+        .background_fs = try gpu.createShaderModule("background.frag.spv"),
+        .blit_fs = try gpu.createShaderModule("blit.frag.spv"),
+    };
+    defer inline for (@typeInfo(@TypeOf(mods)).@"struct".field_names) |name| dev.destroyShaderModule(@field(mods, name), null);
+
+    const sphere_bindings = [_]vk.VertexInputBindingDescription{
+        .{ .binding = 0, .stride = 8, .input_rate = .vertex },
+        .{ .binding = 1, .stride = @sizeOf(AtomInstance), .input_rate = .instance },
+    };
+    const sphere_attrs = [_]vk.VertexInputAttributeDescription{
+        .{ .location = 0, .binding = 0, .format = .r32g32_sfloat, .offset = 0 },
+        .{ .location = 1, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(AtomInstance, "center") },
+        .{ .location = 2, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(AtomInstance, "color") },
+        .{ .location = 3, .binding = 1, .format = .r32_sfloat, .offset = @offsetOf(AtomInstance, "highlight") },
+    };
+    const cyl_bindings = [_]vk.VertexInputBindingDescription{
+        .{ .binding = 0, .stride = 12, .input_rate = .vertex },
+        .{ .binding = 1, .stride = @sizeOf(BondInstance), .input_rate = .instance },
+    };
+    const cyl_attrs = [_]vk.VertexInputAttributeDescription{
+        .{ .location = 0, .binding = 0, .format = .r32g32b32_sfloat, .offset = 0 },
+        .{ .location = 1, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(BondInstance, "a") },
+        .{ .location = 2, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(BondInstance, "b") },
+        .{ .location = 3, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(BondInstance, "color_a") },
+        .{ .location = 4, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(BondInstance, "color_b") },
+    };
+    const line_bindings = [_]vk.VertexInputBindingDescription{
+        .{ .binding = 0, .stride = @sizeOf(LineVertex), .input_rate = .vertex },
+    };
+    const line_attrs = [_]vk.VertexInputAttributeDescription{
+        .{ .location = 0, .binding = 0, .format = .r32g32b32_sfloat, .offset = @offsetOf(LineVertex, "pos") },
+        .{ .location = 1, .binding = 0, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(LineVertex, "color") },
+    };
+
+    const sphere: PipelineDesc = .{
+        .vert = mods.sphere_vs,
+        .frag = mods.sphere_fs,
+        .bindings = &sphere_bindings,
+        .attributes = &sphere_attrs,
+        .topology = .triangle_strip,
+        // Smooth sphere silhouettes from the shader's edge coverage.
+        .alpha_to_coverage = true,
+    };
+    const cylinder: PipelineDesc = .{
+        .vert = mods.cylinder_vs,
+        .frag = mods.cylinder_fs,
+        .bindings = &cyl_bindings,
+        .attributes = &cyl_attrs,
+        .topology = .triangle_list,
+    };
+    var sphere_shadow = sphere;
+    sphere_shadow.blend = .multiply;
+    var cylinder_blend = cylinder;
+    cylinder_blend.blend = .alpha;
+    var cylinder_shadow = cylinder;
+    cylinder_shadow.blend = .multiply;
+
+    return .{
+        .sphere = try createPipeline(gpu, layout, sphere),
+        .sphere_shadow = try createPipeline(gpu, layout, sphere_shadow),
+        .cylinder = try createPipeline(gpu, layout, cylinder),
+        .cylinder_blend = try createPipeline(gpu, layout, cylinder_blend),
+        .cylinder_shadow = try createPipeline(gpu, layout, cylinder_shadow),
+        .line = try createPipeline(gpu, layout, .{
+            .vert = mods.line_vs,
+            .frag = mods.line_fs,
+            .bindings = &line_bindings,
+            .attributes = &line_attrs,
+            .topology = .line_list,
+        }),
+        .background = try createPipeline(gpu, layout, .{
+            .vert = mods.fullscreen_vs,
+            .frag = mods.background_fs,
+            .topology = .triangle_list,
+            .backdrop = true,
+        }),
+        .blit = try createPipeline(gpu, layout, .{
+            .vert = mods.fullscreen_vs,
+            .frag = mods.blit_fs,
+            .topology = .triangle_list,
+            .depth_test = false,
+        }),
+    };
+}
+
+/// GPU time per pass from timestamp queries, read back once each frame
+/// slot comes round again (only for measuring).
+pub const Profile = struct {
+    pool: vk.QueryPool = .null,
+    /// Slots whose queries hold a frame's results.
+    pending: [Gpu.frames_in_flight]bool = @splat(false),
+    frames: u32 = 0,
+    background_ns: u64 = 0,
+    scene_ns: u64 = 0,
+
+    const per_slot = 3;
+
+    pub fn begin(r: *Renderer) void {
+        if (!r.gpu.timestamps) {
+            std.log.err("profile: this GPU queue has no timestamps", .{});
+            return;
+        }
+        const pool = r.gpu.dev.createQueryPool(&.{
+            .query_type = .timestamp,
+            .query_count = per_slot * Gpu.frames_in_flight,
+        }, null) catch |e| {
+            std.log.err("profile: {t}", .{e});
+            return;
+        };
+        r.profile = .{ .pool = pool };
+    }
+
+    pub fn end(r: *Renderer) ?Profile {
+        const prof = r.profile orelse return null;
+        r.gpu.waitIdle();
+        r.gpu.dev.destroyQueryPool(prof.pool, null);
+        r.profile = null;
+        return prof;
+    }
+
+    /// Adds the results of the frame that last used `slot`.
+    fn collect(prof: *Profile, gpu: *const Gpu, slot: usize) void {
+        if (!prof.pending[slot]) return;
+        prof.pending[slot] = false;
+        var ts: [per_slot]u64 = undefined;
+        _ = gpu.dev.getQueryPoolResults(prof.pool, @intCast(slot * per_slot), per_slot, @sizeOf(@TypeOf(ts)), &ts, @sizeOf(u64), .{ .@"64" = true, .wait = true }) catch return;
+        const period: f64 = gpu.props.limits.timestamp_period;
+        const ns = struct {
+            fn f(a: u64, b: u64, p: f64) u64 {
+                return @intFromFloat(@as(f64, @floatFromInt(b -% a)) * p);
+            }
+        }.f;
+        prof.background_ns += ns(ts[0], ts[1], period);
+        prof.scene_ns += ns(ts[1], ts[2], period);
+        prof.frames += 1;
+    }
+
+    fn stamp(prof: *Profile, frame: Gpu.Frame, i: u32) void {
+        frame.cmd.writeTimestamp2(.{ .all_commands = true }, prof.pool, @as(u32, @intCast(frame.slot * per_slot)) + i);
+    }
+};
+
+/// Copies the last upload into this frame slot's instance buffers if they
+/// hold an older one.
+fn syncSlot(r: *Renderer, slot: *Slot) !void {
+    if (slot.generation == r.generation) return;
+    const up = &r.uploaded;
+    try r.fill(&slot.atoms, std.mem.sliceAsBytes(up.atoms.items));
+    try r.fill(&slot.bonds, std.mem.sliceAsBytes(up.bonds.items));
+    try r.fill(&slot.lines, std.mem.sliceAsBytes(up.lines.items));
+    slot.generation = r.generation;
+}
+
+fn fill(r: *Renderer, buf: *Gpu.Buffer, bytes: []const u8) !void {
+    if (buf.buffer == .null or buf.size < bytes.len) {
+        buf.deinit(r.gpu);
+        const size = @max(bytes.len + bytes.len / 2, 4096);
+        buf.* = try r.gpu.createBuffer(size, .{ .vertex_buffer = true }, .{ .host_visible = true, .host_coherent = true });
+    }
+    buf.write(0, bytes);
+}
+
+/// Records the backdrop and the scene into `frame`: the scene pass resolves
+/// into the swapchain image (see `Gpu.beginScenePass`).
+pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
+    const gpu = r.gpu;
+    const cmd = frame.cmd;
     var p = params;
     p.world_per_px = 2 * @tan(p.fovy / 2) / @as(f32, @floatFromInt(@max(p.height, 1)));
     const center_depth = -(p.view.transformPoint(r.bounds_center))[2];
     p.fog_range = .{ center_depth - r.bounds_radius, center_depth + r.bounds_radius };
-    const bg = p.style.theme.background();
-    f.Viewport(0, 0, p.width, p.height);
-    f.ClearColor(bg[0], bg[1], bg[2], 1);
-    f.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    if (r.profile) |prof| f.BeginQuery(gl.TIME_ELAPSED, prof.queries[0]);
-    if (p.style.background_pattern) r.drawBackground(p);
-    if (r.profile) |prof| {
-        f.EndQuery(gl.TIME_ELAPSED);
-        f.BeginQuery(gl.TIME_ELAPSED, prof.queries[1]);
+
+    const slot = &r.slots[frame.slot];
+    try r.syncSlot(slot);
+    const res = r.bg_cache.resolution(p.width, p.height);
+    const u = frameUniforms(p, res);
+    slot.uniforms.write(0, std.mem.asBytes(&u));
+    const set = r.sets[frame.slot];
+
+    if (r.profile) |*prof| {
+        prof.collect(gpu, frame.slot);
+        cmd.resetQueryPool(prof.pool, @intCast(frame.slot * Profile.per_slot), Profile.per_slot);
+        prof.stamp(frame, 0);
     }
-    defer if (r.profile) |*prof| {
-        f.EndQuery(gl.TIME_ELAPSED);
-        prof.collect();
-    };
-    f.Enable(gl.DEPTH_TEST);
-    f.DepthFunc(gl.LESS);
-    f.DepthMask(gl.TRUE);
-    f.Disable(gl.BLEND);
-    f.Disable(gl.CULL_FACE);
+    if (p.style.background_pattern) try r.updateBackground(frame, p, set);
+
+    gpu.beginScenePass(frame, p.style.theme.background());
+    const w: f32 = @floatFromInt(frame.extent.width);
+    const h: f32 = @floatFromInt(frame.extent.height);
+    // Flipped (negative height) so NDC y points up, as in OpenGL.
+    cmd.setViewport(0, &.{.{ .x = 0, .y = h, .width = w, .height = -h, .min_depth = 0, .max_depth = 1 }});
+    cmd.setScissor(0, &.{.{ .offset = .{ .x = 0, .y = 0 }, .extent = frame.extent }});
+    cmd.setCullMode(.{});
+    cmd.setDepthWriteEnable(.true);
+    cmd.bindDescriptorSets(.graphics, r.layout, 0, &.{set}, null);
+
+    if (p.style.background_pattern) {
+        cmd.bindPipeline(.graphics, r.pipes.blit);
+        r.push(cmd, .{});
+        cmd.draw(3, 1, 0, 0);
+    }
+    if (r.profile) |*prof| prof.stamp(frame, 1);
 
     // Outline width in world units per unit of view depth (constant on screen).
     const outlines = p.style.shading == .cel and p.style.outline_px > 0;
     const outline_k: f32 = if (outlines) p.style.outline_px * p.pixel_density * p.world_per_px else 0;
+    const up = &r.uploaded;
+    const n_atoms: u32 = @intCast(up.atoms.items.len);
+    const n_opaque: u32 = @intCast(up.opaque_bonds);
+    const n_translucent: u32 = @intCast(up.bonds.items.len - up.opaque_bonds);
+    const n_lines: u32 = @intCast(up.lines.items.len);
+    const cyl_count: u32 = cylinder_segments * 6;
 
-    if (p.style.shading == .flat) r.drawShadows(p);
+    if (p.style.shading == .flat) r.drawShadows(frame, p, slot);
 
-    if (r.uploaded_atoms > 0) {
-        setCommon(r.sphere_prog, p, outline_k);
-        f.BindVertexArray(r.sphere_vao);
-        // Smooth sphere silhouettes when multisampling is available.
-        f.Enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
-        f.DrawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, @intCast(r.uploaded_atoms));
-        f.Disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    if (n_atoms > 0) {
+        cmd.bindPipeline(.graphics, r.pipes.sphere);
+        cmd.bindVertexBuffers(0, &.{ r.quad.buffer, slot.atoms.buffer }, &.{ 0, 0 });
+        r.push(cmd, .{ .outline_k = outline_k });
+        cmd.draw(4, n_atoms, 0, 0);
     }
-    if (r.uploaded_opaque_bonds > 0) {
-        setCommon(r.cylinder_prog, p, outline_k);
-        f.BindVertexArray(r.cylinder_vao);
-        f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, @intCast(r.uploaded_opaque_bonds));
+    if (n_opaque + n_translucent > 0) {
+        cmd.bindVertexBuffers(0, &.{ r.cyl_vbo.buffer, slot.bonds.buffer }, &.{ 0, 0 });
+        cmd.bindIndexBuffer(r.cyl_ibo.buffer, 0, .uint16);
+    }
+    if (n_opaque > 0) {
+        cmd.bindPipeline(.graphics, r.pipes.cylinder);
+        r.push(cmd, .{ .outline_k = outline_k });
+        cmd.drawIndexed(cyl_count, n_opaque, 0, 0, 0);
         if (outlines) {
             // Inverted hull: inflated cylinders, back faces only, flat outline colour.
-            f.Uniform1i(f.GetUniformLocation(r.cylinder_prog, "u_outline_pass"), 1);
-            f.Enable(gl.CULL_FACE);
-            f.CullFace(gl.FRONT);
-            f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, @intCast(r.uploaded_opaque_bonds));
-            f.Disable(gl.CULL_FACE);
+            r.push(cmd, .{ .outline_k = outline_k, .outline_pass = 1 });
+            cmd.setCullMode(.{ .front = true });
+            cmd.drawIndexed(cyl_count, n_opaque, 0, 0, 0);
+            cmd.setCullMode(.{});
         }
     }
-    if (r.uploaded_lines > 0) {
-        setCommon(r.line_prog, p, 0);
-        f.BindVertexArray(r.line_vao);
-        f.DrawArrays(gl.LINES, 0, @intCast(r.uploaded_lines));
+    if (n_lines > 0) {
+        cmd.bindPipeline(.graphics, r.pipes.line);
+        cmd.bindVertexBuffers(0, &.{slot.lines.buffer}, &.{0});
+        r.push(cmd, .{});
+        cmd.draw(n_lines, 1, 0, 0);
     }
-    if (r.uploaded_translucent_bonds > 0) {
+    if (n_translucent > 0) {
         // Faded contacts, blended. Bodies write depth so their own (faint,
         // partial) outline hull only shows outside the silhouette; they are
         // drawn after everything opaque, so they never hide solid geometry.
-        f.Enable(gl.BLEND);
-        f.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        setCommon(r.cylinder_prog, p, outline_k);
-        f.BindVertexArray(r.cylinder_vao);
-        // Instance attributes start at the first translucent bond.
-        const stride = @sizeOf(BondInstance);
-        const base = r.uploaded_opaque_bonds * stride;
-        f.BindBuffer(gl.ARRAY_BUFFER, r.bond_vbo);
-        rebaseBondAttribs(base);
-        const n: gl.Sizei = @intCast(r.uploaded_translucent_bonds);
-        f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, n);
+        // Instances start after the opaque bonds.
+        cmd.bindPipeline(.graphics, r.pipes.cylinder_blend);
+        cmd.bindVertexBuffers(0, &.{ r.cyl_vbo.buffer, slot.bonds.buffer }, &.{ 0, 0 });
+        r.push(cmd, .{ .outline_k = outline_k });
+        cmd.drawIndexed(cyl_count, n_translucent, 0, 0, n_opaque);
         if (outlines) {
-            f.DepthMask(gl.FALSE);
-            f.Uniform1i(f.GetUniformLocation(r.cylinder_prog, "u_outline_pass"), 1);
-            f.Enable(gl.CULL_FACE);
-            f.CullFace(gl.FRONT);
-            f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, n);
-            f.Disable(gl.CULL_FACE);
-            f.DepthMask(gl.TRUE);
+            cmd.setDepthWriteEnable(.false);
+            r.push(cmd, .{ .outline_k = outline_k, .outline_pass = 1 });
+            cmd.setCullMode(.{ .front = true });
+            cmd.drawIndexed(cyl_count, n_translucent, 0, 0, n_opaque);
+            cmd.setCullMode(.{});
+            cmd.setDepthWriteEnable(.true);
         }
-        rebaseBondAttribs(0);
-        f.Disable(gl.BLEND);
     }
-    f.BindVertexArray(0);
+    if (r.profile) |*prof| {
+        prof.stamp(frame, 2);
+        prof.pending[frame.slot] = true;
+    }
+    gpu.endScenePass(frame);
+}
+
+fn push(r: *const Renderer, cmd: vk.CommandBufferProxy, pc: Push) void {
+    cmd.pushConstants(r.layout, .{ .vertex = true, .fragment = true }, 0, @sizeOf(Push), &pc);
+}
+
+fn frameUniforms(p: DrawParams, res: f32) FrameUniforms {
+    const style = p.style;
+    const bg = style.theme.background();
+    // Shadows multiply what is behind them (see `drawShadows`): the factor
+    // turns the plain background into exactly the theme's shadow colour.
+    const sc: @Vector(3, f32) = style.theme.shadow();
+    const ratio = sc / @max(@as(@Vector(3, f32), bg), @as(@Vector(3, f32), @splat(1e-3)));
+    const bd = style.theme.backdrop();
+    const t = @tan(p.fovy / 2);
+    const aspect = @as(f32, @floatFromInt(p.width)) / @as(f32, @floatFromInt(@max(p.height, 1)));
+    return .{
+        .view = @bitCast(p.view.m),
+        .proj = @bitCast(p.proj.m),
+        .outline_color = style.theme.outline(),
+        .fog_amount = 0.45,
+        .select_color = style.theme.accent(),
+        .select_k = 3.5 * p.pixel_density * p.world_per_px,
+        .fog_color = bg,
+        .cel = style.shading.lightingMode(),
+        .shadow_color = ratio,
+        .fog_range = p.fog_range,
+        .bg = bg,
+        .mode = @backingInt(style.backdrop),
+        .ink = bd.ink,
+        .radius = p.bg_radius,
+        .deep = bd.deep,
+        // Backdrop target pixels are 1/res framebuffer pixels: anti-aliasing
+        // widens with them, while the lens blur keeps the same size on screen.
+        .px = p.world_per_px / res,
+        .light = bd.light,
+        // Circle of confusion at infinity, in target pixels (~36 logical px).
+        .coc_px = 36 * p.pixel_density * style.background_blur * res,
+        .glow_a = bd.glow_a,
+        .glow_b = bd.glow_b,
+        .anchor = p.bg_anchor,
+        .tan = .{ t * aspect, t },
+    };
 }
 
 /// The backdrop is soft and depends only on the camera and style, so it is
-/// rendered into a texture at 1/`downscale` resolution, and only when one of
+/// rendered into an image at 1/`downscale` resolution, and only when one of
 /// its inputs changes: playback, hovering and idle redraws just upsample it.
 const BackgroundCache = struct {
     const downscale = 2;
 
-    fbo: gl.Uint = 0,
-    tex: gl.Uint = 0,
-    width: gl.Sizei = 0,
-    height: gl.Sizei = 0,
+    image: Gpu.Image = .{},
+    width: u32 = 0,
+    height: u32 = 0,
     /// Inputs of the last render; null forces a re-render.
     key: ?Key = null,
 
     const Key = struct {
         view: [16]f32,
-        width: gl.Sizei,
-        height: gl.Sizei,
+        width: i32,
+        height: i32,
         fovy: f32,
         pixel_density: f32,
         anchor: [3]f32,
@@ -696,44 +1093,44 @@ const BackgroundCache = struct {
         blur: f32,
     };
 
-    fn deinit(c: *BackgroundCache) void {
-        if (c.fbo != 0) gl.f.DeleteFramebuffers(1, &.{c.fbo});
-        if (c.tex != 0) gl.f.DeleteTextures(1, &.{c.tex});
-        c.* = .{};
+    fn size(full: i32) u32 {
+        return @intCast(@max(@divFloor(full + downscale - 1, downscale), 1));
     }
 
-    /// (Re)creates the target texture for a framebuffer of `w` x `h`.
-    fn resize(c: *BackgroundCache, w: gl.Sizei, h: gl.Sizei) void {
-        const tw = @max(@divFloor(w + downscale - 1, downscale), 1);
-        const th = @max(@divFloor(h + downscale - 1, downscale), 1);
-        if (c.tex != 0 and tw == c.width and th == c.height) return;
-        const f = &gl.f;
-        if (c.tex == 0) {
-            var t: [1]gl.Uint = undefined;
-            f.GenTextures(1, &t);
-            c.tex = t[0];
-            var fb: [1]gl.Uint = undefined;
-            f.GenFramebuffers(1, &fb);
-            c.fbo = fb[0];
-        }
-        f.BindTexture(gl.TEXTURE_2D, c.tex);
-        // Half floats keep the soft gradients smooth until the dithered blit.
-        f.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, tw, th, 0, gl.RGBA, gl.HALF_FLOAT, null);
-        f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        f.BindTexture(gl.TEXTURE_2D, 0);
-        c.width = tw;
-        c.height = th;
-        c.key = null;
+    /// Cache height over framebuffer height.
+    fn resolution(c: *const BackgroundCache, w: i32, h: i32) f32 {
+        _ = c;
+        _ = w;
+        return @as(f32, @floatFromInt(size(h))) / @as(f32, @floatFromInt(@max(h, 1)));
     }
 };
 
-fn drawBackground(r: *Renderer, p: DrawParams) void {
-    const f = &gl.f;
+/// Re-renders the backdrop cache if its inputs changed. Outside any pass.
+fn updateBackground(r: *Renderer, frame: Gpu.Frame, p: DrawParams, set: vk.DescriptorSet) !void {
+    const gpu = r.gpu;
     const cache = &r.bg_cache;
-    cache.resize(p.width, p.height);
+    const tw = BackgroundCache.size(p.width);
+    const th = BackgroundCache.size(p.height);
+    if (cache.image.image == .null or tw != cache.width or th != cache.height) {
+        // Frames in flight may still sample the old image.
+        gpu.waitIdle();
+        cache.image.deinit(gpu);
+        // Half floats keep the soft gradients smooth until the dithered blit.
+        cache.image = try gpu.createImage(tw, th, backdrop_format, .{ .color_attachment = true, .sampled = true }, .{ .@"1" = true }, .{ .color = true });
+        cache.width = tw;
+        cache.height = th;
+        cache.key = null;
+        for (r.sets) |s| gpu.dev.updateDescriptorSets(&.{.{
+            .dst_set = s,
+            .dst_binding = 1,
+            .dst_array_element = 0,
+            .descriptor_count = 1,
+            .descriptor_type = .combined_image_sampler,
+            .p_image_info = &.{.{ .sampler = r.sampler, .image_view = cache.image.view, .image_layout = .shader_read_only_optimal }},
+            .p_buffer_info = &.{},
+            .p_texel_buffer_view = &.{},
+        }}, null);
+    }
     const key: BackgroundCache.Key = .{
         .view = @bitCast(p.view.m),
         .width = p.width,
@@ -746,56 +1143,42 @@ fn drawBackground(r: *Renderer, p: DrawParams) void {
         .backdrop = p.style.backdrop,
         .blur = p.style.background_blur,
     };
-    f.Disable(gl.DEPTH_TEST);
-    f.DepthMask(gl.FALSE);
-    f.BindVertexArray(r.background_vao);
-    if (cache.key == null or !std.meta.eql(cache.key.?, key)) {
-        cache.key = key;
-        var prev_fbo: gl.Int = 0;
-        f.GetIntegerv(gl.DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
-        f.BindFramebuffer(gl.FRAMEBUFFER, cache.fbo);
-        f.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, cache.tex, 0);
-        f.Viewport(0, 0, cache.width, cache.height);
-        r.renderBackdrop(p, @as(f32, @floatFromInt(cache.height)) / @as(f32, @floatFromInt(@max(p.height, 1))));
-        f.BindFramebuffer(gl.FRAMEBUFFER, @intCast(prev_fbo));
-        f.Viewport(0, 0, p.width, p.height);
-    }
-    const prog = r.background_blit_prog;
-    f.UseProgram(prog);
-    f.ActiveTexture(gl.TEXTURE0);
-    f.BindTexture(gl.TEXTURE_2D, cache.tex);
-    f.Uniform1i(f.GetUniformLocation(prog, "u_tex"), 0);
-    f.DrawArrays(gl.TRIANGLES, 0, 3);
-    f.BindTexture(gl.TEXTURE_2D, 0);
-    f.DepthMask(gl.TRUE);
-    f.Enable(gl.DEPTH_TEST);
-}
+    if (cache.key != null and std.meta.eql(cache.key.?, key)) return;
+    cache.key = key;
 
-/// Draws the backdrop pattern into the bound target, whose height is `res`
-/// times the framebuffer's.
-fn renderBackdrop(r: *Renderer, p: DrawParams, res: f32) void {
-    const f = &gl.f;
-    const prog = r.background_prog;
-    f.UseProgram(prog);
-    f.UniformMatrix4fv(f.GetUniformLocation(prog, "u_view"), 1, gl.FALSE, @ptrCast(&p.view.m));
-    const t = @tan(p.fovy / 2);
-    const aspect = @as(f32, @floatFromInt(p.width)) / @as(f32, @floatFromInt(@max(p.height, 1)));
-    f.Uniform2f(f.GetUniformLocation(prog, "u_tan"), t * aspect, t);
-    // Target pixels are 1/res framebuffer pixels: anti-aliasing widens with
-    // them, while the lens blur keeps the same size on screen.
-    f.Uniform1f(f.GetUniformLocation(prog, "u_px"), p.world_per_px / res);
-    f.Uniform3f(f.GetUniformLocation(prog, "u_anchor"), p.bg_anchor[0], p.bg_anchor[1], p.bg_anchor[2]);
-    f.Uniform1f(f.GetUniformLocation(prog, "u_radius"), p.bg_radius);
-    // Circle of confusion at infinity, in target pixels (~36 logical px).
-    f.Uniform1f(f.GetUniformLocation(prog, "u_coc_px"), 36 * p.pixel_density * p.style.background_blur * res);
-    f.Uniform1i(f.GetUniformLocation(prog, "u_mode"), @backingInt(p.style.backdrop));
-    const bg = p.style.theme.background();
-    const bd = p.style.theme.backdrop();
-    f.Uniform3f(f.GetUniformLocation(prog, "u_bg"), bg[0], bg[1], bg[2]);
-    inline for (.{ "u_ink", "u_deep", "u_light", "u_glow_a", "u_glow_b" }, .{ bd.ink, bd.deep, bd.light, bd.glow_a, bd.glow_b }) |name, col| {
-        f.Uniform3f(f.GetUniformLocation(prog, name), col[0], col[1], col[2]);
-    }
-    f.DrawArrays(gl.TRIANGLES, 0, 3);
+    const cmd = frame.cmd;
+    const img = cache.image.image;
+    // Earlier frames' blits read it: wait for them, discard the contents.
+    gpu.barriers(cmd, &.{Gpu.imageBarrier(img, .{ .color = true }, .undefined, .color_attachment_optimal, .{ .fragment_shader = true }, .{}, .{ .color_attachment_output = true }, .{ .color_attachment_write = true })});
+    const color: vk.RenderingAttachmentInfo = .{
+        .image_view = cache.image.view,
+        .image_layout = .color_attachment_optimal,
+        .resolve_mode = .{},
+        .resolve_image_layout = .undefined,
+        .load_op = .dont_care,
+        .store_op = .store,
+        .clear_value = undefined,
+    };
+    const extent: vk.Extent2D = .{ .width = tw, .height = th };
+    cmd.beginRendering(&.{
+        .render_area = .{ .offset = .{ .x = 0, .y = 0 }, .extent = extent },
+        .layer_count = 1,
+        .view_mask = 0,
+        .color_attachment_count = 1,
+        .p_color_attachments = @ptrCast(&color),
+    });
+    // Not flipped: row 0 is NDC y = -1, which is where the blit samples it
+    // (v = 0) from.
+    cmd.setViewport(0, &.{.{ .x = 0, .y = 0, .width = @floatFromInt(tw), .height = @floatFromInt(th), .min_depth = 0, .max_depth = 1 }});
+    cmd.setScissor(0, &.{.{ .offset = .{ .x = 0, .y = 0 }, .extent = extent }});
+    cmd.setCullMode(.{});
+    cmd.setDepthWriteEnable(.false);
+    cmd.bindPipeline(.graphics, r.pipes.background);
+    cmd.bindDescriptorSets(.graphics, r.layout, 0, &.{set}, null);
+    r.push(cmd, .{});
+    cmd.draw(3, 1, 0, 0);
+    cmd.endRendering();
+    gpu.barriers(cmd, &.{Gpu.imageBarrier(img, .{ .color = true }, .color_attachment_optimal, .shader_read_only_optimal, .{ .color_attachment_output = true }, .{ .color_attachment_write = true }, .{ .fragment_shader = true }, .{ .shader_sampled_read = true })});
 }
 
 /// Flat style: every opaque atom and bond as a flat silhouette, offset down
@@ -803,46 +1186,25 @@ fn renderBackdrop(r: *Renderer, p: DrawParams, res: f32) void {
 /// Shadows multiply what is behind them, so they read over the backdrop
 /// pattern too. Every shadow fragment is written at one fixed depth with
 /// LESS, so overlapping silhouettes darken a pixel only once.
-fn drawShadows(r: *Renderer, p: DrawParams) void {
-    const f = &gl.f;
+fn drawShadows(r: *Renderer, frame: Gpu.Frame, p: DrawParams, slot: *const Slot) void {
+    const cmd = frame.cmd;
     const px = 6 * p.pixel_density;
-    const off: [2]f32 = .{ 2 * px / @as(f32, @floatFromInt(@max(p.width, 1))), -2 * px / @as(f32, @floatFromInt(@max(p.height, 1))) };
-    f.Enable(gl.DEPTH_TEST);
-    f.DepthFunc(gl.LESS);
-    f.DepthMask(gl.TRUE);
-    f.Enable(gl.BLEND);
-    f.BlendFunc(gl.DST_COLOR, gl.ZERO);
-    if (r.uploaded_atoms > 0) {
-        setCommon(r.sphere_prog, p, 0);
-        setShadow(r.sphere_prog, off);
-        f.BindVertexArray(r.sphere_vao);
-        f.Enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
-        f.DrawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, @intCast(r.uploaded_atoms));
-        f.Disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
-        setShadow(r.sphere_prog, null);
+    const pc: Push = .{
+        .shadow_offset = .{ 2 * px / @as(f32, @floatFromInt(@max(p.width, 1))), -2 * px / @as(f32, @floatFromInt(@max(p.height, 1))) },
+        .shadow_pass = 1,
+    };
+    const up = &r.uploaded;
+    if (up.atoms.items.len > 0) {
+        cmd.bindPipeline(.graphics, r.pipes.sphere_shadow);
+        cmd.bindVertexBuffers(0, &.{ r.quad.buffer, slot.atoms.buffer }, &.{ 0, 0 });
+        r.push(cmd, pc);
+        cmd.draw(4, @intCast(up.atoms.items.len), 0, 0);
     }
-    if (r.uploaded_opaque_bonds > 0) {
-        setCommon(r.cylinder_prog, p, 0);
-        setShadow(r.cylinder_prog, off);
-        f.BindVertexArray(r.cylinder_vao);
-        f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, @intCast(r.uploaded_opaque_bonds));
-        setShadow(r.cylinder_prog, null);
+    if (up.opaque_bonds > 0) {
+        cmd.bindPipeline(.graphics, r.pipes.cylinder_shadow);
+        cmd.bindVertexBuffers(0, &.{ r.cyl_vbo.buffer, slot.bonds.buffer }, &.{ 0, 0 });
+        cmd.bindIndexBuffer(r.cyl_ibo.buffer, 0, .uint16);
+        r.push(cmd, pc);
+        cmd.drawIndexed(cylinder_segments * 6, @intCast(up.opaque_bonds), 0, 0, 0);
     }
-    f.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    f.Disable(gl.BLEND);
-}
-
-fn setShadow(prog: gl.Uint, offset: ?[2]f32) void {
-    const f = &gl.f;
-    const o = offset orelse .{ 0, 0 };
-    f.Uniform2f(f.GetUniformLocation(prog, "u_shadow_offset"), o[0], o[1]);
-    f.Uniform1f(f.GetUniformLocation(prog, "u_shadow_pass"), if (offset != null) 1 else 0);
-}
-
-fn rebaseBondAttribs(base: usize) void {
-    const s = @sizeOf(BondInstance);
-    instanceAttrib(1, 4, s, base + @offsetOf(BondInstance, "a"));
-    instanceAttrib(2, 4, s, base + @offsetOf(BondInstance, "b"));
-    instanceAttrib(3, 4, s, base + @offsetOf(BondInstance, "color_a"));
-    instanceAttrib(4, 4, s, base + @offsetOf(BondInstance, "color_b"));
 }
