@@ -163,7 +163,9 @@ Display has two independent choices. The theme (light/dark) owns the
 background, bond palette, accents and UI colours. The style (cel/flat) owns
 shading, drop shadows, depth fade and atom size. Element colours are the same
 everywhere: familiar hues (red O, blue N, green halogens, yellow S, orange P,
-gold Au) with teal carbon, the hue CPK leaves free. The flat style, inspired
+gold Au) with teal carbon, the hue CPK leaves free. Their lightness is
+spread so bonded pairs stay distinguishable under simulated colour-vision
+deficiencies. The flat style, inspired
 by Kurzgesagt's flat illustrations, draws solid-colour atoms with highlight
 dots, no outlines, flat drop shadows and a depth fade toward the background. Smooth shading was
 dropped: cel and flat cover what it offered. The light background is a

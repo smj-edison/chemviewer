@@ -26,7 +26,9 @@ Colour rules (both themes):
   white hydrogens still read;
 - element colours (both styles) keep the hues chemists know (red O, blue N, green
   halogens, yellow S, orange P, gold Au). Carbon is teal, the one hue CPK
-  leaves free (only noble gases use cyan) and VMD's carbon colour;
+  leaves free (only noble gases use cyan) and VMD's carbon colour. Their
+  lightness is spread so bonded pairs (Au-P, Au-S, C-N, C-O, O-P, ...) stay
+  distinguishable under simulated protanopia, deuteranopia and tritanopia;
 - bond lightness moves steadily away from the background from no bond to
   triple, so the scale is unambiguous in greyscale and agrees with the
   opacity fade of weak contacts. Light: warm grey -> dusty plum -> deep

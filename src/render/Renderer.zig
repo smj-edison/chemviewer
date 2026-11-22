@@ -74,21 +74,27 @@ pub const Theme = enum(c_int) {
 /// teal: the one hue CPK leaves free (only the rare noble gases use cyan),
 /// and VMD's carbon colour. Anything not listed is its CPK hue made bright
 /// and saturated.
+///
+/// Lightness is spread so that elements that bond to each other stay apart
+/// under protanopia, deuteranopia and tritanopia as well as normal vision
+/// (simulated with Machado et al. 2009, compared in OKLab): lightness is the
+/// cue every kind of colour vision keeps. Au and P are kept apart in hue
+/// too, since they sit next to each other in gold phosphine complexes.
 fn elementColor(z: u8) [3]f32 {
     const hex: ?u24 = switch (z) {
         1 => 0xFFFFFF, // H
         5 => 0xFF9A7A, // B: salmon
-        6 => 0x00B3C2, // C: teal, OKLCh (0.70, 0.125, 205)
-        7 => 0x5560F6, // N: periwinkle blue
-        8 => 0xE94646, // O: coral red, OKLCh (0.63, 0.20, 25); apart from orange P
-        9 => 0x7BD84A, // F: lime
+        6 => 0x009092, // C: teal, OKLCh L 0.59
+        7 => 0x373EC1, // N: blue, L 0.45
+        8 => 0xC21A15, // O: red, L 0.52
+        9 => 0x75BD45, // F: green, L 0.73
         14 => 0xC58A5A, // Si: clay
-        15 => 0xFF7A1A, // P: orange
-        16 => 0xE6E04A, // S: lemon (greener than gold)
-        17 => 0x2FBF5F, // Cl: green
-        35 => 0xA8325A, // Br: wine
-        53 => 0x8A3FE0, // I: purple
-        79 => 0xFFC21A, // Au: gold yellow, well apart from orange P
+        15 => 0xED6019, // P: orange, L 0.66
+        16 => 0xD0CE27, // S: yellow, L 0.83
+        17 => 0x4DCD73, // Cl: green, L 0.76
+        35 => 0x9B3351, // Br: wine, L 0.48
+        53 => 0x5B29A1, // I: purple, L 0.42
+        79 => 0xDB9F00, // Au: gold, L 0.74
         else => null,
     };
     if (hex) |h| return .{
