@@ -5,6 +5,7 @@ const math = cv.math;
 const Vec3 = math.Vec3;
 const Mat4 = math.Mat4;
 const Quat = math.Quat;
+const Mat3 = math.Mat3;
 
 const Camera = @This();
 
@@ -16,11 +17,35 @@ fovy: f32 = std.math.degreesToRadians(35.0),
 /// the pattern does not drift as frames or edits change the scene bounds.
 bg_anchor: Vec3 = .{ 0, 0, 0 },
 bg_radius: f32 = 1,
+/// Where the background pattern sits in world space: pattern point p is at
+/// `bg_rotation * p + bg_offset`. Identity unless `followRigid` turned the
+/// camera, which moves the pattern along so it keeps still on screen.
+bg_rotation: Quat = .identity,
+bg_offset: Vec3 = .{ 0, 0, 0 },
 
 pub fn view(c: Camera) Mat4 {
     return Mat4.translation(.{ 0, 0, -c.distance })
         .mul(Mat4.fromMat3(c.rotation.toMat3()))
         .mul(Mat4.translation(-c.target));
+}
+
+/// View matrix for the background pattern (pattern space to view space).
+pub fn bgView(c: Camera) Mat4 {
+    return c.view().mul(Mat4.translation(c.bg_offset)).mul(Mat4.fromMat3(c.bg_rotation.toMat3()));
+}
+
+/// The scene moved rigidly: what used to be drawn at `rot * (p - from) + to`
+/// is now at `p`. Turns and shifts the camera (and the background pattern)
+/// so everything looks exactly as before.
+pub fn followRigid(c: *Camera, rot: Mat3, from: Vec3, to: Vec3) void {
+    // view' = view ∘ M with M(p) = rot (p - from) + to:
+    // rotation' = rotation · rot, target' = from + rotᵀ (target - to).
+    const rt = rot.transpose();
+    c.rotation = c.rotation.mul(Quat.fromMat3(rot)).normalized();
+    c.target = from + rt.mulVec(c.target - to);
+    // Pattern placement B' = M⁻¹ ∘ B, with M⁻¹(q) = rotᵀ (q - to) + from.
+    c.bg_rotation = Quat.fromMat3(rt).mul(c.bg_rotation).normalized();
+    c.bg_offset = from + rt.mulVec(c.bg_offset - to);
 }
 
 pub fn projection(c: Camera, aspect: f32, scene_radius: f32) Mat4 {
@@ -71,6 +96,8 @@ pub fn fit(c: *Camera, center: Vec3, radius: f32) void {
     c.distance = @max(radius, 1.0) / @sin(c.fovy / 2) * 1.12;
     c.bg_anchor = center;
     c.bg_radius = @max(radius, 1.0);
+    c.bg_rotation = .identity;
+    c.bg_offset = .{ 0, 0, 0 };
 }
 
 pub const Ray = struct { origin: Vec3, dir: Vec3 };
@@ -104,5 +131,22 @@ test "pick ray passes through projected points" {
         const closest = r.origin + r.dir * math.splat(t);
         try std.testing.expect(math.length(closest - p) < 1e-3);
         try std.testing.expect(t > 0);
+    }
+}
+
+test "followRigid keeps every point where it was on screen" {
+    var cam: Camera = .{ .target = .{ 1, -2, 0.5 }, .distance = 15 };
+    cam.orbit(80, -30);
+    const rot = Quat.fromAxisAngle(.{ 0.3, 1, -0.4 }, 1.1).toMat3();
+    const from: Vec3 = .{ 2, 0, -1 };
+    const to: Vec3 = .{ -0.5, 3, 1 };
+    const before = cam.view();
+    const bg_before = cam.bgView();
+    cam.followRigid(rot, from, to);
+    for ([_]Vec3{ .{ 0, 0, 0 }, .{ 1, 2, 3 }, .{ -4, 0.5, 2 } }) |p| {
+        const moved = rot.mulVec(p - from) + to;
+        try std.testing.expect(math.length(cam.view().transformPoint(p) - before.transformPoint(moved)) < 1e-4);
+        // The background pattern does not move on screen.
+        try std.testing.expect(math.length(cam.bgView().transformPoint(p) - bg_before.transformPoint(p)) < 1e-4);
     }
 }
