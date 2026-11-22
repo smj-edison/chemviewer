@@ -125,6 +125,10 @@ pub const Shading = enum(c_int) {
     /// highlight dots, no outlines, flat drop shadows, depth shown by fading
     /// toward the background, chunkier atoms.
     flat,
+    /// In the spirit of Frutiger Aero (Vista/7-era gloss): glassy atoms with
+    /// an Aqua-style highlight cap, rim light and specular glints, in front
+    /// of a sky dome (or, in the dark theme, an aurora night) with bubbles.
+    aero,
     /// Experimental: inspired by Apple's "Liquid Glass". Translucent tinted
     /// glass atoms that refract everything behind them (other atoms, bonds,
     /// the backdrop; see `GlassLayers`), with bright rims; no outlines.
@@ -135,7 +139,8 @@ pub const Shading = enum(c_int) {
         return switch (sh) {
             .cel => 1,
             .flat => 2,
-            .glass => 3,
+            .aero => 3,
+            .glass => 4,
         };
     }
 };
@@ -160,6 +165,9 @@ pub const Style = struct {
     background_pattern: bool = true,
     /// Motif behind the molecule.
     backdrop: BackdropKind = .cells,
+    /// Flat style experiment: soft (feathered) drop shadows plus a thin dark
+    /// outline on atoms and bonds, so the molecule stands out more.
+    flat_pop: bool = false,
     /// Depth-of-field strength for the background pattern (0 = sharp).
     background_blur: f32 = 0.6,
 
@@ -173,7 +181,7 @@ pub const Style = struct {
     /// overlapping discs in Kurzgesagt's molecules.
     pub fn atomRadius(s: Style, z: u8) f32 {
         const k: f32 = switch (s.shading) {
-            .cel => 1.0,
+            .cel, .aero => 1.0,
             .flat => 1.3,
             // Bigger droplets show more of the refraction.
             .glass => 1.2,
@@ -465,6 +473,7 @@ const Push = extern struct {
     shadow_pass: f32 = 0,
     outline_k: f32 = 0,
     outline_pass: i32 = 0,
+    shadow_soft: i32 = 0,
     /// Glass refracts the scene copy (binding 2) instead of the backdrop.
     glass_scene: i32 = 0,
 };
@@ -477,6 +486,10 @@ comptime {
 const Pipelines = struct {
     sphere: vk.Pipeline,
     sphere_shadow: vk.Pipeline,
+    sphere_shadow_soft: vk.Pipeline,
+    cylinder_shadow_soft: vk.Pipeline,
+    blit_multiply: vk.Pipeline,
+    fill_multiply: vk.Pipeline,
     cylinder: vk.Pipeline,
     cylinder_blend: vk.Pipeline,
     cylinder_shadow: vk.Pipeline,
@@ -661,7 +674,7 @@ pub fn deinit(r: *Renderer) void {
     r.glass.deinit(r.gpa);
 }
 
-const Blend = enum { none, alpha, multiply };
+const Blend = enum { none, alpha, multiply, min };
 
 const PipelineDesc = struct {
     vert: vk.ShaderModule,
@@ -689,15 +702,18 @@ fn createPipeline(gpu: *const Gpu, layout: vk.PipelineLayout, d: PipelineDesc) !
         .alpha => .{ .src_alpha, .one_minus_src_alpha },
         // Shadows multiply what is behind them.
         .multiply => .{ .dst_color, .zero },
+        // Soft shadow factors: keep the darkest, so overlaps darken once.
+        .min => .{ .one, .one },
     };
+    const op: vk.BlendOp = if (d.blend == .min) .min else .add;
     const attachment: vk.PipelineColorBlendAttachmentState = .{
         .blend_enable = .fromBool(d.blend != .none),
         .src_color_blend_factor = factors[0],
         .dst_color_blend_factor = factors[1],
-        .color_blend_op = .add,
+        .color_blend_op = op,
         .src_alpha_blend_factor = factors[0],
         .dst_alpha_blend_factor = factors[1],
-        .alpha_blend_op = .add,
+        .alpha_blend_op = op,
         .color_write_mask = .{ .r = true, .g = true, .b = true, .a = true },
     };
     const dynamic = [_]vk.DynamicState{ .viewport, .scissor, .cull_mode, .depth_write_enable };
@@ -781,6 +797,7 @@ fn createPipelines(gpu: *const Gpu, layout: vk.PipelineLayout) !Pipelines {
         .fullscreen_vs = try gpu.createShaderModule("fullscreen.vert.spv"),
         .background_fs = try gpu.createShaderModule("background.frag.spv"),
         .blit_fs = try gpu.createShaderModule("blit.frag.spv"),
+        .fill_fs = try gpu.createShaderModule("fill.frag.spv"),
     };
     defer inline for (@typeInfo(@TypeOf(mods)).@"struct".field_names) |name| dev.destroyShaderModule(@field(mods, name), null);
 
@@ -835,10 +852,32 @@ fn createPipelines(gpu: *const Gpu, layout: vk.PipelineLayout) !Pipelines {
     cylinder_blend.blend = .alpha;
     var cylinder_shadow = cylinder;
     cylinder_shadow.blend = .multiply;
+    var sphere_shadow_soft = sphere;
+    sphere_shadow_soft.blend = .min;
+    sphere_shadow_soft.alpha_to_coverage = false;
+    sphere_shadow_soft.depth_test = false;
+    var cylinder_shadow_soft = cylinder;
+    cylinder_shadow_soft.blend = .min;
+    cylinder_shadow_soft.depth_test = false;
+    const blit: PipelineDesc = .{
+        .vert = mods.fullscreen_vs,
+        .frag = mods.blit_fs,
+        .topology = .triangle_list,
+        .depth_test = false,
+    };
+    var blit_multiply = blit;
+    blit_multiply.blend = .multiply;
+    var fill_multiply = blit;
+    fill_multiply.frag = mods.fill_fs;
+    fill_multiply.blend = .multiply;
 
     return .{
         .sphere = try createPipeline(gpu, layout, sphere),
         .sphere_shadow = try createPipeline(gpu, layout, sphere_shadow),
+        .sphere_shadow_soft = try createPipeline(gpu, layout, sphere_shadow_soft),
+        .cylinder_shadow_soft = try createPipeline(gpu, layout, cylinder_shadow_soft),
+        .blit_multiply = try createPipeline(gpu, layout, blit_multiply),
+        .fill_multiply = try createPipeline(gpu, layout, fill_multiply),
         .cylinder = try createPipeline(gpu, layout, cylinder),
         .cylinder_blend = try createPipeline(gpu, layout, cylinder_blend),
         .cylinder_shadow = try createPipeline(gpu, layout, cylinder_shadow),
@@ -855,12 +894,7 @@ fn createPipelines(gpu: *const Gpu, layout: vk.PipelineLayout) !Pipelines {
             .topology = .triangle_list,
             .backdrop = true,
         }),
-        .blit = try createPipeline(gpu, layout, .{
-            .vert = mods.fullscreen_vs,
-            .frag = mods.blit_fs,
-            .topology = .triangle_list,
-            .depth_test = false,
-        }),
+        .blit = try createPipeline(gpu, layout, blit),
     };
 }
 
@@ -971,7 +1005,11 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
     // in every style.
     try r.updateBackground(frame, p, set);
 
-    gpu.beginScenePass(frame, p.style.theme.background(), glass);
+    // Flat "soft shadow": the pass clears to white, the feathered shadow
+    // factors go down first (MIN keeps the darkest, so overlaps darken once),
+    // and the backdrop (or plain background) is multiplied over them.
+    const soft = p.style.shading == .flat and p.style.flat_pop;
+    gpu.beginScenePass(frame, if (soft) .{ 1, 1, 1 } else p.style.theme.background(), glass);
     const w: f32 = @floatFromInt(frame.extent.width);
     const h: f32 = @floatFromInt(frame.extent.height);
     // Flipped (negative height) so NDC y points up, as in OpenGL.
@@ -981,7 +1019,12 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
     cmd.setDepthWriteEnable(.true);
     cmd.bindDescriptorSets(.graphics, r.layout, 0, &.{set}, null);
 
-    if (p.style.background_pattern) {
+    if (soft) {
+        r.drawShadows(frame, p, slot, true);
+        cmd.bindPipeline(.graphics, if (p.style.background_pattern) r.pipes.blit_multiply else r.pipes.fill_multiply);
+        r.push(cmd, .{});
+        cmd.draw(3, 1, 0, 0);
+    } else if (p.style.background_pattern) {
         cmd.bindPipeline(.graphics, r.pipes.blit);
         r.push(cmd, .{});
         cmd.draw(3, 1, 0, 0);
@@ -989,8 +1032,10 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
     if (r.profile) |*prof| prof.stamp(frame, 1);
 
     // Outline width in world units per unit of view depth (constant on screen).
-    const outlines = p.style.shading == .cel and p.style.outline_px > 0;
-    const outline_k: f32 = if (outlines) p.style.outline_px * p.pixel_density * p.world_per_px else 0;
+    // Soft-shadow flat also gets a thin outline so the molecule stands out.
+    const outlines = (p.style.shading == .cel and p.style.outline_px > 0) or soft;
+    const outline_px: f32 = if (soft) 1.2 else p.style.outline_px;
+    const outline_k: f32 = if (outlines) outline_px * p.pixel_density * p.world_per_px else 0;
     const up = &r.uploaded;
     const n_atoms: u32 = @intCast(up.atoms.items.len);
     const n_opaque: u32 = @intCast(up.opaque_bonds);
@@ -998,7 +1043,7 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
     const n_lines: u32 = @intCast(up.lines.items.len);
     const cyl_count: u32 = cylinder_segments * 6;
 
-    if (p.style.shading == .flat) r.drawShadows(frame, p, slot);
+    if (p.style.shading == .flat and !soft) r.drawShadows(frame, p, slot, false);
 
     // Glass atoms come last, after everything they can be seen through.
     if (n_atoms > 0 and !glass) {
@@ -1081,7 +1126,10 @@ fn frameUniforms(p: DrawParams, res: f32) FrameUniforms {
         .shadow_color = ratio,
         .fog_range = p.fog_range,
         .bg = bg,
-        .mode = if (style.background_pattern) @backingInt(style.backdrop) else 2,
+        // Backdrop motif; aero has its own sky (2 = day, 3 = night). With
+        // the pattern off the cache holds the plain background (4), which
+        // only glass sees.
+        .mode = if (!style.background_pattern) 4 else if (style.shading == .aero) (if (style.theme == .dark) 3 else 2) else @backingInt(style.backdrop),
         .ink = bd.ink,
         .radius = p.bg_radius,
         .deep = bd.deep,
@@ -1122,6 +1170,7 @@ const BackgroundCache = struct {
         theme: Theme,
         backdrop: BackdropKind,
         pattern: bool,
+        aero: bool,
         blur: f32,
     };
 
@@ -1345,6 +1394,7 @@ fn updateBackground(r: *Renderer, frame: Gpu.Frame, p: DrawParams, set: vk.Descr
         .theme = p.style.theme,
         .backdrop = p.style.backdrop,
         .pattern = p.style.background_pattern,
+        .aero = p.style.shading == .aero,
         .blur = p.style.background_blur,
     };
     if (cache.key != null and std.meta.eql(cache.key.?, key)) return;
@@ -1390,22 +1440,26 @@ fn updateBackground(r: *Renderer, frame: Gpu.Frame, p: DrawParams, set: vk.Descr
 /// Shadows multiply what is behind them, so they read over the backdrop
 /// pattern too. Every shadow fragment is written at one fixed depth with
 /// LESS, so overlapping silhouettes darken a pixel only once.
-fn drawShadows(r: *Renderer, frame: Gpu.Frame, p: DrawParams, slot: *const Slot) void {
+///
+/// `soft`: feathered silhouettes about 1.5x larger, written as darkening
+/// factors with a MIN blend before the backdrop is multiplied over them.
+fn drawShadows(r: *Renderer, frame: Gpu.Frame, p: DrawParams, slot: *const Slot, soft: bool) void {
     const cmd = frame.cmd;
-    const px = 6 * p.pixel_density;
+    const px = (if (soft) @as(f32, 9) else 6) * p.pixel_density;
     const pc: Push = .{
         .shadow_offset = .{ 2 * px / @as(f32, @floatFromInt(@max(p.width, 1))), -2 * px / @as(f32, @floatFromInt(@max(p.height, 1))) },
         .shadow_pass = 1,
+        .shadow_soft = @intFromBool(soft),
     };
     const up = &r.uploaded;
     if (up.atoms.items.len > 0) {
-        cmd.bindPipeline(.graphics, r.pipes.sphere_shadow);
+        cmd.bindPipeline(.graphics, if (soft) r.pipes.sphere_shadow_soft else r.pipes.sphere_shadow);
         cmd.bindVertexBuffers(0, &.{ r.quad.buffer, slot.atoms.buffer }, &.{ 0, 0 });
         r.push(cmd, pc);
         cmd.draw(4, @intCast(up.atoms.items.len), 0, 0);
     }
     if (up.opaque_bonds > 0) {
-        cmd.bindPipeline(.graphics, r.pipes.cylinder_shadow);
+        cmd.bindPipeline(.graphics, if (soft) r.pipes.cylinder_shadow_soft else r.pipes.cylinder_shadow);
         cmd.bindVertexBuffers(0, &.{ r.cyl_vbo.buffer, slot.bonds.buffer }, &.{ 0, 0 });
         cmd.bindIndexBuffer(r.cyl_ibo.buffer, 0, .uint16);
         r.push(cmd, pc);

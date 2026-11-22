@@ -1,4 +1,4 @@
-// Liquid glass (u_cel == 3, experimental): atoms and bonds as tinted glass
+// Liquid glass (u_cel == 4, experimental): atoms and bonds as tinted glass
 // that refracts the backdrop behind them, with a bright specular rim on the
 // side facing the light and a softer caustic glow on the far side.
 //

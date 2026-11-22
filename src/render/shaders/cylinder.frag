@@ -19,6 +19,13 @@ void main() {
         gl_FragDepth = gl_FragCoord.z;
         return;
     }
+    if (u_shadow_soft == 1) {
+        // Feathered: full in the middle of the tube, fading at its sides.
+        float s = smoothstep(0.05, 0.75, abs(dot(normalize(v_normal), normalize(-v_view_pos))));
+        o_color = vec4(mix(vec3(1.0), u_shadow_color, s), 1.0);
+        gl_FragDepth = 0.999999;
+        return;
+    }
     if (u_shadow_pass > 0.5) {
         o_color = vec4(u_shadow_color, 1.0);
         gl_FragDepth = 0.999999;
@@ -28,7 +35,7 @@ void main() {
     vec4 c = v_t < 0.5 ? v_ca : v_cb;
     vec3 n = normalize(v_normal);
     vec3 col = shade(c.rgb, n, normalize(-v_view_pos));
-    if (u_cel == 3) {
+    if (u_cel == 4) {
         // Thickness: twice the bond radius times the cosine (approximately).
         col = glass(c.rgb, n, v_view_pos, 0.25 * max(dot(n, normalize(-v_view_pos)), 0.0), 0.45);
     }

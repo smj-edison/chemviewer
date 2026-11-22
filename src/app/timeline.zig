@@ -59,6 +59,9 @@ pub fn draw(app: *App, h: f32) void {
     c.igSameLine(0, -1);
     _ = c.igCheckbox("Loop", &app.loop_playback);
     c.igSameLine(0, -1);
+    if (c.igCheckbox("Interpolate", &app.interpolate) and !app.interpolate) app.setFrame(d.current);
+    ui.tooltip("Play smoothly at the screen's frame rate: atoms follow a smooth curve through every real step (never overshooting between steps); the fps sets steps per second. Pausing stops on the nearest real step.");
+    c.igSameLine(0, -1);
     var lock = app.lock_rotation;
     if (c.igCheckbox("Lock rotation", &lock)) app.setLockRotation(lock);
     ui.tooltip("Turn the view with each frame so the structure keeps its orientation: every frame is superposed onto the frame shown when this was switched on, as in the diff panel. Your own rotations still apply.");

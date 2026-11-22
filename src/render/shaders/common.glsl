@@ -4,8 +4,10 @@
 // Shading modes (u_cel): 1 = cel/toon (flat bands, outlines), 2 = flat,
 // inspired by Kurzgesagt (one solid colour per object, highlight dots on
 // atoms, depth shown by fading toward the background, flat offset drop
-// shadows, no outlines), 3 = liquid glass (experimental, glass.glsl:
-// refracts the backdrop cache). Outlines have a constant screen width:
+// shadows, no outlines), 3 = aero, in the glossy Frutiger Aero spirit
+// (Aqua-style glass highlight cap, fresnel rim light, sharp specular glint,
+// light bounced up through the glass), 4 = liquid glass (experimental,
+// glass.glsl: translucent, refracts what is behind). Outlines have a constant screen width:
 // `u_outline_k` is the outline width in world units per unit of view depth.
 //
 // The camera's projection is OpenGL-style (clip z in [-w, w]); vertex shaders
@@ -51,6 +53,7 @@ layout(push_constant) uniform Draw {
     float u_shadow_pass;
     float u_outline_k;
     int u_outline_pass;
+    int u_shadow_soft;   // flat "soft shadow": feathered shadow factors (MIN blend)
     int u_glass_scene;   // glass.glsl: refract the scene copy, not the backdrop
 };
 
