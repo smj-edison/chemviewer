@@ -33,8 +33,17 @@ OpenGL 3.3 and Dear ImGui (via cimgui) doing the heavy lifting.
 
 ## Build & run
 
-Requires Zig 0.17 and SDL3 (system package, found via pkg-config). Dear ImGui
-and cimgui are fetched and compiled automatically.
+Requires Zig 0.17. Dear ImGui and cimgui are fetched and compiled
+automatically. SDL3 comes from:
+
+- **macOS / Linux:** the system package, found via pkg-config
+  (`brew install sdl3 pkgconf`, or your distro's `sdl3` dev package).
+- **Windows:** built from source automatically (statically linked; nothing to
+  install).
+
+Pass `-Dsystem-sdl=false` to build SDL3 from source on any platform, or
+`-Dsystem-sdl=true` to use an installed one on Windows. Cross-compiling works
+too, e.g. `zig build -Dtarget=x86_64-windows-gnu`.
 
 ```sh
 zig build run -- path/to/file.log              # open a file
