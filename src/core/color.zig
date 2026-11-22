@@ -213,17 +213,22 @@ pub const dark_palette: Palette = .{
     },
 };
 
-/// Pony: cotton-candy pink. Bonds sweep a rainbow (pink -> lemon -> sky
-/// blue -> purple -> deep magenta) while still darkening monotonically with
-/// order, so the scale keeps working in greyscale.
+/// Pony: cotton-candy pink, and bonds that run the full rainbow: red and
+/// orange for faint contacts, yellow single, green aromatic, blue double,
+/// indigo to violet triple. Unlike the other palettes lightness is not
+/// monotonic (a rainbow can't be), so only the opacity fade marks weak
+/// contacts; the rainbow was a deliberate request for this theme.
 pub const pony_palette: Palette = .{
     .background = .{ 0.9777, 0.8861, 0.9336 }, // #F9E2EE, OKLCh (0.935, 0.030, 345)
     .stops = &.{
         .{ .at = 0.0, .lch = .{ .l = 0.935, .c = 0.030, .h = 345 } }, // = background
-        .{ .at = 0.5, .lch = .{ .l = 0.86, .c = 0.11, .h = 95 } }, // lemon
-        .{ .at = 1.0, .lch = .{ .l = 0.68, .c = 0.11, .h = 235 } }, // single: sky blue
-        .{ .at = 2.0, .lch = .{ .l = 0.50, .c = 0.15, .h = 305 } }, // double: purple
-        .{ .at = 3.0, .lch = .{ .l = 0.30, .c = 0.13, .h = 335 } }, // triple: deep magenta
+        .{ .at = 0.4, .lch = .{ .l = 0.64, .c = 0.21, .h = 25 } }, // red
+        .{ .at = 0.7, .lch = .{ .l = 0.74, .c = 0.17, .h = 55 } }, // orange
+        .{ .at = 1.0, .lch = .{ .l = 0.80, .c = 0.16, .h = 85 } }, // single: golden yellow
+        .{ .at = 1.5, .lch = .{ .l = 0.70, .c = 0.17, .h = 145 } }, // aromatic: green
+        .{ .at = 2.0, .lch = .{ .l = 0.60, .c = 0.16, .h = 250 } }, // double: blue
+        .{ .at = 2.5, .lch = .{ .l = 0.47, .c = 0.17, .h = 285 } }, // indigo
+        .{ .at = 3.0, .lch = .{ .l = 0.55, .c = 0.20, .h = 315 } }, // triple: violet
     },
 };
 
@@ -275,8 +280,8 @@ test "snap is monotonic, continuous, and fixes integers" {
     try std.testing.expect(snap(1.05, 0.7) - 1 < 0.05);
 }
 
-test "bond palette contrast rises with bond character (all themes)" {
-    for ([_]Palette{ light_palette, dark_palette, pony_palette }) |pal| {
+test "bond palette contrast rises with bond character (light and dark)" {
+    for ([_]Palette{ light_palette, dark_palette }) |pal| {
         const bg_l = srgbToOklab(pal.background).l;
         // The first stop sits on the background.
         try std.testing.expectApproxEqAbs(bg_l, pal.stops[0].lch.l, 0.02);
@@ -291,6 +296,18 @@ test "bond palette contrast rises with bond character (all themes)" {
         // Triple bonds stand well apart from the background.
         try std.testing.expect(prev > 0.6);
         try std.testing.expectEqual(@as(f32, 0), bondColor(pal, 0, 0.7).alpha);
+    }
+}
+
+test "pony rainbow starts on the background and fades in" {
+    const pal = pony_palette;
+    try std.testing.expectApproxEqAbs(srgbToOklab(pal.background).l, pal.stops[0].lch.l, 0.02);
+    try std.testing.expectEqual(@as(f32, 0), bondColor(pal, 0, 0.7).alpha);
+    // Hue climbs through the rainbow from red to violet.
+    var prev: f32 = 0;
+    for (pal.stops[1..]) |stop| {
+        try std.testing.expect(stop.lch.h > prev);
+        prev = stop.lch.h;
     }
 }
 
