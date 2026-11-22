@@ -271,9 +271,9 @@ vec3 aeroSky() {
 }
 
 void main() {
-    mat3 R = mat3(u_view);
+    mat3 R = mat3(u_bg_view);
     mat3 Rt = transpose(R);
-    cam_pos = -(Rt * u_view[3].xyz);
+    cam_pos = -(Rt * u_bg_view[3].xyz);
     ray_dir = normalize(Rt * normalize(vec3(v_ndc * u_tan, -1.0)));
     vec3 col = u_bg;
     float vig = smoothstep(0.4, 1.6, length(v_ndc));

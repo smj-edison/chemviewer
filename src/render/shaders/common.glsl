@@ -40,10 +40,11 @@ layout(set = 0, binding = 0, std140) uniform Frame {
     float u_pad2;
     vec3 u_glow_b;
     float u_pad3;
-    vec3 u_anchor;       // world anchor of the pattern shells
+    vec3 u_anchor;       // anchor of the pattern shells (pattern space)
     float u_pad4;
     vec2 u_tan;          // tan(fovy/2) * aspect, tan(fovy/2)
     vec2 u_pad5;
+    mat4 u_bg_view;      // pattern space to view space (Camera.bgView)
 };
 
 layout(push_constant) uniform Draw {

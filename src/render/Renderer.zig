@@ -248,8 +248,6 @@ profile: ?Profile = null,
 /// Bounding sphere of the uploaded atoms (for the flat style's depth fade).
 bounds_center: Vec3 = .{ 0, 0, 0 },
 bounds_radius: f32 = 1,
-/// Bond to draw highlighted (key as in `App.pairKey`), set before building.
-selected_bond: ?u64 = null,
 
 pub fn clear(r: *Renderer) void {
     r.atoms.clearRetainingCapacity();
@@ -341,13 +339,6 @@ pub fn addStructure(
             cb = ca;
             radius_scale = thin * 0.45;
         };
-        if (r.selected_bond == key) {
-            // Selected bond: accent colour, a little thicker, fully opaque.
-            const ac = style.theme.accent();
-            ca = .{ ac[0], ac[1], ac[2], 1 };
-            cb = ca;
-            radius_scale = @max(radius_scale, 0.8) * 1.3;
-        }
         const inst: BondInstance = .{
             .a = positions[b.a],
             .b = positions[b.b],
@@ -417,8 +408,10 @@ pub const DrawParams = struct {
     /// Physical pixels per logical pixel (HiDPI).
     pixel_density: f32 = 1,
     style: Style,
-    /// Fixed world anchor and scene radius for the background pattern
-    /// (`Camera.bg_anchor` / `bg_radius`).
+    /// View matrix of the background pattern (`Camera.bgView`); `view` if null.
+    bg_view: ?Mat4 = null,
+    /// Fixed anchor (pattern space) and scene radius for the background
+    /// pattern (`Camera.bg_anchor` / `bg_radius`).
     bg_anchor: Vec3 = .{ 0, 0, 0 },
     bg_radius: f32 = 1,
     /// Filled in by `draw`: world units per framebuffer pixel at unit depth.
@@ -457,6 +450,7 @@ const FrameUniforms = extern struct {
     pad4: f32 = 0,
     tan: [2]f32,
     pad5: [2]f32 = .{ 0, 0 },
+    bg_view: [16]f32,
 };
 
 /// Per-draw push constants: `Draw` in shaders/common.glsl.
@@ -469,7 +463,7 @@ const Push = extern struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(FrameUniforms) == 336);
+    std.debug.assert(@sizeOf(FrameUniforms) == 400);
     std.debug.assert(@offsetOf(FrameUniforms, "bg") == 208);
 }
 
@@ -1111,6 +1105,7 @@ fn frameUniforms(p: DrawParams, res: f32) FrameUniforms {
         .glow_b = bd.glow_b,
         .anchor = p.bg_anchor,
         .tan = .{ t * aspect, t },
+        .bg_view = @bitCast((p.bg_view orelse p.view).m),
     };
 }
 
@@ -1179,7 +1174,7 @@ fn updateBackground(r: *Renderer, frame: Gpu.Frame, p: DrawParams, set: vk.Descr
         }}, null);
     }
     const key: BackgroundCache.Key = .{
-        .view = @bitCast(p.view.m),
+        .view = @bitCast((p.bg_view orelse p.view).m),
         .width = p.width,
         .height = p.height,
         .fovy = p.fovy,

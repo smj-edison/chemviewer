@@ -203,7 +203,54 @@ pub const Quat = struct {
     pub fn rotate(q: Quat, v: Vec3) Vec3 {
         return q.toMat3().mulVec(v);
     }
+
+    /// Inverse of `toMat3` for a proper rotation matrix (Shepperd's method:
+    /// divides by the largest of the four candidates, so it stays accurate).
+    pub fn fromMat3(r: Mat3) Quat {
+        // e[row][col] in the usual notation; Mat3 is column-major.
+        const e = struct {
+            m: Mat3,
+            fn at(self: @This(), row: usize, col: usize) f32 {
+                return self.m.m[col][row];
+            }
+        }{ .m = r };
+        const tr = e.at(0, 0) + e.at(1, 1) + e.at(2, 2);
+        var q: Quat = undefined;
+        if (tr > 0) {
+            const s = @sqrt(tr + 1) * 2;
+            q = .{ .w = s / 4, .x = (e.at(2, 1) - e.at(1, 2)) / s, .y = (e.at(0, 2) - e.at(2, 0)) / s, .z = (e.at(1, 0) - e.at(0, 1)) / s };
+        } else if (e.at(0, 0) > e.at(1, 1) and e.at(0, 0) > e.at(2, 2)) {
+            const s = @sqrt(1 + e.at(0, 0) - e.at(1, 1) - e.at(2, 2)) * 2;
+            q = .{ .w = (e.at(2, 1) - e.at(1, 2)) / s, .x = s / 4, .y = (e.at(0, 1) + e.at(1, 0)) / s, .z = (e.at(0, 2) + e.at(2, 0)) / s };
+        } else if (e.at(1, 1) > e.at(2, 2)) {
+            const s = @sqrt(1 + e.at(1, 1) - e.at(0, 0) - e.at(2, 2)) * 2;
+            q = .{ .w = (e.at(0, 2) - e.at(2, 0)) / s, .x = (e.at(0, 1) + e.at(1, 0)) / s, .y = s / 4, .z = (e.at(1, 2) + e.at(2, 1)) / s };
+        } else {
+            const s = @sqrt(1 + e.at(2, 2) - e.at(0, 0) - e.at(1, 1)) * 2;
+            q = .{ .w = (e.at(1, 0) - e.at(0, 1)) / s, .x = (e.at(0, 2) + e.at(2, 0)) / s, .y = (e.at(1, 2) + e.at(2, 1)) / s, .z = s / 4 };
+        }
+        return q.normalized();
+    }
 };
+
+test "fromMat3 inverts toMat3; mul composes like matrices" {
+    const qs = [_]Quat{
+        .identity,
+        Quat.fromAxisAngle(.{ 1, 2, 3 }, 0.7),
+        Quat.fromAxisAngle(.{ 0, 1, 0 }, std.math.pi), // trace -1
+        Quat.fromAxisAngle(.{ 1, 0, 0 }, 3.0),
+        Quat.fromAxisAngle(.{ -0.2, 0.1, 1 }, -2.9),
+    };
+    const v: Vec3 = .{ 0.3, -1.2, 2.5 };
+    for (qs) |q| {
+        const back = Quat.fromMat3(q.toMat3());
+        try std.testing.expect(length(back.rotate(v) - q.rotate(v)) < 1e-5);
+        for (qs) |b| {
+            const composed = q.mul(b).rotate(v);
+            try std.testing.expect(length(composed - q.toMat3().mul(b.toMat3()).mulVec(v)) < 1e-5);
+        }
+    }
+}
 
 test "quat rotation matches matrix" {
     const q = Quat.fromAxisAngle(vec3(0, 0, 1), std.math.pi / 2.0);

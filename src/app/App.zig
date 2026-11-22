@@ -53,6 +53,23 @@ pub const Diff = struct {
     overlay: bool = true,
 };
 
+/// "Lock rotation": the camera follows each new frame's rigid motion
+/// relative to an anchor frame, so the structure keeps its orientation.
+pub const RotationLock = struct {
+    /// Displayed positions and elements of the frame shown when it started.
+    anchor: []Vec3,
+    numbers: []u8,
+    /// Superposition of the frame the camera currently follows onto the anchor.
+    current: cv.align_.Transform = .identity,
+    /// That frame's index.
+    index: usize,
+
+    fn deinit(l: *RotationLock, gpa: Allocator) void {
+        gpa.free(l.anchor);
+        gpa.free(l.numbers);
+    }
+};
+
 io: Io,
 gpa: Allocator,
 window: *c.SDL_Window,
@@ -66,6 +83,9 @@ diff: ?Diff = null,
 playing: bool = false,
 fps: f32 = 15,
 loop_playback: bool = true,
+/// Keep the structure's orientation steady across frames (see RotationLock).
+lock_rotation: bool = false,
+rotation_lock: ?RotationLock = null,
 last_advance: Io.Timestamp = .zero,
 /// Interpolated playback: render at the display's frame rate, blending atom
 /// positions between steps; pausing snaps to the nearest step.
@@ -102,9 +122,6 @@ save_ready: std.atomic.Value(bool) = .init(false),
 /// Selected atoms in click order (indices into the frame). The first four
 /// define the measurement; any number can be copied as XYZ.
 selection: std.ArrayList(u32) = .empty,
-/// A clicked bond (independent of the atom selection): highlighted, shown in
-/// the bar, and the target of X / the cut checkbox.
-selected_bond: ?[2]u32 = null,
 edit_mode: cv.geometry.Mode = .last,
 /// Edited geometries by frame index; they replace the file's frames.
 edits: std.AutoHashMapUnmanaged(usize, Frame) = .empty,
@@ -182,6 +199,7 @@ pub fn closeDocument(app: *App) void {
     d.bonds.deinit(app.gpa);
     app.gpa.free(d.path);
     app.doc = null;
+    app.dropRotationLock();
     app.scene_dirty = true;
 }
 
@@ -460,6 +478,7 @@ pub fn update(app: *App) void {
                 d.needs_fit = false;
                 app.fitCamera();
             }
+            app.followRotationLock();
             app.scene_dirty = true;
         }
     }
@@ -609,7 +628,6 @@ pub fn fitCamera(app: *App) void {
 fn rebuildScene(app: *App) !void {
     const r = &app.renderer;
     r.clear();
-    r.selected_bond = if (app.selected_bond) |b| pairKey(b[0], b[1]) else null;
     const d = app.doc orelse return r.upload();
     const f = d.shown orelse return r.upload();
     if (app.diff) |df| if (df.overlay and df.result != null) {
@@ -644,6 +662,63 @@ pub fn clearDiff(app: *App) void {
     df.deviations.deinit(app.gpa);
     app.diff = null;
     app.scene_dirty = true;
+}
+
+// ------------------------------------------------------- rotation lock
+
+pub fn setLockRotation(app: *App, on: bool) void {
+    app.lock_rotation = on;
+    app.dropRotationLock();
+    if (on) app.followRotationLock();
+}
+
+fn dropRotationLock(app: *App) void {
+    if (app.rotation_lock) |*l| l.deinit(app.gpa);
+    app.rotation_lock = null;
+}
+
+/// Starts the lock at the shown frame, or, if the shown frame changed, turns
+/// the camera by that frame's motion relative to the last one it followed
+/// (both measured by superposing onto the anchor, so the view of a frame does
+/// not depend on the path taken to it). Frames whose atoms don't match the
+/// anchor's restart the lock there.
+fn followRotationLock(app: *App) void {
+    if (!app.lock_rotation) return;
+    const d = app.doc orelse return;
+    const f = d.shown orelse return;
+    const pos = app.displayedPositions() orelse return;
+    if (app.rotation_lock) |*l| {
+        if (l.index == d.shown_index) return;
+        if (l.anchor.len == pos.len and std.mem.eql(u8, l.numbers, f.numbers)) {
+            const next = cv.align_.superpose(l.anchor, pos, null).transform;
+            // Frame-to-frame motion M = current⁻¹ ∘ next, with T(p) = R (p - from) + to:
+            // M(p) = curᵀ next (p - next.from) + curᵀ (next.to - cur.to) + cur.from.
+            const cur = l.current;
+            var rot: cv.math.Mat3 = undefined;
+            for (0..3) |row| for (0..3) |col| {
+                var s: f64 = 0;
+                for (0..3) |k| s += cur.rot[k][row] * next.rot[k][col];
+                rot.m[col][row] = @floatCast(s);
+            };
+            const dt = next.to_center - cur.to_center;
+            const to = cur.from_center + cv.math.Vec3d{
+                cur.rot[0][0] * dt[0] + cur.rot[1][0] * dt[1] + cur.rot[2][0] * dt[2],
+                cur.rot[0][1] * dt[0] + cur.rot[1][1] * dt[1] + cur.rot[2][1] * dt[2],
+                cur.rot[0][2] * dt[0] + cur.rot[1][2] * dt[1] + cur.rot[2][2] * dt[2],
+            };
+            app.camera.followRigid(rot, @floatCast(next.from_center), @floatCast(to));
+            l.current = next;
+            l.index = d.shown_index;
+            return;
+        }
+        app.dropRotationLock();
+    }
+    const anchor = app.gpa.dupe(Vec3, pos) catch return;
+    const numbers = app.gpa.dupe(u8, f.numbers) catch {
+        app.gpa.free(anchor);
+        return;
+    };
+    app.rotation_lock = .{ .anchor = anchor, .numbers = numbers, .index = d.shown_index };
 }
 
 fn updateDiff(app: *App) void {
@@ -751,7 +826,6 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             const n = d.frameCount();
             switch (ev.key.key) {
                 c.SDLK_ESCAPE => if (app.drag != null) app.endDrag(false) else app.clearSelection(),
-                c.SDLK_X => app.toggleCut(),
                 c.SDLK_DELETE, c.SDLK_BACKSPACE => app.deleteSelection(),
                 c.SDLK_N => app.show_atom_numbers = !app.show_atom_numbers,
                 c.SDLK_SPACE => app.togglePlay(),
@@ -807,9 +881,8 @@ pub fn selected(app: *const App) []const u32 {
 }
 
 pub fn clearSelection(app: *App) void {
-    if (app.selection.items.len == 0 and app.selected_bond == null) return;
+    if (app.selection.items.len == 0) return;
     app.selection.clearRetainingCapacity();
-    app.selected_bond = null;
     app.scene_dirty = true;
 }
 
@@ -838,9 +911,6 @@ fn dropInvalidSelection(app: *App) void {
             app.scene_dirty = true;
         } else i += 1;
     }
-    if (app.selected_bond) |b| if (b[0] >= n or b[1] >= n) {
-        app.selected_bond = null;
-    };
 }
 
 pub fn pairKey(a: u32, b: u32) u64 {
@@ -849,18 +919,6 @@ pub fn pairKey(a: u32, b: u32) u64 {
 
 pub fn isCut(app: *const App, a: u32, b: u32) bool {
     return app.cut_bonds.contains(pairKey(a, b));
-}
-
-/// Cut (or restore) the bond between the two selected atoms.
-/// Cut (or restore) the selected bond, or else the bond between the two
-/// selected atoms.
-pub fn toggleCut(app: *App) void {
-    const sel = app.selected();
-    const pair: [2]u32 = if (app.selected_bond) |b| b else if (sel.len == 2) .{ sel[0], sel[1] } else {
-        app.setStatus("Click a bond (or select its two atoms) to cut it", .{});
-        return;
-    };
-    app.toggleCutPair(pair[0], pair[1]);
 }
 
 /// Cut (or restore) the bond between atoms `a` and `b`.
@@ -1044,26 +1102,15 @@ pub fn atomAt(app: *const App, x: f32, y: f32) ?u32 {
     };
 }
 
-/// A click toggles the atom under the cursor, selects a bond's two atoms,
-/// or clears the selection on empty space.
-/// `clicks` is SDL's click count. A click on a bond selects just the bond
-/// (atoms unchanged); a double click toggles its cut. A double click on an
-/// atom changes nothing beyond the first click.
+/// A click toggles the atom under the cursor, or clears the selection on
+/// empty space. `clicks` is SDL's click count: bonds aren't selectable, and
+/// their only action is a double click, which cuts or restores them. A double
+/// click on an atom changes nothing beyond the first click.
 pub fn clickAt(app: *App, x: f32, y: f32, clicks: u8) void {
     const h = app.hitAt(x, y) orelse return app.clearSelection();
     switch (h.target) {
         .atom => |atom| if (clicks < 2) app.toggleSelect(atom),
-        .bond => |pair| {
-            // Bonds are selected on their own; the atom selection is untouched.
-            const same = if (app.selected_bond) |b| pairKey(b[0], b[1]) == pairKey(pair[0], pair[1]) else false;
-            if (clicks >= 2) {
-                app.selected_bond = pair;
-                app.toggleCut();
-            } else {
-                app.selected_bond = if (same) null else pair;
-            }
-            app.scene_dirty = true;
-        },
+        .bond => |pair| if (clicks == 2) app.toggleCutPair(pair[0], pair[1]),
     }
 }
 
@@ -1339,7 +1386,6 @@ fn deleteSelectionInner(app: *App) !void {
     old.deinit(gpa);
     app.cut_bonds = new_cuts;
     app.selection.clearRetainingCapacity();
-    app.selected_bond = null;
     app.scene_dirty = true;
     app.setStatus("Deleted {d} atom{s} (Ctrl+Z undoes)", .{ n, if (n == 1) "" else "s" });
 }
@@ -1495,7 +1541,6 @@ fn menuBar(app: *App) void {
         if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.selection.items.len > 0)) app.deleteSelection();
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
         c.igSeparator();
-        if (c.igMenuItem_Bool("Cut / restore selected bond", "X", false, app.selected_bond != null or app.selection.items.len == 2)) app.toggleCut();
         if (c.igMenuItem_Bool("Restore all cut bonds", null, false, app.cut_bonds.count() > 0)) app.restoreCuts();
         c.igSeparator();
         if (c.igMenuItem_Bool("Copy as XYZ", "Ctrl+C", false, app.doc != null)) app.copyXyz();
@@ -1614,7 +1659,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
 
-    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit.", .{});
+    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit. Double-click a bond: cut / restore it.", .{});
 }
 
 /// Element key: a colour swatch and count per element present, in Hill
