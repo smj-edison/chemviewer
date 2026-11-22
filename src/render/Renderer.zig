@@ -113,11 +113,11 @@ fn kurzgesagtAtomColor(z: u8) [3]f32 {
         9 => 0x7BD84A, // F: lime
         14 => 0xC58A5A, // Si: clay
         15 => 0xFF7A1A, // P: orange
-        16 => 0xFFC21A, // S: sunflower
+        16 => 0xE6E04A, // S: lemon (greener than gold)
         17 => 0x2FBF5F, // Cl: green
         35 => 0xA8325A, // Br: wine
         53 => 0x8A3FE0, // I: purple
-        79 => 0xFF8A00, // Au: deep gold
+        79 => 0xFFC21A, // Au: gold yellow, well apart from orange P
         else => null,
     };
     if (hex) |h| return .{
@@ -511,7 +511,7 @@ fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
     const bg = p.style.theme.background();
     f.Uniform3f(f.GetUniformLocation(prog, "u_fog_color"), bg[0], bg[1], bg[2]);
     f.Uniform2f(f.GetUniformLocation(prog, "u_fog_range"), p.fog_range[0], p.fog_range[1]);
-    f.Uniform1f(f.GetUniformLocation(prog, "u_fog_amount"), 0.55);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_fog_amount"), 0.45);
     const sc = p.style.theme.shadow();
     f.Uniform3f(f.GetUniformLocation(prog, "u_shadow_color"), sc[0], sc[1], sc[2]);
     f.Uniform2f(f.GetUniformLocation(prog, "u_shadow_offset"), 0, 0);

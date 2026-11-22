@@ -158,16 +158,19 @@ pub const dark_palette: Palette = .{
 ///
 /// Bonds follow a reversed "mako"-like ramp anchored on the background:
 /// sea-green grey -> teal-blue -> deep indigo. Lightness falls steadily from
-/// no bond to triple (~0.2 per order), so the scale is unambiguous in
-/// greyscale and agrees with the opacity fade of weak contacts. Hues stay
+/// no bond to triple, so the scale is unambiguous in greyscale and agrees
+/// with the opacity fade of weak contacts. The drop is front-loaded (a stop
+/// at 0.5): thermally stretched C-H bonds in MD frames sit a little below
+/// single and must still stand clear of the pale background. Hues stay
 /// clear of the pink carbons, orange P/Au and white H.
 pub const kurzgesagt_palette: Palette = .{
     .background = .{ 0.8762, 0.9065, 0.9390 }, // #DFE7EF, OKLCh (0.925, 0.014, 250)
     .stops = &.{
         .{ .at = 0.0, .lch = .{ .l = 0.925, .c = 0.014, .h = 250 } }, // = background
-        .{ .at = 1.0, .lch = .{ .l = 0.70, .c = 0.070, .h = 190 } }, // single: sea-green grey
-        .{ .at = 2.0, .lch = .{ .l = 0.50, .c = 0.120, .h = 225 } }, // double: teal-blue
-        .{ .at = 3.0, .lch = .{ .l = 0.30, .c = 0.120, .h = 280 } }, // triple: deep indigo
+        .{ .at = 0.5, .lch = .{ .l = 0.72, .c = 0.050, .h = 190 } },
+        .{ .at = 1.0, .lch = .{ .l = 0.58, .c = 0.080, .h = 195 } }, // single: sea-green slate
+        .{ .at = 2.0, .lch = .{ .l = 0.44, .c = 0.120, .h = 228 } }, // double: teal-blue
+        .{ .at = 3.0, .lch = .{ .l = 0.28, .c = 0.120, .h = 280 } }, // triple: deep indigo
     },
 };
 

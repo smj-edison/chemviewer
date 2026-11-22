@@ -426,17 +426,18 @@ fn kurzgesagtImGuiColors() void {
     set(col, c.ImGuiCol_PopupBg, 0xF4F7FA, 0.98);
     set(col, c.ImGuiCol_MenuBarBg, 0xE6ECF3, 1);
     set(col, c.ImGuiCol_TitleBg, 0xE6ECF3, 1);
-    set(col, c.ImGuiCol_TitleBgActive, 0x5540F0, 1);
+    // Dark text sits on every one of these, so they stay light tints.
+    set(col, c.ImGuiCol_TitleBgActive, 0xD9D3FF, 1);
     set(col, c.ImGuiCol_Border, 0xC8D4E3, 0.8);
     set(col, c.ImGuiCol_FrameBg, 0xE3E9F1, 1);
     set(col, c.ImGuiCol_FrameBgHovered, 0xD6DFEA, 1);
     set(col, c.ImGuiCol_FrameBgActive, 0xC8D4E3, 1);
-    set(col, c.ImGuiCol_Button, 0x5540F0, 0.85);
-    set(col, c.ImGuiCol_ButtonHovered, 0xFF2E7E, 0.9);
-    set(col, c.ImGuiCol_ButtonActive, 0xE0136A, 1);
-    set(col, c.ImGuiCol_Header, 0x5540F0, 0.3);
-    set(col, c.ImGuiCol_HeaderHovered, 0xFF2E7E, 0.45);
-    set(col, c.ImGuiCol_HeaderActive, 0xFF2E7E, 0.7);
+    set(col, c.ImGuiCol_Button, 0xD9D3FF, 1);
+    set(col, c.ImGuiCol_ButtonHovered, 0xFFCFE2, 1);
+    set(col, c.ImGuiCol_ButtonActive, 0xFFB0CF, 1);
+    set(col, c.ImGuiCol_Header, 0xD9D3FF, 1);
+    set(col, c.ImGuiCol_HeaderHovered, 0xFFCFE2, 1);
+    set(col, c.ImGuiCol_HeaderActive, 0xFFB0CF, 1);
     set(col, c.ImGuiCol_CheckMark, 0x5540F0, 1);
     set(col, c.ImGuiCol_SliderGrab, 0x5540F0, 1);
     set(col, c.ImGuiCol_SliderGrabActive, 0xFF2E7E, 1);
