@@ -944,9 +944,10 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
         cmd.resetQueryPool(prof.pool, @intCast(frame.slot * Profile.per_slot), Profile.per_slot);
         prof.stamp(frame, 0);
     }
-    // Glass refracts the backdrop cache, so it needs one even without the
-    // pattern (it then holds the plain background).
-    if (p.style.background_pattern or p.style.shading == .glass) try r.updateBackground(frame, p, set);
+    // Always kept, even without the pattern (it then holds the plain
+    // background): glass refracts it, and the atom and bond shaders bind it
+    // in every style.
+    try r.updateBackground(frame, p, set);
 
     gpu.beginScenePass(frame, p.style.theme.background());
     const w: f32 = @floatFromInt(frame.extent.width);
