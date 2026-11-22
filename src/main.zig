@@ -1,7 +1,8 @@
 //! chemviewer entry point: window, Vulkan device, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--atom-numbers]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero]
+//!                   [--play] [--interpolate] [--atom-numbers]
 //!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
 //!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -28,6 +29,9 @@ const Args = struct {
     flat: bool = false,
     aero: bool = false,
     flat_pop: bool = false,
+    /// Start playing (optionally interpolated) once the file is open.
+    play: bool = false,
+    interpolate: bool = false,
     no_bg_pattern: bool = false,
     bg_blur: ?f32 = null,
     backdrop: ?[]const u8 = null,
@@ -132,6 +136,10 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.aero = true;
         } else if (eql(u8, arg, "--flat-pop")) {
             a.flat_pop = true;
+        } else if (eql(u8, arg, "--play")) {
+            a.play = true;
+        } else if (eql(u8, arg, "--interpolate")) {
+            a.interpolate = true;
         } else if (eql(u8, arg, "--flat")) {
             a.flat = true;
         } else if (eql(u8, arg, "--no-bg-pattern")) {
@@ -161,7 +169,8 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--atom-numbers]
+            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero]
+            \\                  [--play] [--interpolate] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
             \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -219,6 +228,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.flat) app.style.shading = .flat;
     if (args.aero) app.style.shading = .aero;
     if (args.flat_pop) app.style.flat_pop = true;
+    app.interpolate = args.interpolate;
     if (args.no_bg_pattern) app.style.background_pattern = false;
     if (args.bg_blur) |b| app.style.background_blur = b;
     if (args.backdrop) |b| app.style.backdrop = if (std.mem.eql(u8, b, "space")) .space else .cells;
@@ -228,6 +238,7 @@ pub fn main(init: std.process.Init) !void {
     var startup: Startup = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };
     if (args.file != null) {
         if (args.diff_ref) |r| app.setFrame(r) else if (args.frame) |f| app.setFrame(f);
+        if (args.play) app.togglePlay();
     }
 
     while (!app.quit_requested) {

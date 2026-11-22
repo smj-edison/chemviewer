@@ -29,6 +29,9 @@ pub const Document = struct {
     /// Frame currently displayed (may lag `current` while it loads).
     shown: ?Frame = null,
     shown_index: usize = 0,
+    /// Interpolated playback: the step after `shown` (null until loaded).
+    next: ?Frame = null,
+    next_index: usize = 0,
     bonds: std.ArrayList(cv.bonds.Bond) = .empty,
     needs_fit: bool = true,
 
@@ -64,6 +67,13 @@ playing: bool = false,
 fps: f32 = 15,
 loop_playback: bool = true,
 last_advance: Io.Timestamp = .zero,
+/// Interpolated playback: render at the display's frame rate, blending atom
+/// positions between steps; pausing snaps to the nearest step.
+interpolate: bool = false,
+/// Fraction of the way from the shown step to the next (0 when not blending).
+interp_t: f32 = 0,
+/// Blended positions for the scene while interpolating.
+interp_positions: std.ArrayList(Vec3) = .empty,
 
 scene_dirty: bool = true,
 bonds_dirty: bool = false,
@@ -143,6 +153,7 @@ pub fn deinit(app: *App) void {
     app.lasso_points.deinit(app.gpa);
     app.endDrag(false);
     app.cut_bonds.deinit(app.gpa);
+    app.interp_positions.deinit(app.gpa);
     app.clearDiff();
     app.closeDocument();
     app.renderer.deinit();
@@ -167,6 +178,7 @@ pub fn closeDocument(app: *App) void {
     d.source.deinit(app.io, app.gpa);
     app.gpa.destroy(d.source);
     if (d.shown) |*f| f.deinit(app.gpa);
+    if (d.next) |*f| f.deinit(app.gpa);
     d.bonds.deinit(app.gpa);
     app.gpa.free(d.path);
     app.doc = null;
@@ -382,6 +394,7 @@ pub fn addFragmentFile(app: *App, path: []const u8) !void {
 pub fn setFrame(app: *App, index: usize) void {
     const d = &(app.doc orelse return);
     d.current = @min(index, d.frameCount() - 1);
+    app.setInterp(0);
     // Ask the loader right away (the UI sets frames mid-frame, after update()).
     d.stream.request(d.current);
 }
@@ -432,6 +445,7 @@ pub fn update(app: *App) void {
             app.setStatus("Failed to load frame {d}: {t}", .{ d.current + 1, e });
         }
     }
+    app.updateNextFrame();
     if (app.bonds_dirty) {
         app.bonds_dirty = false;
         if (d.shown) |f| {
@@ -459,6 +473,7 @@ fn advancePlayback(app: *App) void {
     const d = &(app.doc orelse return);
     if (!app.playing) return;
     const now = Io.Timestamp.now(app.io, .awake);
+    if (app.interpolate) return app.advanceInterpolated(d, now);
     const period_ns: i96 = @intFromFloat(1e9 / @max(app.fps, 0.1));
     if (app.last_advance.durationTo(now).nanoseconds < period_ns) return;
     // Don't run ahead of the loader: wait until the current frame is on screen.
@@ -471,6 +486,97 @@ fn advancePlayback(app: *App) void {
     } else {
         app.playing = false;
     }
+}
+
+/// Interpolated playback: move a fractional playhead by elapsed time x fps.
+/// Blending needs both steps, so it holds at a step until the next one is
+/// loaded rather than jumping; it never blends across the loop's wrap.
+fn advanceInterpolated(app: *App, d: *Document, now: Io.Timestamp) void {
+    const dt_ns = app.last_advance.durationTo(now).nanoseconds;
+    app.last_advance = now;
+    // Wait until the current step is on screen.
+    if (d.shown_index != d.current) return;
+    const dt: f32 = @min(@as(f32, @floatFromInt(dt_ns)) / 1e9, 0.1);
+    const n = d.frameCount();
+    const pos = app.interp_t + dt * app.fps;
+    if (pos < 1) {
+        // Blend only once the next step is here; otherwise hold.
+        if (app.nextReady() or app.interp_t > 0) app.setInterp(pos);
+        return;
+    }
+    // Crossed into a later step (several at high fps on a slow display).
+    const steps: usize = @intFromFloat(@floor(pos));
+    // Carry the leftover fraction so the step rate matches the fps. Blending
+    // resumes once the new step's successor is loaded (`displayPositions`
+    // draws the plain step until then).
+    var rest = pos - @as(f32, @floatFromInt(steps));
+    if (d.current + steps < n) {
+        d.current += steps;
+    } else if (app.loop_playback) {
+        d.current = 0;
+        rest = 0;
+    } else {
+        d.current = n - 1;
+        rest = 0;
+        app.playing = false;
+    }
+    app.setInterp(rest);
+}
+
+fn setInterp(app: *App, t: f32) void {
+    if (t != app.interp_t) app.scene_dirty = true;
+    app.interp_t = t;
+}
+
+/// The step after the shown one is loaded and can be blended with it.
+fn nextReady(app: *const App) bool {
+    const d = app.doc orelse return false;
+    const s = d.shown orelse return false;
+    const nx = d.next orelse return false;
+    return d.shown_index == d.current and d.next_index == d.current + 1 and
+        nx.positions.len == s.positions.len and app.diff == null;
+}
+
+/// Keeps `Document.next` holding the step after the current one while
+/// interpolated playback is running (with any edits applied).
+fn updateNextFrame(app: *App) void {
+    const d = &(app.doc orelse return);
+    const want = app.interpolate and app.playing and d.current + 1 < d.frameCount();
+    if (!want) {
+        if (d.next) |*f| f.deinit(app.gpa);
+        d.next = null;
+        return;
+    }
+    const ni = d.current + 1;
+    if (d.next != null and d.next_index == ni) return;
+    if (d.next) |*f| f.deinit(app.gpa);
+    d.next = null;
+    const got = (d.stream.take(app.gpa, ni) catch null) orelse return;
+    var frame = got;
+    if (app.edits.get(ni)) |e| {
+        if (e.clone(app.gpa)) |copy| {
+            frame.deinit(app.gpa);
+            frame = copy;
+        } else |_| {}
+    }
+    d.next = frame;
+    d.next_index = ni;
+}
+
+/// Positions to draw for the shown frame: blended toward the next step while
+/// interpolating. Atoms that jump far between steps (periodic wrap) snap
+/// instead of streaking across the box.
+fn displayPositions(app: *App, f: Frame) []const Vec3 {
+    const d = app.doc orelse return f.positions;
+    if (app.interp_t <= 0 or !app.nextReady()) return f.positions;
+    const nx = d.next.?;
+    app.interp_positions.resize(app.gpa, f.positions.len) catch return f.positions;
+    const t = app.interp_t;
+    for (app.interp_positions.items, f.positions, nx.positions) |*o, a, b| {
+        const delta = b - a;
+        o.* = if (cv.math.length(delta) > 2.5) (if (t < 0.5) a else b) else a + delta * cv.math.splat(t);
+    }
+    return app.interp_positions.items;
 }
 
 pub fn fitCamera(app: *App) void {
@@ -512,7 +618,7 @@ fn rebuildScene(app: *App) !void {
         r.highlight(start, app.selected());
         return r.upload();
     };
-    const start = try r.addStructure(f.positions, f.numbers, d.bonds.items, app.style, null, &app.cut_bonds);
+    const start = try r.addStructure(app.displayPositions(f), f.numbers, d.bonds.items, app.style, null, &app.cut_bonds);
     r.highlight(start, app.selected());
     if (app.style.show_cell) if (f.cell) |cell| try r.addCell(cell, app.style.theme.cellLine());
     try r.upload();
@@ -668,6 +774,11 @@ pub fn togglePlay(app: *App) void {
     if (d.frameCount() < 2) return;
     app.playing = !app.playing;
     app.last_advance = Io.Timestamp.now(app.io, .awake);
+    // Pausing an interpolated playback stops on the nearest real step.
+    if (!app.playing and app.interp_t > 0) {
+        const near = if (app.interp_t >= 0.5) d.current + 1 else d.current;
+        app.setFrame(@min(near, d.frameCount() - 1));
+    }
 }
 
 pub fn openDialog(app: *App) void {
@@ -1234,6 +1345,11 @@ fn deleteSelectionInner(app: *App) !void {
 }
 
 fn storeEdit(app: *App, index: usize, f: Frame) !void {
+    // A cached next step for interpolation is stale once it is edited.
+    if (app.doc) |*d| if (d.next != null and d.next_index == index) {
+        d.next.?.deinit(app.gpa);
+        d.next = null;
+    };
     const copy = try f.clone(app.gpa);
     const gop = try app.edits.getOrPut(app.gpa, index);
     if (gop.found_existing) gop.value_ptr.deinit(app.gpa);

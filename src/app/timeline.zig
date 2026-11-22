@@ -58,6 +58,9 @@ pub fn draw(app: *App, h: f32) void {
     _ = c.igSliderFloat("##fps", &app.fps, 1, 240, "%.0f fps", c.ImGuiSliderFlags_Logarithmic);
     c.igSameLine(0, -1);
     _ = c.igCheckbox("Loop", &app.loop_playback);
+    c.igSameLine(0, -1);
+    if (c.igCheckbox("Interpolate", &app.interpolate) and !app.interpolate) app.setFrame(d.current);
+    ui.tooltip("Play smoothly at the screen's frame rate, blending atom positions between steps; the fps sets steps per second. Pausing stops on the nearest real step.");
 
     energyPlot(app, d);
 }
