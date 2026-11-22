@@ -134,7 +134,8 @@ bytes (not frame count) evicts old ones. Scrubbing never blocks the render loop.
 - [ ] Representation presets: ball & stick, licorice, space-filling, wire
 - [ ] Periodic cells: draw images, wrap atoms, bonds across boundaries (minimum image)
 - [x] Outlines (cel shading), light/dark themes
-- [ ] Depth cueing / SSAO
+- [x] Flat style inspired by Kurzgesagt (independent of the light/dark theme), blue-grey light background, greyscale-safe bond palettes, teal carbon
+- [ ] Depth cueing / SSAO (the flat style fades with depth; cel does not yet)
 - [ ] Persist settings (window layout, style) via `Io.Dir` in the platform config dir
 - [x] Drag-and-drop files (SDL drop events)
 
@@ -156,9 +157,3 @@ bytes (not frame count) evicts old ones. Scrubbing never blocks the render loop.
 - Vibrational modes from Gaussian/ORCA outputs (animated)
 - Colour by property (forces, charges, per-atom energies from .traj calculator data)
 - Export screenshots / movies
-- Light mode background: adopt the pale blue-grey from the experimental
-  `kurzgesagt-style` branch, `#DFE7EF` = OKLCh (0.925, 0.014, 250), in place
-  of the current near-white. The user likes it in general. Re-check the light
-  bond palette (its first stop must match the new background, and the
-  contrast test must still pass), the carbon colour, the outline colour and the
-  ImGui light colours against it.

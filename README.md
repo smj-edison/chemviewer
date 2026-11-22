@@ -109,3 +109,10 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 
 See [docs/PLAN.md](docs/PLAN.md) for the architecture and roadmap, and
 [docs/DECISIONS.md](docs/DECISIONS.md) for why things are the way they are.
+
+## Credits
+
+The flat style (`--flat`) is inspired by the flat illustration style of
+[Kurzgesagt – In a Nutshell](https://kurzgesagt.org). It borrows the general
+look only, not any of their artwork. See
+[docs/style-refs/kurzgesagt/README.md](docs/style-refs/kurzgesagt/README.md).
