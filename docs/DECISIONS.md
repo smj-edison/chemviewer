@@ -240,3 +240,31 @@ measured against the same anchor, a frame looks the same however you got to
 it (scrubbing, stepping, playback), and the user's own rotations in between
 are kept. The backdrop pattern gets the same correction, so the scene as a
 whole stays still. A frame with different atoms restarts the lock there.
+
+### D22 — Glass style: translucent atoms drawn in layers
+A third style (experimental, `--glass`), inspired by Apple's "Liquid Glass":
+atoms are tinted glass that refracts what is behind them, filtered by their
+colour, with a bright rim on the lit side, a tinted glow opposite it, a
+Fresnel sheen and slight dispersion (shaders/glass.glsl). Atoms are 1.2x
+larger so the refraction shows. Bonds use the same shading but refract only
+the backdrop.
+- **Refraction samples a copy of the scene.** A shader can't read the target
+  it draws into, so before glass atoms are drawn the MSAA scene is resolved
+  into `Gpu.scene_copy` (`snapshotScene`: end the pass, resolve, resume with
+  load ops). The backdrop cache is always kept for the same reason, holding
+  the plain background when the pattern is off.
+- **Layers instead of one snapshot per atom.** Atoms only need the atoms
+  behind them that they overlap on screen. On the CPU, going from far to
+  near, each atom goes one layer above the farthest-placed atoms it overlaps
+  (a grid of screen cells finds them), so atoms sharing a layer never
+  overlap and one snapshot per layer is exact. This reruns only when the
+  view or the scene changes. Typical molecules need a handful of layers;
+  the cap is 16 (deeper atoms share the last layer and hide what they
+  overlap), and above 20000 atoms everything is one layer. Depth peeling or
+  order-independent transparency would avoid the CPU sort but can't refract:
+  they blend, they don't bend what is behind.
+- **Cost.** The MSAA colour and depth targets are no longer transient
+  (lazily allocated memory on tilers), as glass stores and reloads them
+  mid-frame. Other styles still discard them after the resolve. Glass costs
+  about 2 ms per frame at 1080p on an Intel Xe iGPU for a 77-atom complex
+  (cel: 0.25 ms).
