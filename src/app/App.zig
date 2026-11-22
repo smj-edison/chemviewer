@@ -70,6 +70,8 @@ scene_radius: f32 = 10,
 show_inspector: bool = true,
 show_diff: bool = false,
 show_atom_numbers: bool = false,
+/// Element symbols on atoms whose colour another present element shares.
+show_element_labels: bool = true,
 /// User multiplier on top of the monitor's content scale (View menu).
 ui_scale: f32 = 1.0,
 /// Font size the panel layout was last placed for; when it changes the
@@ -1345,7 +1347,7 @@ fn layoutCond(app: *App) c_int {
 
 pub fn drawUi(app: *App) void {
     defer app.layout_font_size = c.igGetFontSize();
-    if (app.show_atom_numbers) measure.atomNumbers(app);
+    measure.atomLabels(app);
     measure.overlay(app);
     app.drawLasso();
     app.menuBar();
@@ -1392,6 +1394,8 @@ fn menuBar(app: *App) void {
         _ = c.igMenuItem_BoolPtr("Diff", null, &app.show_diff, true);
         if (c.igMenuItem_BoolPtr("Unit cell", null, &app.style.show_cell, true)) app.scene_dirty = true;
         _ = c.igMenuItem_BoolPtr("Atom numbers", "N", &app.show_atom_numbers, true);
+        _ = c.igMenuItem_BoolPtr("Element labels", null, &app.show_element_labels, true);
+        ui.tooltip("Show element symbols on atoms whose colour could be mistaken for another element in the structure (the rarer of the two).");
         if (c.igMenuItem_Bool("Fit to view", "F", false, app.doc != null)) app.fitCamera();
         c.igSeparator();
         c.igSetNextItemWidth(c.igGetFontSize() * 8);
@@ -1475,31 +1479,52 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit.", .{});
 }
 
+/// Element key: a colour swatch and count per element present, in Hill
+/// order (C, H, then alphabetical). Wraps to the panel width.
 fn composition(app: *App, f: Frame) void {
     _ = app;
     var counts: [256]u32 = @splat(0);
     for (f.numbers) |z| counts[z] += 1;
-    var buf: [512]u8 = undefined;
-    var w: Io.Writer = .fixed(&buf);
-    // Hill order: C, H, then alphabetical.
-    const order_first = [_]u8{ 6, 1 };
-    for (order_first) |z| if (counts[z] > 0) {
-        w.print("{s}{d} ", .{ cv.elements.symbol(z), counts[z] }) catch {};
-        counts[z] = 0;
+    var order: [256]u8 = undefined;
+    var n: usize = 0;
+    for ([_]u8{ 6, 1 }) |z| if (counts[z] > 0) {
+        order[n] = z;
+        n += 1;
     };
-    var syms: [256]u8 = undefined;
-    var ns: usize = 0;
-    for (counts, 0..) |n, z| if (n > 0) {
-        syms[ns] = @intCast(z);
-        ns += 1;
+    const first = n;
+    for (counts, 0..) |k, z| if (k > 0 and z != 6 and z != 1) {
+        order[n] = @intCast(z);
+        n += 1;
     };
-    std.mem.sort(u8, syms[0..ns], {}, struct {
+    std.mem.sort(u8, order[first..n], {}, struct {
         fn lt(_: void, a: u8, b: u8) bool {
             return std.mem.lessThan(u8, cv.elements.symbol(a), cv.elements.symbol(b));
         }
     }.lt);
-    for (syms[0..ns]) |z| w.print("{s}{d} ", .{ cv.elements.symbol(z), counts[z] }) catch {};
-    ui.textWrapped("{s}", .{w.buffered()});
+
+    const fs = c.igGetFontSize();
+    const dl = c.igGetWindowDrawList();
+    const swatch = fs * 0.75;
+    const right = c.igGetCursorScreenPos().x + c.igGetContentRegionAvail().x;
+    const outline = c.igGetColorU32_Col(c.ImGuiCol_Border, 1);
+    for (order[0..n], 0..) |z, i| {
+        var buf: [24]u8 = undefined;
+        const t = ui.printZ(&buf, "{s}{d}", .{ cv.elements.symbol(z), counts[z] }) catch continue;
+        const w = swatch + fs * 0.3 + c.igCalcTextSize(t.ptr, null, false, -1).x;
+        if (i > 0) {
+            c.igSameLine(0, fs * 0.8);
+            if (c.igGetCursorScreenPos().x + w > right) c.igNewLine();
+        }
+        c.igAlignTextToFramePadding();
+        const p = c.igGetCursorScreenPos();
+        const rgb = cv.elements.displayColor(z);
+        const centre = ui.v2(p.x + swatch / 2, p.y + c.igGetFrameHeight() / 2);
+        c.ImDrawList_AddCircleFilled(dl, centre, swatch / 2, ui.rgba(rgb[0], rgb[1], rgb[2], 1), 0);
+        c.ImDrawList_AddCircle(dl, centre, swatch / 2, outline, 0, 1, 0);
+        c.igDummy(ui.v2(swatch, c.igGetFrameHeight()));
+        c.igSameLine(0, fs * 0.3);
+        ui.text("{s}", .{t});
+    }
 }
 
 fn diffPanel(app: *App) void {

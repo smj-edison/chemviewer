@@ -196,20 +196,33 @@ pub fn overlay(app: *App) void {
     }
 }
 
-/// 1-based atom numbers drawn over every atom (View > Atom numbers, N).
-/// Labels are hidden by spheres in front of them: five sample points per
-/// label are tested against nearer spheres, and the visible fraction sets
-/// the label's opacity, so partly covered labels fade instead of popping.
-/// Drawn back to front; skipped above 5000 atoms.
-pub fn atomNumbers(app: *App) void {
-    atomNumbersInner(app) catch {};
+/// Labels drawn over atoms:
+/// - 1-based atom numbers on every atom (View > Atom numbers, N);
+/// - element symbols on atoms whose colour could be mistaken for another
+///   element present (View > Element labels; `cv.elements.ambiguousElements`).
+/// With both, a labelled atom reads "Pd12". Labels are hidden by spheres in
+/// front of them: five sample points per label are tested against nearer
+/// spheres, and the visible fraction sets the label's opacity, so partly
+/// covered labels fade instead of popping. Drawn back to front; skipped
+/// above 5000 labels.
+pub fn atomLabels(app: *App) void {
+    atomLabelsInner(app) catch {};
 }
 
-fn atomNumbersInner(app: *App) !void {
+fn atomLabelsInner(app: *App) !void {
     const pos = app.displayedPositions() orelse return;
     const f = app.doc.?.shown.?;
+    const numbers = app.show_atom_numbers;
+    var ambiguous: [cv.elements.max_z + 1]bool = @splat(false);
+    var any_ambiguous = false;
+    if (app.show_element_labels) {
+        var counts: [cv.elements.max_z + 1]u32 = @splat(0);
+        for (f.numbers) |z| counts[@min(z, cv.elements.max_z)] += 1;
+        ambiguous = cv.elements.ambiguousElements(&counts);
+        for (ambiguous) |b| any_ambiguous = any_ambiguous or b;
+    }
+    if (!numbers and !any_ambiguous) return;
     const max_labels = 5000;
-    if (pos.len > max_labels) return;
     const gpa = app.gpa;
     const proj = app.screenProjector();
     const axes = app.cameraAxes();
@@ -235,10 +248,12 @@ fn atomNumbersInner(app: *App) !void {
     const Label = struct { i: u32, depth: f32 };
     var labels: std.ArrayList(Label) = .empty;
     defer labels.deinit(gpa);
-    for (discs, 0..) |d, i| {
+    for (discs, f.numbers, 0..) |d, z, i| {
+        if (!numbers and !ambiguous[@min(z, cv.elements.max_z)]) continue;
         if (d.rpx <= 0 or d.x < 0 or d.y < 0 or d.x > proj.w or d.y > proj.h) continue;
         try labels.append(gpa, .{ .i = @intCast(i), .depth = d.z });
     }
+    if (labels.items.len > max_labels) return;
     std.mem.sort(Label, labels.items, {}, struct {
         fn farFirst(_: void, a: Label, b: Label) bool {
             return a.depth > b.depth;
@@ -249,8 +264,13 @@ fn atomNumbersInner(app: *App) !void {
     const light = app.style.theme == .light;
     for (labels.items) |l| {
         const d = discs[l.i];
-        var buf: [12]u8 = undefined;
-        const t = ui.printZ(&buf, "{d}", .{l.i + 1}) catch continue;
+        var buf: [16]u8 = undefined;
+        const z = f.numbers[l.i];
+        const sym = if (ambiguous[@min(z, cv.elements.max_z)]) cv.elements.symbol(z) else "";
+        const t = (if (numbers)
+            ui.printZ(&buf, "{s}{d}", .{ sym, l.i + 1 })
+        else
+            ui.printZ(&buf, "{s}", .{sym})) catch continue;
         const size = c.igCalcTextSize(t.ptr, null, false, -1);
         // Centre plus four points inside the label box.
         const hx = size.x * 0.35;
