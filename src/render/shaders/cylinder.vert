@@ -32,6 +32,7 @@ void main() {
         // a_end.w = outline weight: scales width here, opacity in the FS.
         radius += u_outline_k * max(depth, 0.0) * a_end.w;
     }
+    if (u_shadow_soft == 1) radius *= 1.7; // room for the feathered edge
     vec3 world = a + axis * a_vert.z + n * radius;
     vec4 vp = u_view * vec4(world, 1.0);
     v_normal = mat3(u_view) * n;

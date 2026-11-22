@@ -10,6 +10,17 @@ vec3 fogged(vec3 c, float depth) {
 
 vec3 shade(vec3 base, vec3 n, vec3 v) {
     if (u_cel == 2) return base;
+    if (u_cel == 3) {
+        // Aero: glossy plastic/glass under a bright sky light.
+        vec3 l = normalize(vec3(-0.3, 0.6, 0.75));
+        float diff = max(dot(n, l), 0.0);
+        float spec = pow(max(dot(n, normalize(l + v)), 0.0), 90.0);
+        float fres = pow(1.0 - max(dot(n, v), 0.0), 2.5);
+        vec3 c = base * (0.55 + 0.5 * diff);
+        c += base * 0.35 * smoothstep(-0.2, -0.9, n.y); // bounce light from below
+        c = mix(c, vec3(0.88, 0.97, 1.0), fres * 0.6);
+        return c + vec3(spec) * 0.9;
+    }
     // Cel: three flat bands with anti-aliased steps.
     vec3 l = normalize(vec3(0.35, 0.45, 1.0));
     float diff = max(dot(n, l), 0.0);

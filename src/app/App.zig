@@ -1462,20 +1462,26 @@ fn inspector(app: *App, timeline_h: f32) void {
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Dark", &theme, 1)) app.scene_dirty = true;
     app.style.theme = @fromBackingInt(@intCast(theme));
-    c.igSameLine(0, c.igGetFontSize() * 1.5);
     var shading: c_int = @backingInt(app.style.shading);
     if (c.igRadioButton_IntPtr("Cel", &shading, 0)) app.scene_dirty = true;
     ui.tooltip("Toon bands with outlines.");
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Flat", &shading, 1)) app.scene_dirty = true;
     ui.tooltip("Inspired by Kurzgesagt's flat illustrations: solid colours, flat drop shadows, depth shown by fading into the background.");
+    c.igSameLine(0, -1);
+    if (c.igRadioButton_IntPtr("Aero", &shading, 2)) app.scene_dirty = true;
+    ui.tooltip("Glossy, in the spirit of Frutiger Aero: glassy atoms with highlight caps, in front of a sky (or an aurora at night) with bubbles and lens flare.");
     app.style.shading = @fromBackingInt(@intCast(shading));
+    if (app.style.shading == .flat) {
+        _ = c.igCheckbox("Soft shadow + outline", &app.style.flat_pop);
+        ui.tooltip("Experiment: blurred drop shadows and a thin dark outline, so the molecule stands out more.");
+    }
     if (app.style.shading == .cel) {
         _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
     }
     _ = c.igCheckbox("Background pattern", &app.style.background_pattern);
     ui.tooltip("Pattern behind the molecule that turns with the camera.");
-    if (app.style.background_pattern) {
+    if (app.style.background_pattern and app.style.shading != .aero) {
         c.igSameLine(0, -1);
         var kind: c_int = @backingInt(app.style.backdrop);
         _ = c.igRadioButton_IntPtr("Cells", &kind, 0);
@@ -1483,6 +1489,8 @@ fn inspector(app: *App, timeline_h: f32) void {
         _ = c.igRadioButton_IntPtr("Space", &kind, 1);
         ui.tooltip("Backdrop motif, out of focus as if seen up close: cells (blobs with membranes and nuclei) or space (glowing bokeh, haze, sparkle stars).");
         app.style.backdrop = @fromBackingInt(@intCast(kind));
+    }
+    if (app.style.background_pattern) {
         _ = c.igSliderFloat("Background blur", &app.style.background_blur, 0, 2.5, "%.2f", 0);
         ui.tooltip("Depth of field: the molecule stays in focus and the backdrop blurs with distance. Zooming in blurs it more.");
     }

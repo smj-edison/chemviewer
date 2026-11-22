@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, Vulkan device, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--atom-numbers]
 //!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
 //!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -26,6 +26,8 @@ const Args = struct {
     no_ui: bool = false,
     dark: bool = false,
     flat: bool = false,
+    aero: bool = false,
+    flat_pop: bool = false,
     no_bg_pattern: bool = false,
     bg_blur: ?f32 = null,
     backdrop: ?[]const u8 = null,
@@ -126,6 +128,10 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.atom_numbers = true;
         } else if (eql(u8, arg, "--dark")) {
             a.dark = true;
+        } else if (eql(u8, arg, "--aero")) {
+            a.aero = true;
+        } else if (eql(u8, arg, "--flat-pop")) {
+            a.flat_pop = true;
         } else if (eql(u8, arg, "--flat")) {
             a.flat = true;
         } else if (eql(u8, arg, "--no-bg-pattern")) {
@@ -155,7 +161,7 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
             \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -185,7 +191,9 @@ pub fn main(init: std.process.Init) !void {
     style.*.WindowRounding = 4;
     style.*.FrameRounding = 3;
     var ui_scale: UiScale = .{ .base = style.* };
-    var applied_theme: ?@import("render/Renderer.zig").Theme = null;
+    // ImGui colours follow the theme, and aero has its own glassy set.
+    const ThemeKey = struct { theme: @import("render/Renderer.zig").Theme, aero: bool };
+    var applied_theme: ?ThemeKey = null;
     if (!c.ImGui_ImplSDL3_InitForVulkan(window)) return error.ImGuiInit;
     defer c.ImGui_ImplSDL3_Shutdown();
     if (!c.cvImGuiVulkanInit(&.{
@@ -209,6 +217,8 @@ pub fn main(init: std.process.Init) !void {
     if (args.ui_scale) |u| app.ui_scale = u;
     if (args.dark) app.style.theme = .dark;
     if (args.flat) app.style.shading = .flat;
+    if (args.aero) app.style.shading = .aero;
+    if (args.flat_pop) app.style.flat_pop = true;
     if (args.no_bg_pattern) app.style.background_pattern = false;
     if (args.bg_blur) |b| app.style.background_blur = b;
     if (args.backdrop) |b| app.style.backdrop = if (std.mem.eql(u8, b, "space")) .space else .cells;
@@ -228,9 +238,10 @@ pub fn main(init: std.process.Init) !void {
 
         app.update();
         ui_scale.apply(window, app.ui_scale);
-        if (applied_theme != app.style.theme) {
-            applied_theme = app.style.theme;
-            switch (app.style.theme) {
+        const want_theme: ThemeKey = .{ .theme = app.style.theme, .aero = app.style.shading == .aero };
+        if (applied_theme == null or applied_theme.?.theme != want_theme.theme or applied_theme.?.aero != want_theme.aero) {
+            applied_theme = want_theme;
+            if (want_theme.aero) aeroImGuiColors(app.style.theme == .dark) else switch (app.style.theme) {
                 .light => lightImGuiColors(),
                 .dark => c.igStyleColorsDark(null),
             }
@@ -502,4 +513,68 @@ fn lightImGuiColors() void {
     set(col, c.ImGuiCol_PlotHistogram, 0xFF2E7E, 1);
     set(col, c.ImGuiCol_Text, 0x2A1F66, 1);
     set(col, c.ImGuiCol_TextDisabled, 0x8A7FB8, 1);
+}
+
+/// Aero ImGui colours: frosted sky-glass panels with aqua buttons (light),
+/// or deep teal glass with aurora-green accents (dark).
+fn aeroImGuiColors(dark: bool) void {
+    if (dark) c.igStyleColorsDark(null) else c.igStyleColorsLight(null);
+    const col = &c.igGetStyle().*.Colors;
+    const set = struct {
+        fn f(cs: anytype, i: c_int, hex: u24, a: f32) void {
+            cs[@intCast(i)] = .{
+                .x = @as(f32, @floatFromInt((hex >> 16) & 0xFF)) / 255.0,
+                .y = @as(f32, @floatFromInt((hex >> 8) & 0xFF)) / 255.0,
+                .z = @as(f32, @floatFromInt(hex & 0xFF)) / 255.0,
+                .w = a,
+            };
+        }
+    }.f;
+    if (!dark) {
+        set(col, c.ImGuiCol_WindowBg, 0xEAF6FF, 0.78);
+        set(col, c.ImGuiCol_PopupBg, 0xF2FAFF, 0.95);
+        set(col, c.ImGuiCol_MenuBarBg, 0xD4EDFF, 0.9);
+        set(col, c.ImGuiCol_TitleBg, 0xBFE3FA, 0.9);
+        set(col, c.ImGuiCol_TitleBgActive, 0x7CC4F0, 0.95);
+        set(col, c.ImGuiCol_Border, 0xFFFFFF, 0.7);
+        set(col, c.ImGuiCol_FrameBg, 0xFFFFFF, 0.75);
+        set(col, c.ImGuiCol_FrameBgHovered, 0xDDF2FF, 0.9);
+        set(col, c.ImGuiCol_FrameBgActive, 0xBDE6FF, 1);
+        set(col, c.ImGuiCol_Button, 0xA9DCFA, 0.9);
+        set(col, c.ImGuiCol_ButtonHovered, 0x7FCBF7, 1);
+        set(col, c.ImGuiCol_ButtonActive, 0x3FA9EE, 1);
+        set(col, c.ImGuiCol_Header, 0xA9DCFA, 0.8);
+        set(col, c.ImGuiCol_HeaderHovered, 0x7FCBF7, 0.9);
+        set(col, c.ImGuiCol_HeaderActive, 0x3FA9EE, 1);
+        set(col, c.ImGuiCol_CheckMark, 0x1A7FD4, 1);
+        set(col, c.ImGuiCol_SliderGrab, 0x2E9BEA, 1);
+        set(col, c.ImGuiCol_SliderGrabActive, 0x58B84A, 1);
+        set(col, c.ImGuiCol_PlotLines, 0x1A7FD4, 1);
+        set(col, c.ImGuiCol_PlotHistogram, 0x58B84A, 1);
+        set(col, c.ImGuiCol_Text, 0x0B3A5B, 1);
+        set(col, c.ImGuiCol_TextDisabled, 0x5A85A3, 1);
+    } else {
+        set(col, c.ImGuiCol_WindowBg, 0x06222C, 0.80);
+        set(col, c.ImGuiCol_PopupBg, 0x06222C, 0.95);
+        set(col, c.ImGuiCol_MenuBarBg, 0x041820, 0.9);
+        set(col, c.ImGuiCol_TitleBg, 0x08303C, 0.9);
+        set(col, c.ImGuiCol_TitleBgActive, 0x0F5A66, 0.95);
+        set(col, c.ImGuiCol_Border, 0x3FD9C0, 0.35);
+        set(col, c.ImGuiCol_FrameBg, 0x0C3A46, 0.8);
+        set(col, c.ImGuiCol_FrameBgHovered, 0x135061, 0.9);
+        set(col, c.ImGuiCol_FrameBgActive, 0x1A6A7A, 1);
+        set(col, c.ImGuiCol_Button, 0x135A6A, 0.9);
+        set(col, c.ImGuiCol_ButtonHovered, 0x1C7F86, 1);
+        set(col, c.ImGuiCol_ButtonActive, 0x2AA88F, 1);
+        set(col, c.ImGuiCol_Header, 0x135A6A, 0.8);
+        set(col, c.ImGuiCol_HeaderHovered, 0x1C7F86, 0.9);
+        set(col, c.ImGuiCol_HeaderActive, 0x2AA88F, 1);
+        set(col, c.ImGuiCol_CheckMark, 0x5CF2B0, 1);
+        set(col, c.ImGuiCol_SliderGrab, 0x46D6C8, 1);
+        set(col, c.ImGuiCol_SliderGrabActive, 0x7CFF9E, 1);
+        set(col, c.ImGuiCol_PlotLines, 0x46D6C8, 1);
+        set(col, c.ImGuiCol_PlotHistogram, 0x7CFF9E, 1);
+        set(col, c.ImGuiCol_Text, 0xE2FBFF, 1);
+        set(col, c.ImGuiCol_TextDisabled, 0x7FA9B3, 1);
+    }
 }
