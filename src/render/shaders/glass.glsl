@@ -2,18 +2,24 @@
 // that refracts the backdrop behind them, with a bright specular rim on the
 // side facing the light and a softer caustic glow on the far side.
 //
-// Only the backdrop cache (binding 1, see Renderer.updateBackground) is seen
-// through the glass, not other atoms or bonds: the scene is drawn in one
-// pass, so there is no copy of it to sample. With the pattern off the cache
-// holds the plain background.
+// Atoms (u_glass_scene = 1) are translucent: they refract a copy of the
+// scene drawn so far (binding 2), which holds the backdrop, the bonds and
+// every glass atom behind them (Renderer.GlassLayers draws them in layers
+// with a fresh copy before each). Bonds are drawn before any atom, so they
+// see only the backdrop cache (binding 1; with the pattern off it holds the
+// plain background).
 
 layout(set = 0, binding = 1) uniform sampler2D u_backdrop;
+layout(set = 0, binding = 2) uniform sampler2D u_scene;
 
-// Backdrop colour seen along view-space point `q` (projected to the screen).
+// What lies behind, seen along view-space point `q` (projected to the
+// screen). The scene copy has row 0 at the top (the scene viewport is
+// flipped); the backdrop cache has it at the bottom.
 vec3 backdropAt(vec3 q) {
     vec4 c = u_proj * vec4(q, 1.0);
-    vec2 uv = clamp(c.xy / c.w * 0.5 + 0.5, 0.0, 1.0);
-    return texture(u_backdrop, uv).rgb;
+    vec2 ndc = c.xy / c.w;
+    if (u_glass_scene == 1) return texture(u_scene, clamp(vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y), 0.0, 1.0)).rgb;
+    return texture(u_backdrop, clamp(ndc * 0.5 + 0.5, 0.0, 1.0)).rgb;
 }
 
 // `base`: tint (element or bond colour); `n`: view-space normal; `p`:
@@ -25,7 +31,7 @@ vec3 glass(vec3 base, vec3 n, vec3 p, float thick, float gloss) {
     // Refraction: bend the ray at the surface and follow it a little past
     // the object, so the backdrop is magnified and flipped like a lens. One
     // index per channel gives a hint of dispersion at the edges.
-    float reach = thick * 2.5 + 0.6;
+    float reach = thick * 2.0 + 0.4;
     vec3 col;
     col.r = backdropAt(p + refract(d, n, 1.0 / 1.40) * reach).r;
     col.g = backdropAt(p + refract(d, n, 1.0 / 1.46) * reach).g;
@@ -34,11 +40,12 @@ vec3 glass(vec3 base, vec3 n, vec3 p, float thick, float gloss) {
     col = mix(col, backdropAt(p + refract(d, n, 1.0 / 1.46) * reach * 1.4), 0.3);
     float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
 
-    // Coloured glass absorbs more where it is thicker (centre of the disc).
-    // It also scatters some of its own colour back, more over dark
-    // backdrops, where absorption alone would leave it black.
-    vec3 absorb = mix(vec3(1.0), base, 0.25 + 0.45 * ndv);
-    col = mix(col * absorb, base, mix(0.55, 0.22, lum));
+    // Coloured glass filters what is behind it, more where it is thicker
+    // (centre of the disc), so tints stack where atoms overlap. It also
+    // scatters some of its own colour back, more over dark backdrops, where
+    // filtering alone would leave it black.
+    vec3 absorb = mix(vec3(1.0), base, 0.45 + 0.4 * ndv);
+    col = mix(col * absorb, base, mix(0.35, 0.08, lum));
 
     // Near the silhouette the ray bends far off and the glass looks darker
     // (total internal reflection): a soft band just inside the rim.

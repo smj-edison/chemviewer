@@ -3,7 +3,9 @@
 //! Per frame: `beginFrame` waits for the frame slot, acquires a swapchain
 //! image and starts its command buffer; the renderer records its passes
 //! (`beginScenePass` renders 4x MSAA into shared targets and resolves into
-//! the swapchain image); `beginUiPass` draws on top of the resolved image;
+//! the swapchain image; `snapshotScene` pauses it to copy what is drawn so
+//! far into `scene_copy` for shaders to sample); `beginUiPass` draws on top
+//! of the resolved image;
 //! `endFrame` submits and presents, optionally copying the image back for a
 //! screenshot first.
 //!
@@ -53,6 +55,12 @@ render_done: []vk.Semaphore = &.{},
 depth_format: vk.Format,
 msaa_color: Image = .{},
 depth: Image = .{},
+/// Single-sampled copy of the scene so far, sampled by glass atoms (see
+/// `snapshotScene`). Layout between uses: shader_read_only_optimal, once
+/// the renderer has initialised it (`scene_copy_fresh`).
+scene_copy: Image = .{},
+/// Set when `scene_copy` is (re)created, still in the undefined layout.
+scene_copy_fresh: bool = false,
 
 command_pool: vk.CommandPool,
 frames: [frames_in_flight]FrameSlot = undefined,
@@ -348,14 +356,19 @@ fn createSwapchain(gpu: *Gpu) !void {
         sem.* = try gpu.dev.createSemaphore(&.{}, null);
     }
 
+    // Not transient: `snapshotScene` stores and reloads them mid-frame.
     gpu.msaa_color = try gpu.createImage(extent.width, extent.height, gpu.surface_format.format, .{
         .color_attachment = true,
-        .transient_attachment = true,
+        .transfer_src = true,
     }, samples, .{ .color = true });
     gpu.depth = try gpu.createImage(extent.width, extent.height, gpu.depth_format, .{
         .depth_stencil_attachment = true,
-        .transient_attachment = true,
     }, samples, .{ .depth = true });
+    gpu.scene_copy = try gpu.createImage(extent.width, extent.height, gpu.surface_format.format, .{
+        .sampled = true,
+        .transfer_dst = true,
+    }, .{ .@"1" = true }, .{ .color = true });
+    gpu.scene_copy_fresh = true;
 }
 
 fn destroySwapchainResources(gpu: *Gpu) void {
@@ -372,6 +385,7 @@ fn destroySwapchainResources(gpu: *Gpu) void {
     gpu.images = &.{};
     gpu.msaa_color.deinit(gpu);
     gpu.depth.deinit(gpu);
+    gpu.scene_copy.deinit(gpu);
 }
 
 fn recreateSwapchain(gpu: *Gpu) !void {
@@ -440,17 +454,24 @@ pub fn beginScenePass(gpu: *Gpu, frame: Frame, clear: [3]f32) void {
     const image = gpu.images[frame.image_index];
     gpu.barriers(cmd, &.{
         imageBarrier(image, .{ .color = true }, .undefined, .color_attachment_optimal, .{ .color_attachment_output = true }, .{}, .{ .color_attachment_output = true }, .{ .color_attachment_write = true }),
-        imageBarrier(gpu.msaa_color.image, .{ .color = true }, .undefined, .color_attachment_optimal, .{ .color_attachment_output = true }, .{}, .{ .color_attachment_output = true }, .{ .color_attachment_write = true }),
+        imageBarrier(gpu.msaa_color.image, .{ .color = true }, .undefined, .color_attachment_optimal, .{ .color_attachment_output = true, .resolve = true }, .{}, .{ .color_attachment_output = true }, .{ .color_attachment_write = true }),
         imageBarrier(gpu.depth.image, .{ .depth = true }, .undefined, .depth_attachment_optimal, .{ .late_fragment_tests = true }, .{ .depth_stencil_attachment_write = true }, .{ .early_fragment_tests = true, .late_fragment_tests = true }, .{ .depth_stencil_attachment_read = true, .depth_stencil_attachment_write = true }),
     });
+    gpu.beginSceneRendering(frame, .clear, clear);
+}
+
+/// The scene's render pass instance. Color and depth are stored so that
+/// `snapshotScene` can resume with `.load`; every instance resolves into
+/// the swapchain image (the last one wins).
+fn beginSceneRendering(gpu: *Gpu, frame: Frame, load: vk.AttachmentLoadOp, clear: [3]f32) void {
     const color: vk.RenderingAttachmentInfo = .{
         .image_view = gpu.msaa_color.view,
         .image_layout = .color_attachment_optimal,
         .resolve_mode = .{ .average = true },
         .resolve_image_view = gpu.views[frame.image_index],
         .resolve_image_layout = .color_attachment_optimal,
-        .load_op = .clear,
-        .store_op = .dont_care,
+        .load_op = load,
+        .store_op = .store,
         .clear_value = .{ .color = .{ .float_32 = .{ clear[0], clear[1], clear[2], 1 } } },
     };
     const depth: vk.RenderingAttachmentInfo = .{
@@ -458,11 +479,11 @@ pub fn beginScenePass(gpu: *Gpu, frame: Frame, clear: [3]f32) void {
         .image_layout = .depth_attachment_optimal,
         .resolve_mode = .{},
         .resolve_image_layout = .undefined,
-        .load_op = .clear,
-        .store_op = .dont_care,
+        .load_op = load,
+        .store_op = .store,
         .clear_value = .{ .depth_stencil = .{ .depth = 1, .stencil = 0 } },
     };
-    cmd.beginRendering(&.{
+    frame.cmd.beginRendering(&.{
         .render_area = .{ .offset = .{ .x = 0, .y = 0 }, .extent = frame.extent },
         .layer_count = 1,
         .view_mask = 0,
@@ -470,6 +491,38 @@ pub fn beginScenePass(gpu: *Gpu, frame: Frame, clear: [3]f32) void {
         .p_color_attachments = @ptrCast(&color),
         .p_depth_attachment = &depth,
     });
+}
+
+/// Pauses the scene pass, resolves what has been drawn so far into
+/// `scene_copy` (left in shader_read_only_optimal for fragment shaders),
+/// and resumes with colour and depth intact. Bound pipelines, sets and
+/// dynamic state carry over (they belong to the command buffer).
+pub fn snapshotScene(gpu: *Gpu, frame: Frame) void {
+    const cmd = frame.cmd;
+    cmd.endRendering();
+    const msaa = gpu.msaa_color.image;
+    const copy = gpu.scene_copy.image;
+    gpu.barriers(cmd, &.{
+        imageBarrier(msaa, .{ .color = true }, .color_attachment_optimal, .transfer_src_optimal, .{ .color_attachment_output = true }, .{ .color_attachment_write = true }, .{ .resolve = true }, .{ .transfer_read = true }),
+        // Earlier layers (and frames) sample it: wait for them.
+        imageBarrier(copy, .{ .color = true }, .undefined, .transfer_dst_optimal, .{ .fragment_shader = true }, .{}, .{ .resolve = true }, .{ .transfer_write = true }),
+    });
+    const sub: vk.ImageSubresourceLayers = .{ .aspect_mask = .{ .color = true }, .mip_level = 0, .base_array_layer = 0, .layer_count = 1 };
+    cmd.resolveImage(msaa, .transfer_src_optimal, copy, .transfer_dst_optimal, &.{.{
+        .src_subresource = sub,
+        .src_offset = .{ .x = 0, .y = 0, .z = 0 },
+        .dst_subresource = sub,
+        .dst_offset = .{ .x = 0, .y = 0, .z = 0 },
+        .extent = .{ .width = frame.extent.width, .height = frame.extent.height, .depth = 1 },
+    }});
+    gpu.barriers(cmd, &.{
+        imageBarrier(msaa, .{ .color = true }, .transfer_src_optimal, .color_attachment_optimal, .{ .resolve = true }, .{}, .{ .color_attachment_output = true }, .{ .color_attachment_read = true, .color_attachment_write = true }),
+        imageBarrier(copy, .{ .color = true }, .transfer_dst_optimal, .shader_read_only_optimal, .{ .resolve = true }, .{ .transfer_write = true }, .{ .fragment_shader = true }, .{ .shader_sampled_read = true }),
+        imageBarrier(gpu.depth.image, .{ .depth = true }, .depth_attachment_optimal, .depth_attachment_optimal, .{ .late_fragment_tests = true }, .{ .depth_stencil_attachment_write = true }, .{ .early_fragment_tests = true, .late_fragment_tests = true }, .{ .depth_stencil_attachment_read = true, .depth_stencil_attachment_write = true }),
+        // Every instance resolves into it.
+        imageBarrier(gpu.images[frame.image_index], .{ .color = true }, .color_attachment_optimal, .color_attachment_optimal, .{ .color_attachment_output = true }, .{ .color_attachment_write = true }, .{ .color_attachment_output = true }, .{ .color_attachment_write = true }),
+    });
+    gpu.beginSceneRendering(frame, .load, .{ 0, 0, 0 });
 }
 
 pub fn endScenePass(gpu: *Gpu, frame: Frame) void {

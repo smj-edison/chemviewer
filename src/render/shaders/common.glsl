@@ -51,6 +51,7 @@ layout(push_constant) uniform Draw {
     float u_shadow_pass;
     float u_outline_k;
     int u_outline_pass;
+    int u_glass_scene;   // glass.glsl: refract the scene copy, not the backdrop
 };
 
 vec4 toVulkanDepth(vec4 clip) {
