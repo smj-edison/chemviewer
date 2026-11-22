@@ -61,6 +61,8 @@ depth: Image = .{},
 scene_copy: Image = .{},
 /// Set when `scene_copy` is (re)created, still in the undefined layout.
 scene_copy_fresh: bool = false,
+/// The current scene pass stores its targets (see `beginScenePass`).
+scene_resumable: bool = false,
 
 command_pool: vk.CommandPool,
 frames: [frames_in_flight]FrameSlot = undefined,
@@ -448,8 +450,10 @@ pub fn beginFrame(gpu: *Gpu) !?Frame {
 }
 
 /// Begins the 4x MSAA scene pass, cleared to `clear`; it resolves into the
-/// swapchain image when it ends.
-pub fn beginScenePass(gpu: *Gpu, frame: Frame, clear: [3]f32) void {
+/// swapchain image when it ends. `resumable` stores the MSAA colour and
+/// depth so that `snapshotScene` can pause and resume it; otherwise they
+/// are discarded after the resolve (saving bandwidth).
+pub fn beginScenePass(gpu: *Gpu, frame: Frame, clear: [3]f32, resumable: bool) void {
     const cmd = frame.cmd;
     const image = gpu.images[frame.image_index];
     gpu.barriers(cmd, &.{
@@ -457,13 +461,15 @@ pub fn beginScenePass(gpu: *Gpu, frame: Frame, clear: [3]f32) void {
         imageBarrier(gpu.msaa_color.image, .{ .color = true }, .undefined, .color_attachment_optimal, .{ .color_attachment_output = true, .resolve = true }, .{}, .{ .color_attachment_output = true }, .{ .color_attachment_write = true }),
         imageBarrier(gpu.depth.image, .{ .depth = true }, .undefined, .depth_attachment_optimal, .{ .late_fragment_tests = true }, .{ .depth_stencil_attachment_write = true }, .{ .early_fragment_tests = true, .late_fragment_tests = true }, .{ .depth_stencil_attachment_read = true, .depth_stencil_attachment_write = true }),
     });
+    gpu.scene_resumable = resumable;
     gpu.beginSceneRendering(frame, .clear, clear);
 }
 
-/// The scene's render pass instance. Color and depth are stored so that
-/// `snapshotScene` can resume with `.load`; every instance resolves into
-/// the swapchain image (the last one wins).
+/// The scene's render pass instance. When resumable, colour and depth are
+/// stored so that `snapshotScene` can resume with `.load`; every instance
+/// resolves into the swapchain image (the last one wins).
 fn beginSceneRendering(gpu: *Gpu, frame: Frame, load: vk.AttachmentLoadOp, clear: [3]f32) void {
+    const store: vk.AttachmentStoreOp = if (gpu.scene_resumable) .store else .dont_care;
     const color: vk.RenderingAttachmentInfo = .{
         .image_view = gpu.msaa_color.view,
         .image_layout = .color_attachment_optimal,
@@ -471,7 +477,7 @@ fn beginSceneRendering(gpu: *Gpu, frame: Frame, load: vk.AttachmentLoadOp, clear
         .resolve_image_view = gpu.views[frame.image_index],
         .resolve_image_layout = .color_attachment_optimal,
         .load_op = load,
-        .store_op = .store,
+        .store_op = store,
         .clear_value = .{ .color = .{ .float_32 = .{ clear[0], clear[1], clear[2], 1 } } },
     };
     const depth: vk.RenderingAttachmentInfo = .{
@@ -480,7 +486,7 @@ fn beginSceneRendering(gpu: *Gpu, frame: Frame, load: vk.AttachmentLoadOp, clear
         .resolve_mode = .{},
         .resolve_image_layout = .undefined,
         .load_op = load,
-        .store_op = .store,
+        .store_op = store,
         .clear_value = .{ .depth_stencil = .{ .depth = 1, .stencil = 0 } },
     };
     frame.cmd.beginRendering(&.{
@@ -498,6 +504,7 @@ fn beginSceneRendering(gpu: *Gpu, frame: Frame, load: vk.AttachmentLoadOp, clear
 /// and resumes with colour and depth intact. Bound pipelines, sets and
 /// dynamic state carry over (they belong to the command buffer).
 pub fn snapshotScene(gpu: *Gpu, frame: Frame) void {
+    std.debug.assert(gpu.scene_resumable);
     const cmd = frame.cmd;
     cmd.endRendering();
     const msaa = gpu.msaa_color.image;

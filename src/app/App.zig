@@ -1516,7 +1516,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     ui.tooltip("Inspired by Kurzgesagt's flat illustrations: solid colours, flat drop shadows, depth shown by fading into the background.");
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Glass", &shading, 2)) app.scene_dirty = true;
-    ui.tooltip("Experimental: liquid glass. Tinted glass atoms that refract the background pattern, with bright rims.");
+    ui.tooltip("Experimental: liquid glass. Translucent tinted glass atoms that refract whatever is behind them, other atoms included, with bright rims.");
     app.style.shading = @fromBackingInt(@intCast(shading));
     if (app.style.shading == .cel) {
         _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);

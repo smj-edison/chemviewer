@@ -125,8 +125,9 @@ pub const Shading = enum(c_int) {
     /// highlight dots, no outlines, flat drop shadows, depth shown by fading
     /// toward the background, chunkier atoms.
     flat,
-    /// Experimental: inspired by Apple's "Liquid Glass". Tinted glass that
-    /// refracts the backdrop, with bright specular rims; no outlines.
+    /// Experimental: inspired by Apple's "Liquid Glass". Translucent tinted
+    /// glass atoms that refract everything behind them (other atoms, bonds,
+    /// the backdrop; see `GlassLayers`), with bright rims; no outlines.
     glass,
 
     /// Shader lighting mode (`u_cel` in shaders/common.glsl).
@@ -970,7 +971,7 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
     // in every style.
     try r.updateBackground(frame, p, set);
 
-    gpu.beginScenePass(frame, p.style.theme.background());
+    gpu.beginScenePass(frame, p.style.theme.background(), glass);
     const w: f32 = @floatFromInt(frame.extent.width);
     const h: f32 = @floatFromInt(frame.extent.height);
     // Flipped (negative height) so NDC y points up, as in OpenGL.
