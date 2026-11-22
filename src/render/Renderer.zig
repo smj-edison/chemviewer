@@ -224,7 +224,11 @@ sphere_prog: gl.Uint,
 cylinder_prog: gl.Uint,
 line_prog: gl.Uint,
 background_prog: gl.Uint,
+background_blit_prog: gl.Uint,
 background_vao: gl.Uint = 0,
+/// The backdrop, rendered at reduced resolution and only when its inputs
+/// change (see `drawBackground`).
+bg_cache: BackgroundCache = .{},
 sphere_vao: gl.Uint = 0,
 cylinder_vao: gl.Uint = 0,
 line_vao: gl.Uint = 0,
@@ -260,6 +264,7 @@ pub fn init(gpa: Allocator) !Renderer {
         .cylinder_prog = try gl.compileProgram(shaders.cylinder_vs, shaders.cylinder_fs),
         .line_prog = try gl.compileProgram(shaders.line_vs, shaders.line_fs),
         .background_prog = try gl.compileProgram(shaders.background_vs, shaders.background_fs),
+        .background_blit_prog = try gl.compileProgram(shaders.background_vs, shaders.background_blit_fs),
     };
     const f = &gl.f;
     var vaos: [4]gl.Uint = undefined;
@@ -374,6 +379,8 @@ pub fn deinit(r: *Renderer) void {
     f.DeleteProgram(r.cylinder_prog);
     f.DeleteProgram(r.line_prog);
     f.DeleteProgram(r.background_prog);
+    f.DeleteProgram(r.background_blit_prog);
+    r.bg_cache.deinit();
     r.atoms.deinit(r.gpa);
     r.bonds.deinit(r.gpa);
     r.translucent.deinit(r.gpa);
@@ -672,7 +679,112 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     f.BindVertexArray(0);
 }
 
+/// The backdrop is soft and depends only on the camera and style, so it is
+/// rendered into a texture at 1/`downscale` resolution, and only when one of
+/// its inputs changes: playback, hovering and idle redraws just upsample it.
+const BackgroundCache = struct {
+    const downscale = 2;
+
+    fbo: gl.Uint = 0,
+    tex: gl.Uint = 0,
+    width: gl.Sizei = 0,
+    height: gl.Sizei = 0,
+    /// Inputs of the last render; null forces a re-render.
+    key: ?Key = null,
+
+    const Key = struct {
+        view: [16]f32,
+        width: gl.Sizei,
+        height: gl.Sizei,
+        fovy: f32,
+        pixel_density: f32,
+        anchor: [3]f32,
+        radius: f32,
+        theme: Theme,
+        shading: Shading,
+        backdrop: BackdropKind,
+        blur: f32,
+    };
+
+    fn deinit(c: *BackgroundCache) void {
+        if (c.fbo != 0) gl.f.DeleteFramebuffers(1, &.{c.fbo});
+        if (c.tex != 0) gl.f.DeleteTextures(1, &.{c.tex});
+        c.* = .{};
+    }
+
+    /// (Re)creates the target texture for a framebuffer of `w` x `h`.
+    fn resize(c: *BackgroundCache, w: gl.Sizei, h: gl.Sizei) void {
+        const tw = @max(@divFloor(w + downscale - 1, downscale), 1);
+        const th = @max(@divFloor(h + downscale - 1, downscale), 1);
+        if (c.tex != 0 and tw == c.width and th == c.height) return;
+        const f = &gl.f;
+        if (c.tex == 0) {
+            var t: [1]gl.Uint = undefined;
+            f.GenTextures(1, &t);
+            c.tex = t[0];
+            var fb: [1]gl.Uint = undefined;
+            f.GenFramebuffers(1, &fb);
+            c.fbo = fb[0];
+        }
+        f.BindTexture(gl.TEXTURE_2D, c.tex);
+        // Half floats keep the soft gradients smooth until the dithered blit.
+        f.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, tw, th, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        f.BindTexture(gl.TEXTURE_2D, 0);
+        c.width = tw;
+        c.height = th;
+        c.key = null;
+    }
+};
+
 fn drawBackground(r: *Renderer, p: DrawParams) void {
+    const f = &gl.f;
+    const cache = &r.bg_cache;
+    cache.resize(p.width, p.height);
+    const key: BackgroundCache.Key = .{
+        .view = @bitCast(p.view.m),
+        .width = p.width,
+        .height = p.height,
+        .fovy = p.fovy,
+        .pixel_density = p.pixel_density,
+        .anchor = p.bg_anchor,
+        .radius = p.bg_radius,
+        .theme = p.style.theme,
+        .shading = p.style.shading,
+        .backdrop = p.style.backdrop,
+        .blur = p.style.background_blur,
+    };
+    f.Disable(gl.DEPTH_TEST);
+    f.DepthMask(gl.FALSE);
+    f.BindVertexArray(r.background_vao);
+    if (cache.key == null or !std.meta.eql(cache.key.?, key)) {
+        cache.key = key;
+        var prev_fbo: gl.Int = 0;
+        f.GetIntegerv(gl.DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
+        f.BindFramebuffer(gl.FRAMEBUFFER, cache.fbo);
+        f.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, cache.tex, 0);
+        f.Viewport(0, 0, cache.width, cache.height);
+        r.renderBackdrop(p, @as(f32, @floatFromInt(cache.height)) / @as(f32, @floatFromInt(@max(p.height, 1))));
+        f.BindFramebuffer(gl.FRAMEBUFFER, @intCast(prev_fbo));
+        f.Viewport(0, 0, p.width, p.height);
+    }
+    const prog = r.background_blit_prog;
+    f.UseProgram(prog);
+    f.ActiveTexture(gl.TEXTURE0);
+    f.BindTexture(gl.TEXTURE_2D, cache.tex);
+    f.Uniform1i(f.GetUniformLocation(prog, "u_tex"), 0);
+    f.DrawArrays(gl.TRIANGLES, 0, 3);
+    f.BindTexture(gl.TEXTURE_2D, 0);
+    f.DepthMask(gl.TRUE);
+    f.Enable(gl.DEPTH_TEST);
+}
+
+/// Draws the backdrop pattern into the bound target, whose height is `res`
+/// times the framebuffer's.
+fn renderBackdrop(r: *Renderer, p: DrawParams, res: f32) void {
     const f = &gl.f;
     const prog = r.background_prog;
     f.UseProgram(prog);
@@ -680,11 +792,13 @@ fn drawBackground(r: *Renderer, p: DrawParams) void {
     const t = @tan(p.fovy / 2);
     const aspect = @as(f32, @floatFromInt(p.width)) / @as(f32, @floatFromInt(@max(p.height, 1)));
     f.Uniform2f(f.GetUniformLocation(prog, "u_tan"), t * aspect, t);
-    f.Uniform1f(f.GetUniformLocation(prog, "u_px"), p.world_per_px);
+    // Target pixels are 1/res framebuffer pixels: anti-aliasing widens with
+    // them, while the lens blur keeps the same size on screen.
+    f.Uniform1f(f.GetUniformLocation(prog, "u_px"), p.world_per_px / res);
     f.Uniform3f(f.GetUniformLocation(prog, "u_anchor"), p.bg_anchor[0], p.bg_anchor[1], p.bg_anchor[2]);
     f.Uniform1f(f.GetUniformLocation(prog, "u_radius"), p.bg_radius);
-    // Circle of confusion at infinity, in framebuffer pixels (~36 logical px).
-    f.Uniform1f(f.GetUniformLocation(prog, "u_coc_px"), 36 * p.pixel_density * p.style.background_blur);
+    // Circle of confusion at infinity, in target pixels (~36 logical px).
+    f.Uniform1f(f.GetUniformLocation(prog, "u_coc_px"), 36 * p.pixel_density * p.style.background_blur * res);
     const mode: c_int = if (p.style.shading != .flat) 1 else switch (p.style.backdrop) {
         .cells => 2,
         .space => 3,
@@ -696,12 +810,7 @@ fn drawBackground(r: *Renderer, p: DrawParams) void {
     inline for (.{ "u_ink", "u_deep", "u_light", "u_glow_a", "u_glow_b" }, .{ bd.ink, bd.deep, bd.light, bd.glow_a, bd.glow_b }) |name, col| {
         f.Uniform3f(f.GetUniformLocation(prog, name), col[0], col[1], col[2]);
     }
-    f.Disable(gl.DEPTH_TEST);
-    f.DepthMask(gl.FALSE);
-    f.BindVertexArray(r.background_vao);
     f.DrawArrays(gl.TRIANGLES, 0, 3);
-    f.DepthMask(gl.TRUE);
-    f.Enable(gl.DEPTH_TEST);
 }
 
 /// Flat style: every opaque atom and bond as a flat silhouette, offset down

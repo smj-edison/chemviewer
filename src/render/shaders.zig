@@ -340,6 +340,7 @@ pub const background_fs =
     \\        float r = mix(rad.x, rad.y, fract(h.w * 17.0 / density));
     \\        aa = min(aa, 0.7 - r); // stay inside the 2x2x2 search
     \\        float d = length(p - c);
+    \\        if (d >= r + max(0.11 * r, aa) + aa) continue; // out of reach: skip the shading
     \\        float a = ring == 1
     \\            ? 1.0 - smoothstep(max(0.11 * r, aa) - aa, max(0.11 * r, aa) + aa, abs(d - r))
     \\            : 1.0 - smoothstep(r - aa, r + aa, d);
@@ -361,6 +362,8 @@ pub const background_fs =
     \\        float r = mix(rad.x, rad.y, fract(h.w * 17.0 / density));
     \\        float e = min(blur + aa / r, 0.7 / r - 1.0); // stay inside the 2x2x2 search
     \\        float u = length(p - c) / r;
+    \\        // Out of reach of the body and of the (off-centre, blurred) nucleus.
+    \\        if (u >= max(1.0 + e, 0.75 + 0.9 * e)) continue;
     \\        float body = 1.0 - smoothstep(1.0 - e, 1.0 + e, u);
     \\        float rim = body * (1.0 - smoothstep(0.0, 0.08 + e, abs(u - 0.90)));
     \\        vec3 nc = c + (fract(h.yzx * 13.0) - 0.5) * 0.45 * r;
@@ -389,6 +392,7 @@ pub const background_fs =
     \\        float r = mix(rad.x, rad.y, fract(h.w * 17.0 / density));
     \\        float e = min(blur + aa / r, 0.7 / r - 1.0); // stay inside the 2x2x2 search
     \\        float u = length(p - c) / r;
+    \\        if (u >= 1.0 + e) continue;
     \\        float a = (1.0 - smoothstep(1.0 - e, 1.0 + e, u)) * (0.7 + 0.3 * smoothstep(0.3, 0.95, u));
     \\        float k = fract(h.x * 5.0 + h.y * 3.0);
     \\        vec3 tone = k < 0.4 ? u_glow_a : k < 0.8 ? u_glow_b : u_light;
@@ -468,8 +472,22 @@ pub const background_fs =
     \\        float s2 = 22.0;
     \\        col = dots(col, shellDir(5.0) * s2, 0.30, vec2(0.05, 0.09), dof(5.0, s2, 0.0), 0.40, 17.0, 0, u_ink, u_light);
     \\    }
-    \\    // Dither (about +/-0.5/255) so soft gradients do not band.
-    \\    float dn = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    \\    o_color = vec4(col, 1.0);
+    \\}
+;
+
+/// Upsamples the cached backdrop (`background_fs`, rendered at reduced
+/// resolution into a half-float texture) to the framebuffer.
+pub const background_blit_fs =
+    \\#version 330 core
+    \\in vec2 v_ndc;
+    \\out vec4 o_color;
+    \\uniform sampler2D u_tex;
+    \\void main() {
+    \\    vec3 col = texture(u_tex, v_ndc * 0.5 + 0.5).rgb;
+    \\    // Dither (about +/-0.5/255) so soft gradients do not band; interleaved
+    \\    // gradient noise (Jimenez 2014) is cheaper than a sin hash.
+    \\    float dn = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
     \\    o_color = vec4(col + (dn - 0.5) / 255.0, 1.0);
     \\}
 ;

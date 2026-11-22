@@ -47,6 +47,20 @@ pub const LINK_STATUS: Enum = 0x8B82;
 pub const INFO_LOG_LENGTH: Enum = 0x8B84;
 pub const PACK_ALIGNMENT: Enum = 0x0D05;
 pub const TIME_ELAPSED: Enum = 0x88BF;
+pub const TEXTURE_2D: Enum = 0x0DE1;
+pub const TEXTURE0: Enum = 0x84C0;
+pub const TEXTURE_MAG_FILTER: Enum = 0x2800;
+pub const TEXTURE_MIN_FILTER: Enum = 0x2801;
+pub const TEXTURE_WRAP_S: Enum = 0x2802;
+pub const TEXTURE_WRAP_T: Enum = 0x2803;
+pub const LINEAR: Int = 0x2601;
+pub const CLAMP_TO_EDGE: Int = 0x812F;
+pub const RGBA16F: Int = 0x881A;
+pub const HALF_FLOAT: Enum = 0x140B;
+pub const FRAMEBUFFER: Enum = 0x8D40;
+pub const DRAW_FRAMEBUFFER_BINDING: Enum = 0x8CA6;
+pub const COLOR_ATTACHMENT0: Enum = 0x8CE0;
+pub const FRAMEBUFFER_COMPLETE: Enum = 0x8CD5;
 pub const QUERY_RESULT: Enum = 0x8866;
 pub const FALSE: Boolean = 0;
 pub const TRUE: Boolean = 1;
@@ -97,6 +111,18 @@ const Fns = struct {
     ReadPixels: *const fn (Int, Int, Sizei, Sizei, Enum, Enum, *anyopaque) callconv(.c) void,
     PixelStorei: *const fn (Enum, Int) callconv(.c) void,
     Finish: *const fn () callconv(.c) void,
+    GetIntegerv: *const fn (Enum, *Int) callconv(.c) void,
+    GenTextures: *const fn (Sizei, [*]Uint) callconv(.c) void,
+    DeleteTextures: *const fn (Sizei, [*]const Uint) callconv(.c) void,
+    BindTexture: *const fn (Enum, Uint) callconv(.c) void,
+    ActiveTexture: *const fn (Enum) callconv(.c) void,
+    TexImage2D: *const fn (Enum, Int, Int, Sizei, Sizei, Int, Enum, Enum, ?*const anyopaque) callconv(.c) void,
+    TexParameteri: *const fn (Enum, Enum, Int) callconv(.c) void,
+    GenFramebuffers: *const fn (Sizei, [*]Uint) callconv(.c) void,
+    DeleteFramebuffers: *const fn (Sizei, [*]const Uint) callconv(.c) void,
+    BindFramebuffer: *const fn (Enum, Uint) callconv(.c) void,
+    FramebufferTexture2D: *const fn (Enum, Enum, Enum, Uint, Int) callconv(.c) void,
+    CheckFramebufferStatus: *const fn (Enum) callconv(.c) Enum,
     GenQueries: *const fn (Sizei, [*]Uint) callconv(.c) void,
     DeleteQueries: *const fn (Sizei, [*]const Uint) callconv(.c) void,
     BeginQuery: *const fn (Enum, Uint) callconv(.c) void,
