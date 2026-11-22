@@ -71,7 +71,8 @@ SDL_VIDEO_DRIVER=offscreen zig-out/bin/chemviewer traj.traj \
     --frame 120 --diff-ref 1 --screenshot out.png --size 1400x900
 ```
 
-Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`, `--flat` (flat style), `--atom-numbers`,
+Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`, `--flat` (flat style), `--play` (start playing), `--interpolate`
+(smooth playback at the display rate, blending between steps), `--atom-numbers`,
 `--ui-scale X`, `--no-bg-pattern` (plain background), `--backdrop cells|space`
 (backdrop motif), `--bg-blur K` (backdrop depth of field, default 0.6), and
 a camera pose for scripted screenshots: `--orbit DX,DY` and `--pan DX,DY` (mouse

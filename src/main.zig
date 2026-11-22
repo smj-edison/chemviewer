@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, Vulkan device, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--play] [--interpolate] [--atom-numbers]
 //!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
 //!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -26,6 +26,9 @@ const Args = struct {
     no_ui: bool = false,
     dark: bool = false,
     flat: bool = false,
+    /// Start playing (optionally interpolated) once the file is open.
+    play: bool = false,
+    interpolate: bool = false,
     no_bg_pattern: bool = false,
     bg_blur: ?f32 = null,
     backdrop: ?[]const u8 = null,
@@ -126,6 +129,10 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.atom_numbers = true;
         } else if (eql(u8, arg, "--dark")) {
             a.dark = true;
+        } else if (eql(u8, arg, "--play")) {
+            a.play = true;
+        } else if (eql(u8, arg, "--interpolate")) {
+            a.interpolate = true;
         } else if (eql(u8, arg, "--flat")) {
             a.flat = true;
         } else if (eql(u8, arg, "--no-bg-pattern")) {
@@ -155,7 +162,7 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--atom-numbers]
+            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--play] [--interpolate] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
             \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
@@ -209,6 +216,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.ui_scale) |u| app.ui_scale = u;
     if (args.dark) app.style.theme = .dark;
     if (args.flat) app.style.shading = .flat;
+    app.interpolate = args.interpolate;
     if (args.no_bg_pattern) app.style.background_pattern = false;
     if (args.bg_blur) |b| app.style.background_blur = b;
     if (args.backdrop) |b| app.style.backdrop = if (std.mem.eql(u8, b, "space")) .space else .cells;
@@ -218,6 +226,7 @@ pub fn main(init: std.process.Init) !void {
     var startup: Startup = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };
     if (args.file != null) {
         if (args.diff_ref) |r| app.setFrame(r) else if (args.frame) |f| app.setFrame(f);
+        if (args.play) app.togglePlay();
     }
 
     while (!app.quit_requested) {
