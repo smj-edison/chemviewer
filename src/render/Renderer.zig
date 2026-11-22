@@ -25,8 +25,9 @@ pub const BondColoring = enum(c_int) {
 pub const Theme = enum(c_int) {
     light,
     dark,
-    /// Experimental: flat, saturated "Kurzgesagt" look on an indigo night
-    /// sky (gradient background with stars, crescent shading, glow).
+    /// Experimental: flat, saturated "Kurzgesagt" look: solid yellow
+    /// background, single-colour atoms with highlight dots, flat drop
+    /// shadows, depth shown by fading toward the background.
     kurzgesagt,
 
     pub fn palette(t: Theme) cv.color.Palette {
@@ -49,7 +50,7 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.10, 0.11, 0.13 },
             .dark => .{ 0.0, 0.0, 0.0 },
-            .kurzgesagt => .{ 0.035, 0.03, 0.12 }, // deeper than the sky, never black
+            .kurzgesagt => .{ 0.33, 0.25, 0.94 }, // unused: the flat theme has no outlines
         };
     }
 
@@ -70,7 +71,7 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.93, 0.45, 0.0 },
             .dark => .{ 1.0, 0.72, 0.2 },
-            .kurzgesagt => .{ 1.0, 0.82, 0.25 },
+            .kurzgesagt => .{ 0.33, 0.25, 0.94 }, // #5540F0 violet
         };
     }
 
@@ -78,7 +79,16 @@ pub const Theme = enum(c_int) {
         return switch (t) {
             .light => .{ 0.30, 0.32, 0.36, 1 },
             .dark => .{ 0.60, 0.60, 0.65, 1 },
-            .kurzgesagt => .{ 0.45, 0.55, 1.0, 0.8 },
+            .kurzgesagt => .{ 0.33, 0.25, 0.94, 0.8 },
+        };
+    }
+
+    /// Flat drop-shadow colour: a deeper, more saturated shade of the
+    /// background (Kurzgesagt's silhouette tone, #FEC80E on #FFD648).
+    pub fn shadow(t: Theme) [3]f32 {
+        return switch (t) {
+            .kurzgesagt => .{ 0xF5.0 / 255.0, 0xBC.0 / 255.0, 0x0A.0 / 255.0 },
+            else => t.background(),
         };
     }
 
@@ -89,24 +99,25 @@ pub const Theme = enum(c_int) {
     }
 };
 
-/// Saturated, candy-like element colours. The common organic elements are
-/// picked by hand; everything else is the CPK colour pushed to a bright,
-/// high-chroma version of the same hue so it reads against the indigo sky.
+/// Flat, saturated element colours sampled from Kurzgesagt's molecule
+/// illustrations (pink carbon, blue oxygen, cyan nitrogen, white hydrogen).
+/// Others are picked to stay off the yellow background; anything not
+/// listed is its CPK hue made bright and saturated.
 fn kurzgesagtAtomColor(z: u8) [3]f32 {
     const hex: ?u24 = switch (z) {
-        1 => 0xF3EEFF, // H: lavender white
-        5 => 0xFFB38A, // B: peach
-        6 => 0x3CC6DD, // C: teal
-        7 => 0x5A7DFF, // N: electric blue
-        8 => 0xFF4F6E, // O: coral red
-        9 => 0x9BEA5C, // F: lime
-        14 => 0xE8B98A, // Si: sand
-        15 => 0xFF9A3C, // P: orange
-        16 => 0xFFD23F, // S: sunflower
-        17 => 0x5FE08A, // Cl: mint
-        35 => 0xD9566B, // Br: raspberry
-        53 => 0xA868FF, // I: violet
-        79 => 0xFFC53D, // Au: gold
+        1 => 0xFFFFFF, // H
+        5 => 0xFF9A7A, // B: salmon
+        6 => 0xFF2E7E, // C: hot pink
+        7 => 0x02C8F0, // N: cyan
+        8 => 0x5560F6, // O: periwinkle blue
+        9 => 0x7BD84A, // F: lime
+        14 => 0xC58A5A, // Si: clay
+        15 => 0xFF7A1A, // P: orange
+        16 => 0x18C59A, // S: teal green (yellow would vanish)
+        17 => 0x2FBF5F, // Cl: green
+        35 => 0xA8325A, // Br: wine
+        53 => 0x8A3FE0, // I: purple
+        79 => 0xFF8A00, // Au: deep gold, darker than the background
         else => null,
     };
     if (hex) |h| return .{
@@ -115,8 +126,8 @@ fn kurzgesagtAtomColor(z: u8) [3]f32 {
         @as(f32, @floatFromInt(h & 0xFF)) / 255.0,
     };
     var lch = cv.color.labToLch(cv.color.srgbToOklab(cv.elements.colorRgb(z)));
-    lch.l = std.math.clamp(lch.l, 0.62, 0.86);
-    lch.c = @max(lch.c * 1.4, 0.10);
+    lch.l = std.math.clamp(lch.l, 0.50, 0.75);
+    lch.c = @max(lch.c * 1.5, 0.14);
     return cv.color.oklchToSrgb(lch);
 }
 
@@ -142,6 +153,18 @@ pub const Style = struct {
     /// colouring (0 = linear, 1 = flat plateaus). See `cv.color.snap`.
     snap: f32 = 0.7,
     show_cell: bool = true,
+
+    /// Drawn (and picked) atom radius. The flat theme uses chunkier atoms,
+    /// like the overlapping discs in Kurzgesagt's molecules.
+    pub fn atomRadius(s: Style, z: u8) f32 {
+        const k: f32 = if (s.theme == .kurzgesagt) 1.6 else 1.0;
+        return cv.elements.displayRadius(z) * s.atom_scale * k;
+    }
+
+    pub fn bondRadius(s: Style) f32 {
+        const k: f32 = if (s.theme == .kurzgesagt) 1.3 else 1.0;
+        return s.bond_radius * k;
+    }
 };
 
 pub const Tint = struct {
@@ -181,10 +204,6 @@ gpa: Allocator,
 sphere_prog: gl.Uint,
 cylinder_prog: gl.Uint,
 line_prog: gl.Uint,
-glow_prog: gl.Uint,
-sky_prog: gl.Uint,
-/// Attribute-less VAO for the full-screen sky triangle.
-sky_vao: gl.Uint = 0,
 sphere_vao: gl.Uint = 0,
 cylinder_vao: gl.Uint = 0,
 line_vao: gl.Uint = 0,
@@ -205,6 +224,9 @@ uploaded_atoms: usize = 0,
 uploaded_opaque_bonds: usize = 0,
 uploaded_translucent_bonds: usize = 0,
 uploaded_lines: usize = 0,
+/// Bounding sphere of the uploaded atoms (for the flat theme's depth fade).
+bounds_center: Vec3 = .{ 0, 0, 0 },
+bounds_radius: f32 = 1,
 /// Bond to draw highlighted (key as in `App.pairKey`), set before building.
 selected_bond: ?u64 = null,
 
@@ -214,16 +236,13 @@ pub fn init(gpa: Allocator) !Renderer {
         .sphere_prog = try gl.compileProgram(shaders.sphere_vs, shaders.sphere_fs),
         .cylinder_prog = try gl.compileProgram(shaders.cylinder_vs, shaders.cylinder_fs),
         .line_prog = try gl.compileProgram(shaders.line_vs, shaders.line_fs),
-        .glow_prog = try gl.compileProgram(shaders.glow_vs, shaders.glow_fs),
-        .sky_prog = try gl.compileProgram(shaders.sky_vs, shaders.sky_fs),
     };
     const f = &gl.f;
-    var vaos: [4]gl.Uint = undefined;
-    f.GenVertexArrays(4, &vaos);
+    var vaos: [3]gl.Uint = undefined;
+    f.GenVertexArrays(3, &vaos);
     r.sphere_vao = vaos[0];
     r.cylinder_vao = vaos[1];
     r.line_vao = vaos[2];
-    r.sky_vao = vaos[3];
     var bufs: [6]gl.Uint = undefined;
     f.GenBuffers(6, &bufs);
     r.quad_vbo = bufs[0];
@@ -289,15 +308,13 @@ fn instanceAttrib(loc: gl.Uint, n: gl.Int, stride: usize, offset: usize) void {
 
 pub fn deinit(r: *Renderer) void {
     const f = &gl.f;
-    const vaos = [_]gl.Uint{ r.sphere_vao, r.cylinder_vao, r.line_vao, r.sky_vao };
+    const vaos = [_]gl.Uint{ r.sphere_vao, r.cylinder_vao, r.line_vao };
     f.DeleteVertexArrays(vaos.len, &vaos);
     const bufs = [_]gl.Uint{ r.quad_vbo, r.cyl_vbo, r.cyl_ibo, r.atom_vbo, r.bond_vbo, r.line_vbo };
     f.DeleteBuffers(bufs.len, &bufs);
     f.DeleteProgram(r.sphere_prog);
     f.DeleteProgram(r.cylinder_prog);
     f.DeleteProgram(r.line_prog);
-    f.DeleteProgram(r.glow_prog);
-    f.DeleteProgram(r.sky_prog);
     r.atoms.deinit(r.gpa);
     r.bonds.deinit(r.gpa);
     r.translucent.deinit(r.gpa);
@@ -358,7 +375,7 @@ pub fn addStructure(
         const rgb = tinted(style.theme.atomColor(z), tint);
         r.atoms.appendAssumeCapacity(.{
             .center = p,
-            .radius = cv.elements.displayRadius(z) * style.atom_scale,
+            .radius = style.atomRadius(z),
             .color = .{ rgb[0], rgb[1], rgb[2], 1 },
         });
     }
@@ -404,7 +421,7 @@ pub fn addStructure(
         const inst: BondInstance = .{
             .a = positions[b.a],
             .b = positions[b.b],
-            .radius = style.bond_radius * radius_scale,
+            .radius = style.bondRadius() * radius_scale,
             .outline = outline,
             .color_a = ca,
             .color_b = cb,
@@ -435,6 +452,18 @@ pub fn upload(r: *Renderer) !void {
     f.BindBuffer(gl.ARRAY_BUFFER, r.atom_vbo);
     f.BufferData(gl.ARRAY_BUFFER, @intCast(r.atoms.items.len * @sizeOf(AtomInstance)), r.atoms.items.ptr, gl.DYNAMIC_DRAW);
     r.uploaded_atoms = r.atoms.items.len;
+    if (r.atoms.items.len > 0) {
+        var lo: Vec3 = r.atoms.items[0].center;
+        var hi: Vec3 = lo;
+        for (r.atoms.items) |a| {
+            lo = @min(lo, @as(Vec3, a.center));
+            hi = @max(hi, @as(Vec3, a.center));
+        }
+        r.bounds_center = (lo + hi) * @as(Vec3, @splat(0.5));
+        var rad: f32 = 0;
+        for (r.atoms.items) |a| rad = @max(rad, math.length(@as(Vec3, a.center) - r.bounds_center) + a.radius);
+        r.bounds_radius = @max(rad, 1);
+    }
 
     // Opaque bonds followed by translucent ones in a single buffer.
     r.uploaded_opaque_bonds = r.bonds.items.len;
@@ -462,6 +491,8 @@ pub const DrawParams = struct {
     style: Style,
     /// Filled in by `draw`: world units per framebuffer pixel at unit depth.
     world_per_px: f32 = 0,
+    /// Filled in by `draw`: view-depth range of the scene (flat theme fade).
+    fog_range: [2]f32 = .{ 0, 1 },
 };
 
 fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
@@ -477,12 +508,22 @@ fn setCommon(prog: gl.Uint, p: DrawParams, outline_k: f32) void {
     const ac = p.style.theme.accent();
     f.Uniform3f(f.GetUniformLocation(prog, "u_select_color"), ac[0], ac[1], ac[2]);
     f.Uniform1f(f.GetUniformLocation(prog, "u_select_k"), 3.5 * p.pixel_density * p.world_per_px);
+    const bg = p.style.theme.background();
+    f.Uniform3f(f.GetUniformLocation(prog, "u_fog_color"), bg[0], bg[1], bg[2]);
+    f.Uniform2f(f.GetUniformLocation(prog, "u_fog_range"), p.fog_range[0], p.fog_range[1]);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_fog_amount"), 0.55);
+    const sc = p.style.theme.shadow();
+    f.Uniform3f(f.GetUniformLocation(prog, "u_shadow_color"), sc[0], sc[1], sc[2]);
+    f.Uniform2f(f.GetUniformLocation(prog, "u_shadow_offset"), 0, 0);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_shadow_pass"), 0);
 }
 
 pub fn draw(r: *Renderer, params: DrawParams) void {
     const f = &gl.f;
     var p = params;
     p.world_per_px = 2 * @tan(p.fovy / 2) / @as(f32, @floatFromInt(@max(p.height, 1)));
+    const center_depth = -(p.view.transformPoint(r.bounds_center))[2];
+    p.fog_range = .{ center_depth - r.bounds_radius, center_depth + r.bounds_radius };
     const bg = p.style.theme.background();
     f.Viewport(0, 0, p.width, p.height);
     f.ClearColor(bg[0], bg[1], bg[2], 1);
@@ -494,10 +535,10 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     f.Disable(gl.CULL_FACE);
 
     // Outline width in world units per unit of view depth (constant on screen).
-    const outlines = p.style.theme.lightingMode(p.style.shading) != 0 and p.style.outline_px > 0;
+    const outlines = p.style.theme.lightingMode(p.style.shading) == 1 and p.style.outline_px > 0;
     const outline_k: f32 = if (outlines) p.style.outline_px * p.pixel_density * p.world_per_px else 0;
 
-    if (p.style.theme == .kurzgesagt) r.drawSky(p);
+    if (p.style.theme == .kurzgesagt) r.drawShadows(p);
 
     if (r.uploaded_atoms > 0) {
         setCommon(r.sphere_prog, p, outline_k);
@@ -555,36 +596,41 @@ pub fn draw(r: *Renderer, params: DrawParams) void {
     f.BindVertexArray(0);
 }
 
-/// Kurzgesagt theme: gradient sky with stars, then a soft additive halo
-/// behind every atom. Neither writes depth, so the molecule draws on top.
-fn drawSky(r: *Renderer, p: DrawParams) void {
+/// Flat theme: every opaque atom and bond as a flat silhouette in a darker
+/// shade of the background, offset down and to the right. Drawn first,
+/// without depth, so the molecule covers its own shadow.
+fn drawShadows(r: *Renderer, p: DrawParams) void {
     const f = &gl.f;
+    const px = 6 * p.pixel_density;
+    const off: [2]f32 = .{ 2 * px / @as(f32, @floatFromInt(@max(p.width, 1))), -2 * px / @as(f32, @floatFromInt(@max(p.height, 1))) };
     f.Disable(gl.DEPTH_TEST);
-    f.UseProgram(r.sky_prog);
-    f.Uniform2f(f.GetUniformLocation(r.sky_prog, "u_resolution"), @floatFromInt(p.width), @floatFromInt(p.height));
-    f.Uniform1f(f.GetUniformLocation(r.sky_prog, "u_star_px"), p.pixel_density);
-    // Centre a little lighter and more violet than the palette background,
-    // edges darker; the palette background sits between the two.
-    f.Uniform3f(f.GetUniformLocation(r.sky_prog, "u_sky_center"), 0.17, 0.13, 0.42);
-    f.Uniform3f(f.GetUniformLocation(r.sky_prog, "u_sky_edge"), 0.035, 0.035, 0.13);
-    f.BindVertexArray(r.sky_vao);
-    f.DrawArrays(gl.TRIANGLES, 0, 3);
-
+    f.DepthMask(gl.FALSE);
+    if (r.uploaded_opaque_bonds > 0) {
+        setCommon(r.cylinder_prog, p, 0);
+        setShadow(r.cylinder_prog, off);
+        f.BindVertexArray(r.cylinder_vao);
+        f.DrawElementsInstanced(gl.TRIANGLES, r.cyl_index_count, gl.UNSIGNED_SHORT, null, @intCast(r.uploaded_opaque_bonds));
+        setShadow(r.cylinder_prog, null);
+    }
     if (r.uploaded_atoms > 0) {
-        f.Enable(gl.BLEND);
-        f.BlendFunc(gl.ONE, gl.ONE);
-        f.UseProgram(r.glow_prog);
-        f.UniformMatrix4fv(f.GetUniformLocation(r.glow_prog, "u_view"), 1, gl.FALSE, @ptrCast(&p.view.m));
-        f.UniformMatrix4fv(f.GetUniformLocation(r.glow_prog, "u_proj"), 1, gl.FALSE, @ptrCast(&p.proj.m));
-        f.Uniform1f(f.GetUniformLocation(r.glow_prog, "u_glow_scale"), 2.4);
-        // Many overlapping halos in big structures would wash out the sky.
-        const n: f32 = @floatFromInt(r.uploaded_atoms);
-        f.Uniform1f(f.GetUniformLocation(r.glow_prog, "u_glow_strength"), 0.22 / @max(1.0, @sqrt(n / 40.0)));
+        setCommon(r.sphere_prog, p, 0);
+        setShadow(r.sphere_prog, off);
         f.BindVertexArray(r.sphere_vao);
+        f.Enable(gl.BLEND);
+        f.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         f.DrawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, @intCast(r.uploaded_atoms));
         f.Disable(gl.BLEND);
+        setShadow(r.sphere_prog, null);
     }
+    f.DepthMask(gl.TRUE);
     f.Enable(gl.DEPTH_TEST);
+}
+
+fn setShadow(prog: gl.Uint, offset: ?[2]f32) void {
+    const f = &gl.f;
+    const o = offset orelse .{ 0, 0 };
+    f.Uniform2f(f.GetUniformLocation(prog, "u_shadow_offset"), o[0], o[1]);
+    f.Uniform1f(f.GetUniformLocation(prog, "u_shadow_pass"), if (offset != null) 1 else 0);
 }
 
 fn rebaseBondAttribs(base: usize) void {

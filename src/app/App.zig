@@ -488,7 +488,7 @@ pub fn fitCamera(app: *App) void {
     // Bounding sphere around the box centre: farthest atom plus its display radius.
     var radius: f32 = 0;
     for (f.positions, f.numbers) |p, z| {
-        radius = @max(radius, cv.math.length(p - center) + cv.elements.displayRadius(z) * app.style.atom_scale);
+        radius = @max(radius, cv.math.length(p - center) + app.style.atomRadius(z));
     }
     if (app.style.show_cell) if (f.cell) |_| {
         radius = @max(radius, cv.math.length(b.max - b.min) * 0.5);
@@ -889,7 +889,7 @@ fn hitAt(app: *const App, x: f32, y: f32) ?Hit {
     const r = app.camera.ray(2 * x / ws[0] - 1, 1 - 2 * y / ws[1], ws[0] / ws[1]);
     var best: ?Hit = null;
     for (pos, f.numbers, 0..) |p, z, i| {
-        const rad = cv.elements.displayRadius(z) * app.style.atom_scale * 1.1;
+        const rad = app.style.atomRadius(z) * 1.1;
         const oc = r.origin - p;
         const b = cv.math.dot(oc, r.dir);
         const disc = b * b - (cv.math.dot(oc, oc) - rad * rad);
@@ -898,7 +898,7 @@ fn hitAt(app: *const App, x: f32, y: f32) ?Hit {
         if (t > 0 and (best == null or t < best.?.t)) best = .{ .t = t, .target = .{ .atom = @intCast(i) } };
     }
     // Bonds: closest approach between the ray and the bond segment.
-    const grab = @max(app.style.bond_radius * 1.6, 0.12);
+    const grab = @max(app.style.bondRadius() * 1.6, 0.12);
     for (d.bonds.items) |bd| {
         if (!Renderer.isDrawn(app.style, bd.character)) continue;
         const p0 = pos[bd.a];
@@ -1456,16 +1456,18 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igRadioButton_IntPtr("Dark", &theme, 1)) app.scene_dirty = true;
     c.igSameLine(0, -1);
     if (c.igRadioButton_IntPtr("Kurzgesagt", &theme, 2)) app.scene_dirty = true;
-    ui.tooltip("Experimental: flat, saturated colours on a starry indigo sky.");
+    ui.tooltip("Experimental: Kurzgesagt-style flat look. Solid colours, flat drop shadows, depth shown by fading into the background.");
     app.style.theme = @fromBackingInt(@intCast(theme));
-    c.igSameLine(0, c.igGetFontSize() * 1.5);
-    var shading: c_int = @backingInt(app.style.shading);
-    _ = c.igRadioButton_IntPtr("Cel", &shading, 0);
-    c.igSameLine(0, -1);
-    _ = c.igRadioButton_IntPtr("Smooth", &shading, 1);
-    app.style.shading = @fromBackingInt(@intCast(shading));
-    if (app.style.shading == .cel) {
-        _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
+    // The flat theme has its own shading and no outlines.
+    if (app.style.theme != .kurzgesagt) {
+        var shading: c_int = @backingInt(app.style.shading);
+        _ = c.igRadioButton_IntPtr("Cel", &shading, 0);
+        c.igSameLine(0, -1);
+        _ = c.igRadioButton_IntPtr("Smooth", &shading, 1);
+        app.style.shading = @fromBackingInt(@intCast(shading));
+        if (app.style.shading == .cel) {
+            _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
+        }
     }
     if (c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0)) app.scene_dirty = true;
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;

@@ -408,10 +408,9 @@ test {
     _ = @import("app/occlusion.zig");
 }
 
-/// Dark ImGui colours re-tinted to the Kurzgesagt indigo, with pink and
-/// cyan accents.
+/// Light ImGui colours with Kurzgesagt violet and pink accents.
 fn kurzgesagtImGuiColors() void {
-    c.igStyleColorsDark(null);
+    c.igStyleColorsLight(null);
     const col = &c.igGetStyle().*.Colors;
     const set = struct {
         fn f(cs: anytype, i: c_int, hex: u24, a: f32) void {
@@ -423,27 +422,26 @@ fn kurzgesagtImGuiColors() void {
             };
         }
     }.f;
-    set(col, c.ImGuiCol_WindowBg, 0x121036, 0.94);
-    set(col, c.ImGuiCol_PopupBg, 0x121036, 0.96);
-    set(col, c.ImGuiCol_MenuBarBg, 0x1B1850, 1);
-    set(col, c.ImGuiCol_TitleBg, 0x1B1850, 1);
-    set(col, c.ImGuiCol_TitleBgActive, 0x2A2475, 1);
-    set(col, c.ImGuiCol_Border, 0x3B3494, 0.6);
-    set(col, c.ImGuiCol_FrameBg, 0x261F6B, 0.75);
-    set(col, c.ImGuiCol_FrameBgHovered, 0x3A2F99, 0.85);
-    set(col, c.ImGuiCol_FrameBgActive, 0x4A3BB8, 1);
-    set(col, c.ImGuiCol_Button, 0x3A2F99, 0.8);
-    set(col, c.ImGuiCol_ButtonHovered, 0xFF4F9A, 0.85);
-    set(col, c.ImGuiCol_ButtonActive, 0xFF2E86, 1);
-    set(col, c.ImGuiCol_Header, 0x3A2F99, 0.7);
-    set(col, c.ImGuiCol_HeaderHovered, 0xFF4F9A, 0.7);
-    set(col, c.ImGuiCol_HeaderActive, 0xFF2E86, 0.9);
-    set(col, c.ImGuiCol_CheckMark, 0x3CE0F0, 1);
-    set(col, c.ImGuiCol_SliderGrab, 0x3CC6DD, 1);
-    set(col, c.ImGuiCol_SliderGrabActive, 0xFFD23F, 1);
-    set(col, c.ImGuiCol_SeparatorHovered, 0xFF4F9A, 0.8);
-    set(col, c.ImGuiCol_PlotLines, 0x3CE0F0, 1);
-    set(col, c.ImGuiCol_PlotHistogram, 0xFFD23F, 1);
-    set(col, c.ImGuiCol_Text, 0xF3EEFF, 1);
-    set(col, c.ImGuiCol_TextDisabled, 0x9A92D6, 1);
+    set(col, c.ImGuiCol_WindowBg, 0xFFF8E6, 0.96);
+    set(col, c.ImGuiCol_PopupBg, 0xFFF8E6, 0.98);
+    set(col, c.ImGuiCol_MenuBarBg, 0xFFE89A, 1);
+    set(col, c.ImGuiCol_TitleBg, 0xFFE89A, 1);
+    set(col, c.ImGuiCol_TitleBgActive, 0x5540F0, 1);
+    set(col, c.ImGuiCol_Border, 0xE8C860, 0.7);
+    set(col, c.ImGuiCol_FrameBg, 0xFFE9A8, 1);
+    set(col, c.ImGuiCol_FrameBgHovered, 0xFFDC7A, 1);
+    set(col, c.ImGuiCol_FrameBgActive, 0xFFCF4A, 1);
+    set(col, c.ImGuiCol_Button, 0x5540F0, 0.85);
+    set(col, c.ImGuiCol_ButtonHovered, 0xFF2E7E, 0.9);
+    set(col, c.ImGuiCol_ButtonActive, 0xE0136A, 1);
+    set(col, c.ImGuiCol_Header, 0x5540F0, 0.3);
+    set(col, c.ImGuiCol_HeaderHovered, 0xFF2E7E, 0.45);
+    set(col, c.ImGuiCol_HeaderActive, 0xFF2E7E, 0.7);
+    set(col, c.ImGuiCol_CheckMark, 0x5540F0, 1);
+    set(col, c.ImGuiCol_SliderGrab, 0x5540F0, 1);
+    set(col, c.ImGuiCol_SliderGrabActive, 0xFF2E7E, 1);
+    set(col, c.ImGuiCol_PlotLines, 0x5540F0, 1);
+    set(col, c.ImGuiCol_PlotHistogram, 0xFF2E7E, 1);
+    set(col, c.ImGuiCol_Text, 0x2A1F66, 1);
+    set(col, c.ImGuiCol_TextDisabled, 0x8A7FB8, 1);
 }

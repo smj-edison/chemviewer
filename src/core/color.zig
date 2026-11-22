@@ -152,15 +152,15 @@ pub const dark_palette: Palette = .{
     },
 };
 
-/// Kurzgesagt-style night sky: deep indigo, bonds climbing from a muted
-/// lavender through pink to hot yellow. Same rule as the dark palette.
+/// Kurzgesagt-style flat yellow: bonds darken from warm amber through the
+/// signature violet to deep indigo. Same rule as the light palette.
 pub const kurzgesagt_palette: Palette = .{
-    .background = .{ 0x16.0 / 255.0, 0x14.0 / 255.0, 0x45.0 / 255.0 }, // OKLab L ≈ 0.230
+    .background = .{ 0xFF.0 / 255.0, 0xD6.0 / 255.0, 0x48.0 / 255.0 }, // #FFD648, OKLab L ≈ 0.887
     .stops = &.{
-        .{ .at = 0.0, .lch = .{ .l = 0.230, .c = 0.089, .h = 279 } }, // = background
-        .{ .at = 1.0, .lch = .{ .l = 0.62, .c = 0.070, .h = 285 } }, // single: soft lavender
-        .{ .at = 2.0, .lch = .{ .l = 0.80, .c = 0.150, .h = 350 } }, // double: candy pink
-        .{ .at = 3.0, .lch = .{ .l = 0.92, .c = 0.170, .h = 95 } }, // triple: hot yellow
+        .{ .at = 0.0, .lch = .{ .l = 0.887, .c = 0.159, .h = 92 } }, // = background
+        .{ .at = 1.0, .lch = .{ .l = 0.62, .c = 0.130, .h = 55 } }, // single: warm amber
+        .{ .at = 2.0, .lch = .{ .l = 0.50, .c = 0.240, .h = 279 } }, // double: violet
+        .{ .at = 3.0, .lch = .{ .l = 0.27, .c = 0.150, .h = 285 } }, // triple: deep indigo
     },
 };
 
