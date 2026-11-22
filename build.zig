@@ -165,6 +165,7 @@ fn addShaders(b: *std.Build, mod: *std.Build.Module) void {
         "line.vert",       "line.frag",
         "fullscreen.vert", "background.frag",
         "blit.frag",       "fill.frag",
+        "liquid.vert",     "liquid.frag",
     };
     for (stages) |name| {
         const cmd = b.addSystemCommand(&.{ glslc, "--target-env=vulkan1.3", "-O" });

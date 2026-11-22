@@ -52,7 +52,7 @@ void main() {
         body = fogged(body, -p.z);
     } else if (u_cel == 4) {
         // Path through the sphere along the view ray.
-        body = glass(v_color.rgb, n, p, 2.0 * v_radius * max(dot(n, -d), 0.0), 1.0);
+        body = glass(v_color.rgb, n, p, 2.0 * v_radius * max(dot(n, -d), 0.0), 1.0, 1.0);
     }
     float k = 1.0;
     if (v_outer > v_radius) k = clamp(disc_i / max(fwidth(disc_i), 1e-9) + 0.5, 0.0, 1.0);

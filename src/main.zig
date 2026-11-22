@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, Vulkan device, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--glass]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
 //!                   [--play] [--interpolate] [--fps N] [--atom-numbers]
 //!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
 //!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
@@ -28,6 +28,7 @@ const Args = struct {
     dark: bool = false,
     flat: bool = false,
     glass: bool = false,
+    no_liquid: bool = false,
     aero: bool = false,
     flat_pop: bool = false,
     /// Start playing (optionally interpolated) once the file is open.
@@ -151,6 +152,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.flat = true;
         } else if (eql(u8, arg, "--glass")) {
             a.glass = true;
+        } else if (eql(u8, arg, "--no-liquid")) {
+            a.no_liquid = true;
         } else if (eql(u8, arg, "--no-bg-pattern")) {
             a.no_bg_pattern = true;
         } else if (eql(u8, arg, "--profile-static")) {
@@ -180,7 +183,7 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--glass]
+            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
             \\                  [--play] [--interpolate] [--fps N] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
             \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
@@ -238,6 +241,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.dark) app.style.theme = .dark;
     if (args.flat) app.style.shading = .flat;
     if (args.glass) app.style.shading = .glass;
+    if (args.no_liquid) app.style.liquid = false;
     if (args.aero) app.style.shading = .aero;
     if (args.flat_pop) app.style.flat_pop = true;
     app.interpolate = args.interpolate;

@@ -55,6 +55,8 @@ layout(push_constant) uniform Draw {
     int u_outline_pass;
     int u_shadow_soft;   // flat "soft shadow": feathered shadow factors (MIN blend)
     int u_glass_scene;   // glass.glsl: refract the scene copy, not the backdrop
+    float u_px_k;        // world units per framebuffer pixel at unit depth (liquid)
+    float u_liquid_k;    // smooth-union radius, Å (liquid)
 };
 
 vec4 toVulkanDepth(vec4 clip) {

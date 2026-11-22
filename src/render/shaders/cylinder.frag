@@ -37,7 +37,7 @@ void main() {
     vec3 col = shade(c.rgb, n, normalize(-v_view_pos));
     if (u_cel == 4) {
         // Thickness: twice the bond radius times the cosine (approximately).
-        col = glass(c.rgb, n, v_view_pos, 0.25 * max(dot(n, normalize(-v_view_pos)), 0.0), 0.8);
+        col = glass(c.rgb, n, v_view_pos, 0.25 * max(dot(n, normalize(-v_view_pos)), 0.0), 0.8, 1.0);
     }
     o_color = vec4(fogged(col, -v_view_pos.z), c.a);
 }

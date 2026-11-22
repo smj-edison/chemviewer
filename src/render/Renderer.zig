@@ -149,6 +149,9 @@ pub const Shading = enum(c_int) {
 pub const Style = struct {
     theme: Theme = .light,
     shading: Shading = .cel,
+    /// Glass only: bonds flow into the atoms (smooth union, ray-marched in
+    /// shaders/liquid.frag) instead of separate spheres and rods.
+    liquid: bool = true,
     /// Outline width in screen pixels (logical; scaled by pixel density). 0 = none.
     outline_px: f32 = 2.0,
     atom_scale: f32 = 1.0,
@@ -190,6 +193,12 @@ pub const Style = struct {
         return cv.elements.displayRadius(z) * s.atom_scale * k;
     }
 
+    /// Liquid glass: how far the smooth union between atoms and bonds
+    /// reaches (the log-sum-exp scale in shaders/liquid.frag), Å.
+    pub fn liquidK(s: Style) f32 {
+        return 0.6 * s.bondRadius();
+    }
+
     pub fn bondRadius(s: Style) f32 {
         const k: f32 = if (s.shading == .flat) 1.3 else 1.0;
         return s.bond_radius * k;
@@ -226,6 +235,30 @@ const BondInstance = extern struct {
     color_b: [4]f32,
 };
 const LineVertex = extern struct { pos: [3]f32, color: [4]f32 };
+/// Liquid glass blob (shaders/liquid.vert): an atom with its bonds.
+const LiquidInstance = extern struct {
+    center: [3]f32,
+    radius: f32,
+    color: [4]f32,
+    /// Bounding sphere radius (around `center`) of the blob's surface.
+    bound: f32,
+    highlight: f32 = 0,
+    /// The atom's bonds: `links[first..][0..count]`.
+    first: u32,
+    count: u32,
+};
+/// One side of a bond, for liquid glass (`Link` in shaders/liquid.frag).
+const Link = extern struct {
+    other: [3]f32,
+    other_radius: f32,
+    bond_color: [4]f32,
+    other_color: [4]f32,
+    bond_radius: f32,
+    /// Distance from this atom, along the bond, to the plane where the
+    /// neighbour's blob takes over.
+    plane: f32,
+    pad: [2]f32 = .{ 0, 0 },
+};
 
 const cylinder_segments = 16;
 
@@ -247,6 +280,8 @@ slots: [Gpu.frames_in_flight]Slot = @splat(.{}),
 bg_cache: BackgroundCache = .{},
 /// Glass atoms sorted into layers that each see the ones behind them.
 glass: GlassLayers = .{},
+/// Liquid glass blobs, rebuilt from the upload when it changes.
+liquid: Liquid = .{},
 /// `Gpu.scene_copy` view bound at binding 2 of `sets`.
 copy_view: vk.ImageView = .null,
 
@@ -254,6 +289,8 @@ atoms: std.ArrayList(AtomInstance) = .empty,
 /// Opaque bonds first, then translucent ones (drawn without depth writes).
 bonds: std.ArrayList(BondInstance) = .empty,
 translucent: std.ArrayList(BondInstance) = .empty,
+/// Instance indices of the atoms of each opaque bond (parallel to `bonds`).
+bond_atoms: std.ArrayList([2]u32) = .empty,
 lines: std.ArrayList(LineVertex) = .empty,
 uploaded: Uploaded = .{},
 /// Bumped by `upload`; frame slots compare it to their own copy.
@@ -266,6 +303,7 @@ bounds_radius: f32 = 1,
 
 pub fn clear(r: *Renderer) void {
     r.atoms.clearRetainingCapacity();
+    r.bond_atoms.clearRetainingCapacity();
     r.bonds.clearRetainingCapacity();
     r.translucent.clearRetainingCapacity();
     r.lines.clearRetainingCapacity();
@@ -362,7 +400,12 @@ pub fn addStructure(
             .color_a = ca,
             .color_b = cb,
         };
-        if (ca[3] < 0.99) try r.translucent.append(r.gpa, inst) else try r.bonds.append(r.gpa, inst);
+        if (ca[3] < 0.99) {
+            try r.translucent.append(r.gpa, inst);
+        } else {
+            try r.bonds.append(r.gpa, inst);
+            try r.bond_atoms.append(r.gpa, .{ @intCast(start + b.a), @intCast(start + b.b) });
+        }
     }
     return start;
 }
@@ -407,6 +450,8 @@ pub fn upload(r: *Renderer) !void {
     try up.bonds.appendSlice(r.gpa, r.bonds.items);
     try up.bonds.appendSlice(r.gpa, r.translucent.items);
     up.opaque_bonds = r.bonds.items.len;
+    up.bond_atoms.clearRetainingCapacity();
+    try up.bond_atoms.appendSlice(r.gpa, r.bond_atoms.items);
     up.lines.clearRetainingCapacity();
     try up.lines.appendSlice(r.gpa, r.lines.items);
     r.generation += 1;
@@ -477,6 +522,9 @@ const Push = extern struct {
     shadow_soft: i32 = 0,
     /// Glass refracts the scene copy (binding 2) instead of the backdrop.
     glass_scene: i32 = 0,
+    /// Liquid glass: world units per pixel at unit depth, smooth-union scale.
+    px_k: f32 = 0,
+    liquid_k: f32 = 0,
 };
 
 comptime {
@@ -486,6 +534,7 @@ comptime {
 
 const Pipelines = struct {
     sphere: vk.Pipeline,
+    liquid: vk.Pipeline,
     sphere_shadow: vk.Pipeline,
     sphere_shadow_soft: vk.Pipeline,
     cylinder_shadow_soft: vk.Pipeline,
@@ -513,11 +562,20 @@ const Slot = struct {
     glass_atoms: Gpu.Buffer = .{},
     glass_bonds: Gpu.Buffer = .{},
     glass_stamp: u64 = 0,
+    /// Liquid blobs in layer order (stamped with `glass_stamp`), and the
+    /// links they index (binding 3 of this slot's set).
+    liquid: Gpu.Buffer = .{},
+    links: Gpu.Buffer = .{},
+    links_generation: u64 = 0,
+    /// `links.buffer` as written to the descriptor set.
+    links_bound: vk.Buffer = .null,
 
     fn deinit(s: *Slot, gpu: *const Gpu) void {
         s.uniforms.deinit(gpu);
         s.glass_atoms.deinit(gpu);
         s.glass_bonds.deinit(gpu);
+        s.liquid.deinit(gpu);
+        s.links.deinit(gpu);
         s.atoms.deinit(gpu);
         s.bonds.deinit(gpu);
         s.lines.deinit(gpu);
@@ -529,10 +587,13 @@ const Uploaded = struct {
     atoms: std.ArrayList(AtomInstance) = .empty,
     bonds: std.ArrayList(BondInstance) = .empty,
     opaque_bonds: usize = 0,
+    /// Atom instance indices of each opaque bond.
+    bond_atoms: std.ArrayList([2]u32) = .empty,
     lines: std.ArrayList(LineVertex) = .empty,
 
     fn deinit(u: *Uploaded, gpa: Allocator) void {
         u.atoms.deinit(gpa);
+        u.bond_atoms.deinit(gpa);
         u.bonds.deinit(gpa);
         u.lines.deinit(gpa);
     }
@@ -541,7 +602,7 @@ const Uploaded = struct {
 pub fn init(gpa: Allocator, gpu: *Gpu) !Renderer {
     const dev = gpu.dev;
     const set_layout = try dev.createDescriptorSetLayout(&.{
-        .binding_count = 3,
+        .binding_count = 4,
         .p_bindings = &.{
             .{
                 .binding = 0,
@@ -562,6 +623,13 @@ pub fn init(gpa: Allocator, gpu: *Gpu) !Renderer {
                 .descriptor_count = 1,
                 .stage_flags = .{ .fragment = true },
             },
+            // Liquid glass links (per frame slot).
+            .{
+                .binding = 3,
+                .descriptor_type = .storage_buffer,
+                .descriptor_count = 1,
+                .stage_flags = .{ .fragment = true },
+            },
         },
     }, null);
     const layout = try dev.createPipelineLayout(&.{
@@ -577,10 +645,11 @@ pub fn init(gpa: Allocator, gpu: *Gpu) !Renderer {
     const n = Gpu.frames_in_flight;
     const pool = try dev.createDescriptorPool(&.{
         .max_sets = n,
-        .pool_size_count = 2,
+        .pool_size_count = 3,
         .p_pool_sizes = &.{
             .{ .type = .uniform_buffer, .descriptor_count = n },
             .{ .type = .combined_image_sampler, .descriptor_count = 2 * n },
+            .{ .type = .storage_buffer, .descriptor_count = n },
         },
     }, null);
     var sets: [n]vk.DescriptorSet = undefined;
@@ -676,6 +745,8 @@ pub fn deinit(r: *Renderer) void {
     r.lines.deinit(r.gpa);
     r.uploaded.deinit(r.gpa);
     r.glass.deinit(r.gpa);
+    r.liquid.deinit(r.gpa);
+    r.bond_atoms.deinit(r.gpa);
 }
 
 const Blend = enum { none, alpha, multiply, min };
@@ -802,6 +873,8 @@ fn createPipelines(gpu: *const Gpu, layout: vk.PipelineLayout) !Pipelines {
         .background_fs = try gpu.createShaderModule("background.frag.spv"),
         .blit_fs = try gpu.createShaderModule("blit.frag.spv"),
         .fill_fs = try gpu.createShaderModule("fill.frag.spv"),
+        .liquid_vs = try gpu.createShaderModule("liquid.vert.spv"),
+        .liquid_fs = try gpu.createShaderModule("liquid.frag.spv"),
     };
     defer inline for (@typeInfo(@TypeOf(mods)).@"struct".field_names) |name| dev.destroyShaderModule(@field(mods, name), null);
 
@@ -850,6 +923,17 @@ fn createPipelines(gpu: *const Gpu, layout: vk.PipelineLayout) !Pipelines {
         .attributes = &cyl_attrs,
         .topology = .triangle_list,
     };
+    const liquid_bindings = [_]vk.VertexInputBindingDescription{
+        .{ .binding = 0, .stride = 8, .input_rate = .vertex },
+        .{ .binding = 1, .stride = @sizeOf(LiquidInstance), .input_rate = .instance },
+    };
+    const liquid_attrs = [_]vk.VertexInputAttributeDescription{
+        .{ .location = 0, .binding = 0, .format = .r32g32_sfloat, .offset = 0 },
+        .{ .location = 1, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(LiquidInstance, "center") },
+        .{ .location = 2, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(LiquidInstance, "color") },
+        .{ .location = 3, .binding = 1, .format = .r32g32_sfloat, .offset = @offsetOf(LiquidInstance, "bound") },
+        .{ .location = 4, .binding = 1, .format = .r32g32_uint, .offset = @offsetOf(LiquidInstance, "first") },
+    };
     var sphere_shadow = sphere;
     sphere_shadow.blend = .multiply;
     var cylinder_blend = cylinder;
@@ -877,6 +961,14 @@ fn createPipelines(gpu: *const Gpu, layout: vk.PipelineLayout) !Pipelines {
 
     return .{
         .sphere = try createPipeline(gpu, layout, sphere),
+        .liquid = try createPipeline(gpu, layout, .{
+            .vert = mods.liquid_vs,
+            .frag = mods.liquid_fs,
+            .bindings = &liquid_bindings,
+            .attributes = &liquid_attrs,
+            .topology = .triangle_strip,
+            .alpha_to_coverage = true,
+        }),
         .sphere_shadow = try createPipeline(gpu, layout, sphere_shadow),
         .sphere_shadow_soft = try createPipeline(gpu, layout, sphere_shadow_soft),
         .cylinder_shadow_soft = try createPipeline(gpu, layout, cylinder_shadow_soft),
@@ -971,10 +1063,14 @@ fn syncSlot(r: *Renderer, slot: *Slot) !void {
 }
 
 fn fill(r: *Renderer, buf: *Gpu.Buffer, bytes: []const u8) !void {
+    return r.fillAs(buf, bytes, .{ .vertex_buffer = true });
+}
+
+fn fillAs(r: *Renderer, buf: *Gpu.Buffer, bytes: []const u8, usage: vk.BufferUsageFlags) !void {
     if (buf.buffer == .null or buf.size < bytes.len) {
         buf.deinit(r.gpu);
         const size = @max(bytes.len + bytes.len / 2, 4096);
-        buf.* = try r.gpu.createBuffer(size, .{ .vertex_buffer = true }, .{ .host_visible = true, .host_coherent = true });
+        buf.* = try r.gpu.createBuffer(size, usage, .{ .host_visible = true, .host_coherent = true });
     }
     buf.write(0, bytes);
 }
@@ -992,7 +1088,13 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
     const slot = &r.slots[frame.slot];
     try r.syncSlot(slot);
     const glass = p.style.shading == .glass;
-    if (glass) try r.layerGlass(p);
+    const liquid = glass and p.style.liquid;
+    if (liquid) try r.buildLiquid(p.style);
+    if (glass) {
+        try r.layerGlass(p, liquid);
+        // Before the set is bound: it may update the slot's binding 3.
+        try r.syncGlass(slot, frame.slot);
+    }
     r.bindSceneCopy(frame);
     const res = r.bg_cache.resolution(p.width, p.height);
     const u = frameUniforms(p, res);
@@ -1097,7 +1199,7 @@ pub fn draw(r: *Renderer, frame: Gpu.Frame, params: DrawParams) !void {
             cmd.setDepthWriteEnable(.true);
         }
     }
-    if (glass and n_atoms + n_opaque > 0) try r.drawGlass(frame, slot);
+    if (glass and n_atoms + n_opaque > 0) r.drawGlass(frame, p, slot, liquid);
     if (r.profile) |*prof| {
         prof.stamp(frame, 2);
         prof.pending[frame.slot] = true;
@@ -1228,10 +1330,12 @@ const GlassLayers = struct {
     /// then atoms, so atoms still show the bonds through them.
     const max_items = 40000;
 
-    /// Instances grouped by layer, farthest layer first.
+    /// Instances grouped by layer, farthest layer first. Liquid glass uses
+    /// `liquid` (blobs) in place of `atoms` and has no separate bonds.
     atoms: std.ArrayList(AtomInstance) = .empty,
     bonds: std.ArrayList(BondInstance) = .empty,
-    /// End (exclusive) of each layer in `atoms` and `bonds`.
+    liquid: std.ArrayList(LiquidInstance) = .empty,
+    /// End (exclusive) of each layer in `atoms` (or `liquid`) and `bonds`.
     atom_ends: [max_layers]u32 = undefined,
     bond_ends: [max_layers]u32 = undefined,
     /// Framebuffer area each layer's glass covers, plus how far its
@@ -1246,10 +1350,11 @@ const GlassLayers = struct {
     items: std.ArrayList(glass_layers.Item) = .empty,
     scratch: glass_layers.Scratch = .{},
 
-    const Key = struct { view: [16]f32, width: i32, height: i32, fovy: f32, generation: u64 };
+    const Key = struct { view: [16]f32, width: i32, height: i32, fovy: f32, generation: u64, liquid: bool };
 
     fn deinit(g: *GlassLayers, gpa: Allocator) void {
         g.atoms.deinit(gpa);
+        g.liquid.deinit(gpa);
         g.bonds.deinit(gpa);
         g.items.deinit(gpa);
         g.scratch.deinit(gpa);
@@ -1258,25 +1363,31 @@ const GlassLayers = struct {
 
 /// Re-sorts the glass atoms and bonds into layers if the view or the scene
 /// changed.
-fn layerGlass(r: *Renderer, p: DrawParams) !void {
+/// With `liquid`, the objects are the liquid blobs (`r.liquid`, built
+/// first), one per atom with its bonds.
+fn layerGlass(r: *Renderer, p: DrawParams, liquid: bool) !void {
     const G = GlassLayers;
     const g = &r.glass;
-    const key: G.Key = .{ .view = @bitCast(p.view.m), .width = p.width, .height = p.height, .fovy = p.fovy, .generation = r.generation };
+    const key: G.Key = .{ .view = @bitCast(p.view.m), .width = p.width, .height = p.height, .fovy = p.fovy, .generation = r.generation, .liquid = liquid };
     if (g.key != null and std.meta.eql(g.key.?, key)) return;
     g.key = null;
     const gpa = r.gpa;
     const atoms = r.uploaded.atoms.items;
-    const bonds = r.uploaded.bonds.items[0..r.uploaded.opaque_bonds];
-    try g.atoms.resize(gpa, atoms.len);
+    const blobs = r.liquid.blobs.items;
+    const bonds = if (liquid) &.{} else r.uploaded.bonds.items[0..r.uploaded.opaque_bonds];
+    // Atoms or blobs: one per atom either way.
+    const n_atoms = atoms.len;
+    try g.atoms.resize(gpa, if (liquid) 0 else n_atoms);
+    try g.liquid.resize(gpa, if (liquid) n_atoms else 0);
     try g.bonds.resize(gpa, bonds.len);
     g.stamp += 1;
-    if (atoms.len + bonds.len > G.max_items) {
-        @memcpy(g.atoms.items, atoms);
+    if (n_atoms + bonds.len > G.max_items) {
+        if (liquid) @memcpy(g.liquid.items, blobs) else @memcpy(g.atoms.items, atoms);
         @memcpy(g.bonds.items, bonds);
         g.bond_ends[0] = @intCast(bonds.len);
         g.bond_ends[1] = @intCast(bonds.len);
         g.atom_ends[0] = 0;
-        g.atom_ends[1] = @intCast(atoms.len);
+        g.atom_ends[1] = @intCast(n_atoms);
         g.count = 2;
         const full: vk.Rect2D = .{ .offset = .{ .x = 0, .y = 0 }, .extent = .{ .width = @intCast(@max(p.width, 1)), .height = @intCast(@max(p.height, 1)) } };
         g.rects[0] = full;
@@ -1295,13 +1406,15 @@ fn layerGlass(r: *Renderer, p: DrawParams) !void {
             return .{ .xy = .{ c[0] / z * scale, c[1] / z * scale }, .z = z };
         }
     }.at;
-    try g.items.resize(gpa, atoms.len + bonds.len);
-    for (atoms, g.items.items[0..atoms.len], 0..) |at, *it, i| {
+    try g.items.resize(gpa, n_atoms + bonds.len);
+    for (atoms, g.items.items[0..n_atoms], 0..) |at, *it, i| {
         const q = project(p.view, at.center, f);
+        // A blob reaches out along its bonds; its depth is still the atom's.
+        const rad = if (liquid) blobs[i].bound else at.radius;
         // Margin for the anti-aliased edge and the selection ring.
-        it.* = .{ .a = q.xy, .b = q.xy, .r = at.radius / q.z * f + 4, .z = q.z, .index = @intCast(i), .bond = false };
+        it.* = .{ .a = q.xy, .b = q.xy, .r = rad / q.z * f + 4, .z = q.z, .index = @intCast(i), .bond = false };
     }
-    for (bonds, g.items.items[atoms.len..], 0..) |h, *it, i| {
+    for (bonds, g.items.items[n_atoms..], 0..) |h, *it, i| {
         // Sorted by its midpoint.
         const qa = project(p.view, h.a, f);
         const qb = project(p.view, h.b, f);
@@ -1363,7 +1476,7 @@ fn layerGlass(r: *Renderer, p: DrawParams) !void {
             g.bonds.items[sb[it.layer]] = bonds[it.index];
             sb[it.layer] += 1;
         } else {
-            g.atoms.items[sa[it.layer]] = atoms[it.index];
+            if (liquid) g.liquid.items[sa[it.layer]] = blobs[it.index] else g.atoms.items[sa[it.layer]] = atoms[it.index];
             sa[it.layer] += 1;
         }
     }
@@ -1379,18 +1492,43 @@ fn clampRect(rc: vk.Rect2D, extent: vk.Extent2D) vk.Rect2D {
     };
 }
 
-/// Draws the glass layers (see `GlassLayers`), snapshotting the scene
-/// before each. Inside the scene pass.
-fn drawGlass(r: *Renderer, frame: Gpu.Frame, slot: *Slot) !void {
+/// Copies the glass instances into this frame slot's buffers if they are
+/// stale, and points the slot's binding 3 at its liquid links. Before the
+/// slot's descriptor set is bound (it may update it).
+fn syncGlass(r: *Renderer, slot: *Slot, slot_index: usize) !void {
     const g = &r.glass;
     if (slot.glass_stamp != g.stamp) {
         try r.fill(&slot.glass_atoms, std.mem.sliceAsBytes(g.atoms.items));
         try r.fill(&slot.glass_bonds, std.mem.sliceAsBytes(g.bonds.items));
+        try r.fill(&slot.liquid, std.mem.sliceAsBytes(g.liquid.items));
         slot.glass_stamp = g.stamp;
     }
+    if (slot.links.buffer == .null or slot.links_generation != r.liquid.generation) {
+        try r.fillAs(&slot.links, std.mem.sliceAsBytes(r.liquid.links.items), .{ .storage_buffer = true });
+        slot.links_generation = r.liquid.generation;
+    }
+    if (slot.links_bound != slot.links.buffer) {
+        slot.links_bound = slot.links.buffer;
+        r.gpu.dev.updateDescriptorSets(&.{.{
+            .dst_set = r.sets[slot_index],
+            .dst_binding = 3,
+            .dst_array_element = 0,
+            .descriptor_count = 1,
+            .descriptor_type = .storage_buffer,
+            .p_image_info = &.{},
+            .p_buffer_info = &.{.{ .buffer = slot.links.buffer, .offset = 0, .range = vk.WHOLE_SIZE }},
+            .p_texel_buffer_view = &.{},
+        }}, null);
+    }
+}
+
+/// Draws the glass layers (see `GlassLayers`), snapshotting the scene
+/// before each. Inside the scene pass.
+fn drawGlass(r: *Renderer, frame: Gpu.Frame, p: DrawParams, slot: *Slot, liquid: bool) void {
+    const g = &r.glass;
     const cmd = frame.cmd;
     // Push constants and bound state carry over between render pass instances.
-    r.push(cmd, .{ .glass_scene = 1 });
+    r.push(cmd, .{ .glass_scene = 1, .px_k = p.world_per_px, .liquid_k = p.style.liquidK() });
     var a0: u32 = 0;
     var b0: u32 = 0;
     for (g.atom_ends[0..g.count], g.bond_ends[0..g.count], g.rects[0..g.count]) |a1, b1, rect| {
@@ -1405,8 +1543,8 @@ fn drawGlass(r: *Renderer, frame: Gpu.Frame, slot: *Slot) !void {
         // Entirely off screen: nothing it shows is seen.
         if (area.extent.width > 0 and area.extent.height > 0) r.gpu.snapshotScene(frame, area);
         if (a1 > a0) {
-            cmd.bindPipeline(.graphics, r.pipes.sphere);
-            cmd.bindVertexBuffers(0, &.{ r.quad.buffer, slot.glass_atoms.buffer }, &.{ 0, 0 });
+            cmd.bindPipeline(.graphics, if (liquid) r.pipes.liquid else r.pipes.sphere);
+            cmd.bindVertexBuffers(0, &.{ r.quad.buffer, if (liquid) slot.liquid.buffer else slot.glass_atoms.buffer }, &.{ 0, 0 });
             cmd.draw(4, a1 - a0, 0, a0);
         }
         if (b1 > b0) {
@@ -1420,6 +1558,84 @@ fn drawGlass(r: *Renderer, frame: Gpu.Frame, slot: *Slot) !void {
             cmd.setCullMode(.{});
         }
     }
+}
+
+/// Liquid glass: one blob per atom (its sphere, bonds and neighbours,
+/// smoothly joined; shaders/liquid.frag) and, per atom, its links (one per
+/// bond, `Link`). Depends only on the upload and the blend scale.
+const Liquid = struct {
+    blobs: std.ArrayList(LiquidInstance) = .empty,
+    links: std.ArrayList(Link) = .empty,
+    /// `Renderer.generation` and blend scale it was built for; bumped
+    /// `generation` tells frame slots to copy the links again.
+    built: ?struct { generation: u64, k: f32 } = null,
+    generation: u64 = 0,
+    // Scratch.
+    counts: std.ArrayList(u32) = .empty,
+
+    fn deinit(l: *Liquid, gpa: Allocator) void {
+        l.blobs.deinit(gpa);
+        l.links.deinit(gpa);
+        l.counts.deinit(gpa);
+    }
+};
+
+fn buildLiquid(r: *Renderer, style: Style) !void {
+    const l = &r.liquid;
+    const k = style.liquidK();
+    if (l.built) |b| if (b.generation == r.generation and b.k == k) return;
+    const gpa = r.gpa;
+    const atoms = r.uploaded.atoms.items;
+    const bonds = r.uploaded.bonds.items[0..r.uploaded.opaque_bonds];
+    const pairs = r.uploaded.bond_atoms.items;
+
+    try l.counts.resize(gpa, atoms.len);
+    @memset(l.counts.items, 0);
+    for (pairs) |pr| {
+        l.counts.items[pr[0]] += 1;
+        l.counts.items[pr[1]] += 1;
+    }
+    try l.blobs.resize(gpa, atoms.len);
+    var first: u32 = 0;
+    for (atoms, l.blobs.items, l.counts.items) |a, *blob, n| {
+        blob.* = .{ .center = a.center, .radius = a.radius, .color = a.color, .bound = a.radius, .highlight = a.highlight, .first = first, .count = 0 };
+        first += n;
+    }
+    try l.links.resize(gpa, first);
+    // How far the blend reaches beyond a primitive: exp(-4) of a neighbour's
+    // weight is about 2% of k in distance.
+    const reach = 4 * k;
+    for (bonds, pairs) |bd, pr| {
+        for (0..2) |side| {
+            const i = pr[side];
+            const j = pr[1 - side];
+            const a = atoms[i];
+            const o = atoms[j];
+            const len = math.length(@as(Vec3, o.center) - @as(Vec3, a.center));
+            // Across the middle of the gap between the two spheres.
+            const plane = std.math.clamp(0.5 * (len + a.radius - o.radius), 0.15 * len, 0.85 * len);
+            const blob = &l.blobs.items[i];
+            l.links.items[blob.first + blob.count] = .{
+                .other = o.center,
+                .other_radius = o.radius,
+                .bond_color = if (side == 0) bd.color_a else bd.color_b,
+                .other_color = o.color,
+                .bond_radius = bd.radius,
+                .plane = plane,
+            };
+            blob.count += 1;
+            // Bound: up to the plane, as wide as the rod or, if it reaches
+            // past the plane, the neighbour's sphere.
+            var lateral = bd.radius + reach;
+            const rest = len - plane;
+            const ro = o.radius + reach;
+            if (rest < ro) lateral = @max(lateral, @sqrt(ro * ro - rest * rest));
+            blob.bound = @max(blob.bound, @sqrt(plane * plane + lateral * lateral));
+        }
+    }
+    for (l.blobs.items) |*blob| blob.bound = @max(blob.bound, blob.radius + reach);
+    l.built = .{ .generation = r.generation, .k = k };
+    l.generation += 1;
 }
 
 /// Re-renders the backdrop cache if its inputs changed. Outside any pass.

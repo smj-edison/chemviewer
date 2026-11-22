@@ -1696,6 +1696,10 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igRadioButton_IntPtr("Glass", &shading, 3)) app.scene_dirty = true;
     ui.tooltip("Experimental: liquid glass. Translucent tinted glass atoms and bonds that refract whatever is behind them, other glass included, with bright rims.");
     app.style.shading = @fromBackingInt(@intCast(shading));
+    if (app.style.shading == .glass) {
+        if (c.igCheckbox("Liquid", &app.style.liquid)) app.scene_dirty = true;
+        ui.tooltip("Bonds flow into the atoms, like drops of liquid glass, instead of separate balls and sticks.");
+    }
     if (app.style.shading == .flat) {
         _ = c.igCheckbox("Soft shadow + outline", &app.style.flat_pop);
         ui.tooltip("Experiment: blurred drop shadows and a thin dark outline, so the molecule stands out more.");

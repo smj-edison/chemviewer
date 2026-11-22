@@ -24,14 +24,15 @@ vec3 backdropAt(vec3 q) {
 
 // `base`: tint (element or bond colour); `n`: view-space normal; `p`:
 // view-space surface point; `thick`: path length through the object;
-// `gloss`: strength of the highlights (thin bonds want less).
-vec3 glass(vec3 base, vec3 n, vec3 p, float thick, float gloss) {
+// `gloss`: strength of the highlights (thin bonds want less); `bend`:
+// scales how far refraction shifts what is seen (0 = straight through).
+vec3 glass(vec3 base, vec3 n, vec3 p, float thick, float gloss, float bend) {
     vec3 d = normalize(p);
     float ndv = clamp(dot(n, -d), 0.0, 1.0);
     // Refraction: bend the ray at the surface and follow it a little past
     // the object, so the backdrop is magnified and flipped like a lens. One
     // index per channel gives a hint of dispersion at the edges.
-    float reach = thick * 2.0 + 0.4;
+    float reach = (thick * 2.0 + 0.4) * bend;
     vec3 col;
     col.r = backdropAt(p + refract(d, n, 1.0 / 1.40) * reach).r;
     col.g = backdropAt(p + refract(d, n, 1.0 / 1.46) * reach).g;
