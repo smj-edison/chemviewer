@@ -1,9 +1,9 @@
 #!/bin/sh
 # Run by packaging/package.zig on macOS; uses only tools that come with the
 # Xcode command line tools. Assembles and signs chemviewer.app.
-# usage: bundle.sh VERSION EXE INSPECT INFO_PLIST ICON_DIR MOLTENVK OUT.(zip|dmg)
+# usage: bundle.sh VERSION EXE INSPECT INFO_PLIST ICON_DIR MOLTENVK LICENSE NOTICES OUT.(zip|dmg)
 set -eu
-version=$1 exe=$2 inspect=$3 plist=$4 icon_dir=$5 moltenvk=$6 out=$7
+version=$1 exe=$2 inspect=$3 plist=$4 icon_dir=$5 moltenvk=$6 license=$7 notices=$8 out=$9
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 app=$tmp/stage/chemviewer.app
@@ -14,6 +14,8 @@ cp "$inspect" "$app/Contents/MacOS/chemviewer-inspect"
 # SDL looks for MoltenVK here first (see SDL_cocoavulkan.m).
 cp "$moltenvk" "$app/Contents/Frameworks/libMoltenVK.dylib"
 chmod 755 "$app/Contents/MacOS/"* "$app/Contents/Frameworks/libMoltenVK.dylib"
+cp "$license" "$app/Contents/Resources/LICENSE.txt"
+cp "$notices" "$app/Contents/Resources/THIRD-PARTY-NOTICES.txt"
 sed "s/@VERSION@/$version/g" "$plist" > "$app/Contents/Info.plist"
 
 # Fail if anything outside the system (e.g. from Homebrew) is linked.

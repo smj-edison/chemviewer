@@ -4,6 +4,8 @@
 const std = @import("std");
 const Compile = std.Build.Step.Compile;
 
+const notices = "packaging/THIRD-PARTY-NOTICES.txt";
+
 pub const Kind = enum { none, portable, installer };
 
 pub fn add(b: *std.Build, kind: Kind, version: []const u8, makensis: []const u8, exe: *Compile, inspect: *Compile) void {
@@ -50,12 +52,14 @@ fn linux(b: *std.Build, kind: Kind, name: []const u8, exe: *Compile, inspect: *C
     installOutput(b, out, file_name);
 }
 
-/// Desktop entry, file types and icons: source and path under the prefix.
+/// Desktop entry, file types, licenses and icons: source and path under the prefix.
 pub const linux_files = blk: {
-    var files: [10][2][]const u8 = undefined;
+    var files: [12][2][]const u8 = undefined;
     files[0] = .{ "packaging/chemviewer.desktop", "share/applications/chemviewer.desktop" };
     files[1] = .{ "packaging/chemviewer-mime.xml", "share/mime/packages/chemviewer.xml" };
-    for ([_][]const u8{ "16", "24", "32", "48", "64", "128", "256", "512" }, 2..) |n, i| {
+    files[2] = .{ "LICENSE", "share/licenses/chemviewer/LICENSE" };
+    files[3] = .{ notices, "share/licenses/chemviewer/THIRD-PARTY-NOTICES.txt" };
+    for ([_][]const u8{ "16", "24", "32", "48", "64", "128", "256", "512" }, 4..) |n, i| {
         files[i] = .{ "packaging/icons/" ++ n ++ ".png", "share/icons/hicolor/" ++ n ++ "x" ++ n ++ "/apps/chemviewer.png" };
     }
     break :blk files;
@@ -70,12 +74,16 @@ fn windows(b: *std.Build, kind: Kind, name: []const u8, version: []const u8, mak
         run.addPrefixedFileArg(b.fmt("{s}/chemviewer.exe=", .{name}), exe.getEmittedBin());
         run.addPrefixedFileArg(b.fmt("{s}/chemviewer-inspect.exe=", .{name}), inspect.getEmittedBin());
         run.addPrefixedFileArg(b.fmt("{s}/README.md=", .{name}), b.path("README.md"));
+        run.addPrefixedFileArg(b.fmt("{s}/LICENSE.txt=", .{name}), b.path("LICENSE"));
+        run.addPrefixedFileArg(b.fmt("{s}/THIRD-PARTY-NOTICES.txt=", .{name}), b.path(notices));
         return installOutput(b, zip, zip_name);
     }
     const run = b.addSystemCommand(&.{ makensis, "-V2", "-NOCD" });
     run.addArg(b.fmt("-DVERSION={s}", .{version}));
     run.addPrefixedFileArg("-DEXE=", exe.getEmittedBin());
     run.addPrefixedFileArg("-DINSPECT=", inspect.getEmittedBin());
+    run.addPrefixedFileArg("-DLICENSE=", b.path("LICENSE"));
+    run.addPrefixedFileArg("-DNOTICES=", b.path(notices));
     run.addPrefixedFileArg("-DICON=", b.path("packaging/windows/chemviewer.ico"));
     const setup_name = b.fmt("{s}-setup.exe", .{name});
     const setup = run.addPrefixedOutputFileArg("-DOUT=", setup_name);
@@ -94,6 +102,8 @@ fn macos(b: *std.Build, kind: Kind, name: []const u8, version: []const u8, exe: 
     run.addFileArg(b.path("packaging/macos/Info.plist"));
     run.addDirectoryArg(b.path("packaging/icons"));
     run.addFileArg(moltenvk.path("MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib"));
+    run.addFileArg(b.path("LICENSE"));
+    run.addFileArg(b.path(notices));
     const file_name = b.fmt("{s}.{s}", .{ name, if (kind == .portable) "zip" else "dmg" });
     const out = run.addOutputFileArg(file_name);
     installOutput(b, out, file_name);

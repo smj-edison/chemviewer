@@ -4,7 +4,7 @@ pkgbase = chemviewer-git
 	pkgrel = 1
 	url = https://github.com/smj-edison/chemviewer
 	arch = x86_64
-	license = LicenseRef-unknown
+	license = MIT
 	makedepends = git
 	makedepends = shaderc
 	makedepends = zig>=0.17.1

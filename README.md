@@ -173,3 +173,8 @@ The flat style (`--flat`) is inspired by the flat illustration style of
 [Kurzgesagt – In a Nutshell](https://kurzgesagt.org). It borrows the general
 look only, not any of their artwork. See
 [docs/style-refs/kurzgesagt/README.md](docs/style-refs/kurzgesagt/README.md).
+
+## License
+
+MIT, see [LICENSE](LICENSE). Bundled libraries:
+[packaging/THIRD-PARTY-NOTICES.txt](packaging/THIRD-PARTY-NOTICES.txt).

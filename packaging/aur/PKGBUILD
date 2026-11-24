@@ -4,7 +4,7 @@ pkgrel=1
 pkgdesc='Fast molecular structure and trajectory viewer'
 arch=('x86_64')
 url='https://github.com/smj-edison/chemviewer'
-license=('LicenseRef-unknown') # no license file upstream yet
+license=('MIT')
 depends=('glibc' 'hicolor-icon-theme' 'sdl3' 'vulkan-driver' 'vulkan-icd-loader')
 makedepends=('git' 'shaderc' 'zig>=0.17.1')
 provides=('chemviewer')
@@ -32,5 +32,7 @@ build() {
 
 package() {
   install -d "$pkgdir/usr"
+  # zig installs the license under "chemviewer"; pacman expects the package name.
   cp -r --no-preserve=ownership "$srcdir/install/." "$pkgdir/usr/"
+  mv "$pkgdir/usr/share/licenses/chemviewer" "$pkgdir/usr/share/licenses/$pkgname"
 }

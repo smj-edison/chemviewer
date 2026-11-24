@@ -1,5 +1,5 @@
 ; Per-user installer (no administrator rights needed).
-; Built by packaging/package.zig, which defines VERSION, EXE, INSPECT, ICON and OUT.
+; Built by packaging/package.zig, which defines VERSION, EXE, INSPECT, LICENSE, NOTICES, ICON and OUT.
 Unicode true
 !include MUI2.nsh
 Name "chemviewer"
@@ -41,6 +41,8 @@ Section
   SetOutPath "$INSTDIR"
   File "/oname=chemviewer.exe" "${EXE}"
   File "/oname=chemviewer-inspect.exe" "${INSPECT}"
+  File "/oname=LICENSE.txt" "${LICENSE}"
+  File "/oname=THIRD-PARTY-NOTICES.txt" "${NOTICES}"
   CreateShortcut "$SMPROGRAMS\chemviewer.lnk" "$INSTDIR\chemviewer.exe"
   WriteRegStr HKCU "Software\chemviewer" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Classes\chemviewer.file\DefaultIcon" "" "$INSTDIR\chemviewer.exe,0"
@@ -59,6 +61,8 @@ SectionEnd
 Section "Uninstall"
   Delete "$INSTDIR\chemviewer.exe"
   Delete "$INSTDIR\chemviewer-inspect.exe"
+  Delete "$INSTDIR\LICENSE.txt"
+  Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\chemviewer.lnk"
