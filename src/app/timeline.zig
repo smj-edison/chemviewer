@@ -1,5 +1,5 @@
 //! The timeline docked at the bottom: transport controls, a frame slider and
-//! an energy plot you can click or drag to scrub.
+//! an energy plot you can click or drag to scrub (right drag: one frame per pixel).
 const std = @import("std");
 const c = @import("c");
 const ui = @import("ui.zig");
@@ -53,6 +53,7 @@ pub fn draw(app: *App, h: f32) void {
     if (c.igSliderInt("##frame", &cur, 1, @intCast(@max(n, 1)), fmt.ptr, c.ImGuiSliderFlags_AlwaysClamp)) {
         app.setFrame(@intCast(cur - 1));
     }
+    if (c.igIsItemHovered(0) and c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Right, false)) app.beginFineScrub();
     c.igSameLine(0, -1);
     c.igSetNextItemWidth(c.igGetFontSize() * 10);
     _ = c.igSliderFloat("##fps", &app.fps, 1, 240, "%.0f fps", c.ImGuiSliderFlags_Logarithmic);
@@ -69,6 +70,19 @@ pub fn draw(app: *App, h: f32) void {
     energyPlot(app, d);
 }
 
+/// Where frame `i` of `n` sits on the plot's x axis (first and last at the
+/// edges). The energy line, playhead, markers and mouse all use this mapping.
+fn frameX(i: usize, n: usize, x0: f32, w: f32) f32 {
+    if (n < 2) return x0 + 0.5;
+    return x0 + @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(n - 1)) * (w - 1) + 0.5;
+}
+
+/// The frame nearest to x: the inverse of `frameX`.
+fn frameAt(x: f32, n: usize, x0: f32, w: f32) usize {
+    const t = std.math.clamp((x - x0 - 0.5) / @max(w - 1, 1), 0, 1);
+    return @intFromFloat(@round(t * @as(f32, @floatFromInt(n - 1))));
+}
+
 fn energyPlot(app: *App, d: *App.Document) void {
     const n = d.frameCount();
     const dl = c.igGetWindowDrawList();
@@ -79,17 +93,17 @@ fn energyPlot(app: *App, d: *App.Document) void {
     _ = c.igInvisibleButton("##energy", ui.v2(w, h), 0);
     const hovered = c.igIsItemHovered(0);
     if (c.igIsItemActive() and n > 0) {
-        const mx = c.igGetMousePos().x;
-        const t = std.math.clamp((mx - p0.x) / w, 0, 1);
-        app.setFrame(@intFromFloat(@round(t * @as(f32, @floatFromInt(n - 1)))));
+        app.setFrame(frameAt(c.igGetMousePos().x, n, p0.x, w));
     }
+    if (hovered and c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Right, false)) app.beginFineScrub();
 
     const light = app.style.theme == .light;
     const accent = if (light) ui.rgba(0.12, 0.35, 0.80, 0.95) else ui.rgba(0.45, 0.75, 1.0, 0.9);
     const label_col = c.igGetColorU32_Col(c.ImGuiCol_Text, 0.55);
     c.ImDrawList_AddRectFilled(dl, p0, p1, c.igGetColorU32_Col(c.ImGuiCol_FrameBg, 1), 3, 0);
 
-    // Min/max envelope of known energies per pixel column.
+    // Known energies: a line through the frames, or with more frames than
+    // pixel columns, a min/max envelope per column.
     const scanned = if (d.source.isStreamed()) d.stream.energiesScanned() else n;
     var lo: f64 = std.math.inf(f64);
     var hi: f64 = -std.math.inf(f64);
@@ -99,14 +113,16 @@ fn energyPlot(app: *App, d: *App.Document) void {
         hi = @max(hi, e);
         known += 1;
     };
-    const cols: usize = @max(1, @as(usize, @intFromFloat(w)));
+    const cols: usize = @max(2, @as(usize, @intFromFloat(@max(w, 2))));
+    const buckets = @min(n, cols);
     if (known >= 2 and hi > lo) {
         const line_col = accent;
         const pad: f32 = 4;
         var prev: ?c.ImVec2_c = null;
-        for (0..cols) |col| {
-            const a = col * n / cols;
-            const b = @max(a + 1, (col + 1) * n / cols);
+        for (0..buckets) |col| {
+            // Frames whose place on the axis (`frameX`) falls in this column.
+            const a = if (n <= cols) col else std.math.divCeil(usize, col * (n - 1), cols - 1) catch unreachable;
+            const b = if (n <= cols) col + 1 else std.math.divCeil(usize, (col + 1) * (n - 1), cols - 1) catch unreachable;
             var cmin: f64 = std.math.inf(f64);
             var cmax: f64 = -std.math.inf(f64);
             for (a..@min(b, n)) |i| if (d.stream.energy(i)) |e| {
@@ -117,7 +133,7 @@ fn energyPlot(app: *App, d: *App.Document) void {
                 prev = null;
                 continue;
             }
-            const x = p0.x + @as(f32, @floatFromInt(col)) + 0.5;
+            const x = if (n <= cols) frameX(col, n, p0.x, w) else p0.x + @as(f32, @floatFromInt(col)) + 0.5;
             const y_of = struct {
                 fn f(e: f64, l: f64, hh: f64, top: f32, height_: f32, pd: f32) f32 {
                     const t: f32 = @floatCast((e - l) / (hh - l));
@@ -141,16 +157,11 @@ fn energyPlot(app: *App, d: *App.Document) void {
 
     // Diff reference marker and playhead.
     if (n > 1) {
-        const xf = struct {
-            fn f(i: usize, nn: usize, x0: f32, ww: f32) f32 {
-                return x0 + @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(nn - 1)) * (ww - 1) + 0.5;
-            }
-        }.f;
         if (app.diff) |df| {
-            const x = xf(df.ref_index, n, p0.x, w);
+            const x = frameX(df.ref_index, n, p0.x, w);
             c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), ui.rgba(0.90, 0.20, 0.20, 0.9), 2, 0);
         }
-        const x = xf(d.current, n, p0.x, w);
+        const x = frameX(d.current, n, p0.x, w);
         c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), if (light) ui.rgba(0.85, 0.45, 0.0, 1) else ui.rgba(1, 0.85, 0.3, 1), 2, 0);
         if (scanned < n) {
             // Thin progress bar for the background energy scan.
@@ -159,9 +170,7 @@ fn energyPlot(app: *App, d: *App.Document) void {
         }
     }
     if (hovered and n > 0) {
-        const mx = c.igGetMousePos().x;
-        const t = std.math.clamp((mx - p0.x) / w, 0, 1);
-        const i: usize = @intFromFloat(@round(t * @as(f32, @floatFromInt(n - 1))));
+        const i = frameAt(c.igGetMousePos().x, n, p0.x, w);
         if (c.igBeginTooltip()) {
             if (d.stream.energy(i)) |e| ui.text("frame {d}: E = {d:.8}", .{ i + 1, e }) else ui.text("frame {d}", .{i + 1});
             c.igEndTooltip();

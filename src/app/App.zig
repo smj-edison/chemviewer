@@ -88,6 +88,9 @@ diff: ?Diff = null,
 playing: bool = false,
 fps: f32 = 15,
 loop_playback: bool = true,
+/// Right-drag scrubbing on the timeline (null = not scrubbing): pixels moved
+/// that don't add up to a whole frame yet.
+fine_scrub: ?f32 = null,
 /// Keep the structure's orientation steady across frames (see RotationLock).
 lock_rotation: bool = false,
 rotation_lock: ?RotationLock = null,
@@ -412,6 +415,31 @@ pub fn addFragmentFile(app: *App, path: []const u8) !void {
     var frag = try opened.source.loadFrame(app.io, app.gpa, 0);
     defer frag.deinit(app.gpa);
     try app.appendFragment(frag);
+}
+
+/// Start scrubbing one frame per pixel until the right button is released. The
+/// pointer is hidden and captured meanwhile, so the screen edge doesn't stop it
+/// (warping it around isn't possible on Wayland).
+pub fn beginFineScrub(app: *App) void {
+    if (app.doc == null) return;
+    app.fine_scrub = 0;
+    _ = c.SDL_SetWindowRelativeMouseMode(app.window, true);
+}
+
+fn endFineScrub(app: *App) void {
+    app.fine_scrub = null;
+    _ = c.SDL_SetWindowRelativeMouseMode(app.window, false);
+}
+
+fn fineScrubMotion(app: *App, dx: f32) void {
+    const d = app.doc orelse return;
+    const moved = app.fine_scrub.? + dx;
+    const whole = @trunc(moved);
+    app.fine_scrub = moved - whole;
+    if (whole == 0) return;
+    const last: i64 = @intCast(d.frameCount() - 1);
+    const to = @as(i64, @intCast(d.current)) + @as(i64, @intFromFloat(whole));
+    app.setFrame(@intCast(std.math.clamp(to, 0, last)));
 }
 
 pub fn setFrame(app: *App, index: usize) void {
@@ -828,7 +856,12 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
                 app.lasso_points.append(app.gpa, .{ .x = ev.button.x, .y = ev.button.y }) catch {};
             }
         },
+        c.SDL_EVENT_WINDOW_FOCUS_LOST => if (app.fine_scrub != null) app.endFineScrub(),
         c.SDL_EVENT_MOUSE_BUTTON_UP => {
+            if (app.fine_scrub != null) {
+                if (ev.button.button == c.SDL_BUTTON_RIGHT) app.endFineScrub();
+                return;
+            }
             if (app.drag != null) {
                 if (ev.button.button == app.drag_button) app.endDrag(true);
                 return;
@@ -846,6 +879,11 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             }
         },
         c.SDL_EVENT_MOUSE_MOTION => {
+            if (app.fine_scrub != null) {
+                // Released before the UI frame that started the scrub.
+                if ((ev.motion.state & c.SDL_BUTTON_RMASK) == 0) return app.endFineScrub();
+                return app.fineScrubMotion(ev.motion.xrel);
+            }
             if (app.drag != null) return app.dragMotion(ev.motion.x, ev.motion.y, ev.motion.xrel, ev.motion.yrel);
             if (app.press) |*pr| pr.moved += @abs(ev.motion.xrel) + @abs(ev.motion.yrel);
             if (app.lasso_active) {
@@ -1738,7 +1776,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
 
-    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. F: fit. Double-click a bond: cut / restore it.", .{});
+    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. Right drag on the timeline: scrub one frame per pixel. F: fit. Double-click a bond: cut / restore it.", .{});
 }
 
 /// Element key: a colour swatch and count per element present, in Hill

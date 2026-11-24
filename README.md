@@ -77,8 +77,8 @@ SDL_VIDEO_DRIVER=offscreen zig-out/bin/chemviewer traj.traj \
 Other flags: `--no-ui` (molecule only, e.g. for figures), `--dark`, `--flat` (flat style), `--flat-pop` (flat with soft shadows and a thin
 outline), `--aero` (glossy Frutiger Aero-inspired style), `--glass` (experimental glass style; `--no-liquid` for separate balls and sticks), `--play` (start playing), `--interpolate`
 (smooth playback at the display rate, blending between steps), `--fps N` (steps per second), `--atom-numbers`,
-`--ui-scale X`, `--no-bg-pattern` (plain background), `--backdrop cells|space`
-(backdrop motif), `--bg-blur K` (backdrop depth of field, default 0.6), and
+`--ui-scale X`, `--backdrop none|cells|space`
+(background, default space; `--no-bg-pattern` is the same as `none`), `--bg-blur K` (backdrop depth of field, default 0.6), and
 a camera pose for scripted screenshots: `--orbit DX,DY` and `--pan DX,DY` (mouse
 drag in pixels), `--zoom STEPS` (wheel steps). `--lock-rotation` locks on
 the first frame before going to `--frame N`, so frame N is drawn in frame 1's
@@ -115,6 +115,7 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Right drag ↑ ↓ | zoom (up = closer) |
 | Middle drag / Shift + left or right drag | translate |
 | Wheel | zoom |
+| Right drag on the timeline | scrub one frame per pixel |
 | Space | play / pause |
 | ← → keys or , . | previous / next frame |
 | PgUp / PgDn | jump 5% |
