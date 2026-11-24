@@ -307,3 +307,45 @@ the same weights.
 - **Limits.** Faint (alpha-blended) contacts stay as separate rods, so metal
   clusters drawn with weak contacts look like non-liquid glass.
 
+
+### D24 — One owner for each fact about a frame
+*Decided 2026-11-24, not implemented yet.* Terms are in GLOSSARY.md. Data flows
+one way: the frame stream owns file frames, the edit session owns the current
+atoms of every frame, and the displayed geometry is derived from both and never
+edited.
+- **Frame stream:** answers ready, pending or failed per frame. Prefetch and the
+  energy scan continue past a bad frame; playback skips it. It is named once and
+  retried only when the user goes back to it.
+- **Edit session:** an edit is a transaction tied to its frame. A frame change,
+  undo, paste, revert, close or open aborts one in progress and restores the
+  atoms. Starting an edit pauses playback. A frame is edited only while an edit
+  is in effect (or its first edit has left the history). Revert is undoable.
+  Opening or closing a file resets everything, including drag and playback.
+- **Cuts** end when the user leaves the frame; the selection carries over unless
+  the numbering differs. Delete and its undo translate both.
+- **Displayed geometry:** drawing, picking, lasso, labels and measured values
+  use what is visible, blends included. Saving and copying use the real frame.
+  Bonds always match the atoms.
+
+The modules don't depend on SDL, ImGui or Vulkan. Order: stream, edit session,
+displayed geometry.
+
+### D25 — Selection is part of the undo history (provisional)
+*Decided 2026-11-24, not implemented yet; to be revisited after trying it.* As
+in Blender, selecting can take real effort, so selection and cut changes are
+undo steps, one per gesture, with redo (Ctrl+Shift+Z, Ctrl+Y). Geometry steps
+jump to their frame. Selection steps apply where the user is, and steps that no
+longer apply are skipped. At most 100 geometry steps and 1,000 in total, oldest
+selection steps going first. One constant switches selection steps off.
+
+### D26 — One rotation lock, for playback and diffs
+*Decided 2026-11-24, not implemented yet; extends D21.* Lining frames up is only
+ever a change of view. The checkbox stays where it is, above the energy plot.
+While diffing, its anchor is the reference. Starting a diff turns it on and
+ending the diff restores its previous state; otherwise it is off by default. A
+geometry edit unlocks it, which just stops the updates, so nothing jumps;
+relocking refits. The current structure is drawn at its own coordinates, so
+Alt-drag works in the overlay. The reference has a placement applied only when
+drawing. Camera and placement move together, so on screen the reference and the
+background stay still. The diff panel has a Reset to see both frames at their
+file positions.
