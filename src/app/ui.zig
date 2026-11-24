@@ -58,6 +58,14 @@ pub fn tooltip(s: [:0]const u8) void {
     }
 }
 
+/// Put the next radio button or checkbox on the same line, if it fits.
+pub fn sameLineIfFits(label: [:0]const u8) void {
+    const style = c.igGetStyle();
+    const width = c.igGetFrameHeight() + style.*.ItemInnerSpacing.x + c.igCalcTextSize(label.ptr, null, true, -1).x;
+    c.igSameLine(0, -1);
+    if (c.igGetContentRegionAvail().x < width) c.igNewLine();
+}
+
 pub fn rgba(r: f32, g: f32, b: f32, a: f32) u32 {
     return c.igGetColorU32_Vec4(.{ .x = r, .y = g, .z = b, .w = a });
 }

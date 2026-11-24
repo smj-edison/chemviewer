@@ -538,6 +538,7 @@ test {
     _ = App;
     _ = @import("render/Camera.zig");
     _ = @import("render/glass_layers.zig");
+    _ = @import("render/Renderer.zig");
     _ = @import("app/measure.zig");
     _ = @import("app/lasso.zig");
     _ = @import("app/drag.zig");

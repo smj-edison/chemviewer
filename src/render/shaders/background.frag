@@ -11,9 +11,6 @@
 //   sharper small ones nearer, drifting vesicles.
 // u_mode 1: "space": nebula haze, glowing bokeh discs and a few four-point
 //   sparkle stars.
-// u_mode 2 / 3: aero (day / night), for the aero shading: a sky dome with
-//   rolling hills, clouds, sun rays, lens flare and soap bubbles; at night,
-//   aurora curtains and stars.
 // u_mode 4: plain background (pattern off; only glass shading samples it).
 #include "common.glsl"
 
@@ -176,101 +173,6 @@ vec3 stars(vec3 col, vec3 p, float density, vec2 rad, float aa, float alpha, flo
     return col;
 }
 
-// Aero soap bubbles: nearly clear body, bright rim, a big highlight up
-// left and a small one down right.
-vec3 bubbles(vec3 col, vec3 p, float density, vec2 rad, float aa, float alpha, float seed) {
-    bool night = u_mode == 3;
-    vec3 cell_ = floor(p);
-    vec3 base_ = cell_ - 1.0 + step(0.5, p - cell_);
-    for (int i_ = 0; i_ < 8; i_++) {
-        vec3 g_ = base_ + vec3(i_ & 1, (i_ >> 1) & 1, (i_ >> 2) & 1);
-        vec4 h = hash4(g_ + seed);
-        if (h.w > density) continue;
-        vec3 c = g_ + 0.25 + 0.5 * h.xyz;
-        float r = mix(rad.x, rad.y, fract(h.w * 17.0 / density));
-        float e = min(aa / r, 0.7 / r - 1.0);
-        float u = length(p - c) / r;
-        float inside = 1.0 - smoothstep(1.0 - e, 1.0 + e, u);
-        float rim = inside * smoothstep(0.6, 1.0, u);
-        vec3 tint = night ? mix(vec3(0.35, 0.95, 1.0), vec3(0.45, 1.0, 0.6), fract(h.x * 3.0))
-                          : mix(vec3(0.70, 0.93, 1.0), vec3(0.80, 1.0, 0.80), fract(h.x * 3.0));
-        col = mix(col, tint, inside * 0.10 * alpha);
-        col = mix(col, night ? tint : vec3(1.0), rim * rim * 0.6 * alpha);
-        float hl = 1.0 - smoothstep(0.10, 0.24 + e, length(p - (c + vec3(-0.32, 0.38, 0.0) * r)) / r);
-        col = mix(col, vec3(1.0), hl * 0.85 * alpha * inside);
-        float hl2 = 1.0 - smoothstep(0.04, 0.10 + e, length(p - (c + vec3(0.40, -0.40, 0.0) * r)) / r);
-        col = mix(col, vec3(1.0), hl2 * 0.5 * alpha * inside);
-    }
-    return col;
-}
-
-// Frutiger Aero sky (world up = +Y): rolling green hills, clouds, a sun with
-// rays and lens flare, a green swoosh, and bubbles at two depths. At night:
-// a teal-to-navy sky with aurora curtains and stars.
-vec3 aeroSky() {
-    bool night = u_mode == 3;
-    vec3 d = ray_dir;
-    float e = d.y;
-    float az = atan(d.z, d.x);
-    vec3 sun = normalize(vec3(0.45, 0.55, -0.70));
-    float hill = -0.05 + 0.05 * sin(az * 2.0 + 0.6) + 0.025 * sin(az * 5.0 + 1.7) + 0.012 * sin(az * 11.0);
-    float below = smoothstep(hill + 0.004, hill - 0.004, e);
-    float sw = e - (0.10 + 0.06 * sin(az * 1.5 + 0.8));
-    vec3 col;
-    if (!night) {
-        col = mix(vec3(0.86, 0.96, 1.0), vec3(0.36, 0.72, 0.97), smoothstep(0.0, 0.35, e));
-        col = mix(col, vec3(0.07, 0.42, 0.86), smoothstep(0.3, 0.95, e));
-        float cn = noise(d * 3.0) * 0.6 + noise(d * 7.0 + 3.0) * 0.4;
-        col = mix(col, vec3(1.0), 0.75 * smoothstep(0.55, 0.8, cn) * smoothstep(0.55, 0.05, e));
-        float sd = max(dot(d, sun), 0.0);
-        vec3 t1 = normalize(cross(sun, vec3(0.0, 1.0, 0.0)));
-        vec3 t2 = cross(t1, sun);
-        float a = atan(dot(d, t2), dot(d, t1));
-        float rays = smoothstep(0.35, 1.0, 0.5 + 0.5 * sin(a * 14.0) * sin(a * 5.0 + 1.0));
-        col += vec3(1.0, 0.98, 0.9) * (pow(sd, 400.0) * 1.2 + pow(sd, 18.0) * 0.35);
-        col += vec3(1.0, 0.97, 0.85) * rays * pow(sd, 6.0) * 0.22;
-        col = mix(col, vec3(0.70, 1.0, 0.60), exp(-sw * sw / 0.0012) * 0.45);
-        col = mix(col, vec3(0.95, 1.0, 1.0), exp(-(sw - 0.03) * (sw - 0.03) / 0.0003) * 0.35);
-        vec3 grass = mix(vec3(0.47, 0.84, 0.26), vec3(0.10, 0.50, 0.18), smoothstep(hill, hill - 0.5, e));
-        grass += vec3(0.9, 1.0, 0.7) * 0.25 * smoothstep(hill - 0.06, hill, e);
-        col = mix(col, grass, below);
-    } else {
-        col = mix(vec3(0.03, 0.20, 0.28), vec3(0.02, 0.07, 0.17), smoothstep(0.0, 0.5, e));
-        col = mix(col, vec3(0.01, 0.03, 0.09), smoothstep(0.5, 1.0, e));
-        // Aurora curtains: wavy bands, bright at the bottom edge.
-        for (int k = 0; k < 3; k++) {
-            float fk = float(k);
-            float base = 0.18 + 0.12 * fk + 0.05 * sin(az * (2.0 + fk) + fk * 2.1);
-            float y = e - base;
-            float curtain = smoothstep(-0.01, 0.01, y) * exp(-max(y, 0.0) * (9.0 - 2.0 * fk));
-            curtain *= 0.6 + 0.4 * sin(az * 23.0 + fk * 4.0 + noise(d * 6.0 + fk) * 6.0);
-            col += (k == 1 ? vec3(0.25, 0.85, 1.0) : vec3(0.30, 1.0, 0.55)) * curtain * 0.35;
-        }
-        col = dots(col, shellDir(9.0) * 30.0, 0.25, vec2(0.04, 0.08), dof(9.0, 30.0, 0.3), 0.7, 37.0, vec3(0.9, 0.97, 1.0), vec3(0.6, 1.0, 0.9));
-        col = mix(col, vec3(0.20, 1.0, 0.75), exp(-sw * sw / 0.0012) * 0.25);
-        vec3 hillc = mix(vec3(0.02, 0.12, 0.10), vec3(0.01, 0.05, 0.05), smoothstep(hill, hill - 0.5, e));
-        hillc += vec3(0.2, 0.9, 0.7) * 0.25 * smoothstep(hill - 0.03, hill, e);
-        col = mix(col, hillc, below);
-    }
-    col = bubbles(col, shellDir(9.0) * 3.2, 0.45, vec2(0.18, 0.36), dof(9.0, 3.2, 1.0), 0.9, 41.0);
-    col = bubbles(col, shellDir(5.5) * 7.0, 0.30, vec2(0.08, 0.17), dof(5.5, 7.0, 1.0), 0.9, 53.0);
-    // Lens flare: ghosts on the line from the sun through the centre.
-    vec3 sv = mat3(u_view) * sun;
-    if (!night && sv.z < 0.0) {
-        vec2 sp = (sv.xy / -sv.z) / u_tan;
-        vec2 asp = vec2(u_tan.x / u_tan.y, 1.0);
-        const float ks[4] = float[4](0.55, 0.15, -0.4, -0.85);
-        const float rs[4] = float[4](0.05, 0.10, 0.07, 0.16);
-        const vec3 cs[4] = vec3[4](vec3(1.0, 0.9, 0.6), vec3(0.6, 1.0, 0.8), vec3(0.6, 0.8, 1.0), vec3(0.8, 0.7, 1.0));
-        for (int k = 0; k < 4; k++) {
-            float dd = length((v_ndc - sp * ks[k]) * asp);
-            col += cs[k] * (1.0 - smoothstep(rs[k] * 0.7, rs[k], dd)) * 0.10;
-            col += cs[k] * smoothstep(rs[k] * 0.9, rs[k], dd) * (1.0 - smoothstep(rs[k], rs[k] * 1.08, dd)) * 0.10;
-        }
-    }
-    return col;
-}
-
 void main() {
     mat3 R = mat3(u_bg_view);
     mat3 Rt = transpose(R);
@@ -278,9 +180,7 @@ void main() {
     ray_dir = normalize(Rt * normalize(vec3(v_ndc * u_tan, -1.0)));
     vec3 col = u_bg;
     float vig = smoothstep(0.4, 1.6, length(v_ndc));
-    if (u_mode == 2 || u_mode == 3) {
-        col = aeroSky();
-    } else if (u_mode == 0) {
+    if (u_mode == 0) {
         col = mix(col, u_ink, 0.25 * vig);
         // Far: big, heavily defocused cells.
         float s1 = 2.6;

@@ -1789,26 +1789,24 @@ fn inspector(app: *App, timeline_h: f32) void {
     c.igSameLine(0, -1);
     _ = c.igRadioButton_IntPtr("Dark", &theme, 1);
     app.style.theme = @fromBackingInt(@intCast(theme));
-    var shading: c_int = @backingInt(app.style.shading);
-    _ = c.igRadioButton_IntPtr("Cel", &shading, 0);
-    ui.tooltip("Toon bands with outlines.");
-    c.igSameLine(0, -1);
-    _ = c.igRadioButton_IntPtr("Flat", &shading, 1);
-    ui.tooltip("Inspired by Kurzgesagt's flat illustrations: solid colours, flat drop shadows, depth shown by fading into the background.");
-    c.igSameLine(0, -1);
-    _ = c.igRadioButton_IntPtr("Aero", &shading, 2);
-    ui.tooltip("Glossy, in the spirit of Frutiger Aero: glassy atoms with highlight caps, in front of a sky (or an aurora at night) with bubbles and lens flare.");
-    c.igSameLine(0, -1);
-    _ = c.igRadioButton_IntPtr("Glass", &shading, 3);
-    ui.tooltip("Experimental: liquid glass. Translucent tinted glass atoms and bonds that refract whatever is behind them, other glass included, with bright rims.");
-    app.style.shading = @fromBackingInt(@intCast(shading));
+    inline for (.{
+        .{ "Cel", Renderer.Shading.cel, false, "Toon bands with outlines." },
+        .{ "Flat", .flat, false, "Inspired by Kurzgesagt's flat illustrations: solid colours, flat drop shadows, depth shown by fading into the background." },
+        .{ "Flat+", .flat, true, "Flat, with blurred drop shadows and a thin dark outline, so the molecule stands out more." },
+        .{ "Aero", .aero, false, "Glossy, in the spirit of Frutiger Aero: glassy atoms with highlight caps." },
+        .{ "Glass", .glass, false, "Experimental: liquid glass. Translucent tinted glass atoms and bonds that refract whatever is behind them, other glass included, with bright rims." },
+    }, 0..) |o, i| {
+        if (i > 0) ui.sameLineIfFits(o[0]);
+        const plus = app.style.shading == .flat and app.style.flat_pop;
+        if (c.igRadioButton_Bool(o[0], app.style.shading == o[1] and plus == o[2])) {
+            app.style.shading = o[1];
+            app.style.flat_pop = o[2];
+        }
+        ui.tooltip(o[3]);
+    }
     if (app.style.shading == .glass) {
         _ = c.igCheckbox("Liquid", &app.style.liquid);
         ui.tooltip("Bonds flow into the atoms, like drops of liquid glass, instead of separate balls and sticks.");
-    }
-    if (app.style.shading == .flat) {
-        _ = c.igCheckbox("Soft shadow + outline", &app.style.flat_pop);
-        ui.tooltip("Experiment: blurred drop shadows and a thin dark outline, so the molecule stands out more.");
     }
     if (app.style.shading == .cel) {
         _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
@@ -1818,23 +1816,16 @@ fn inspector(app: *App, timeline_h: f32) void {
     c.igSameLine(0, -1);
     if (c.igRadioButton_Bool("None", !app.style.background_pattern)) app.style.background_pattern = false;
     ui.tooltip("Plain solid colour.");
-    c.igSameLine(0, -1);
-    if (app.style.shading == .aero) {
-        // Aero has its own scenery.
-        if (c.igRadioButton_Bool("Sky", app.style.background_pattern)) app.style.background_pattern = true;
-        ui.tooltip("Sky dome with bubbles (aurora night in the dark theme); turns with the camera.");
-    } else {
-        inline for (.{
-            .{ "Space", .space, "Glowing bokeh, haze and sparkle stars, out of focus; turns with the camera." },
-            .{ "Cells", .cells, "Blobs with membranes and nuclei, out of focus as if seen up close; turns with the camera." },
-        }, 0..) |o, i| {
-            if (i > 0) c.igSameLine(0, -1);
-            if (c.igRadioButton_Bool(o[0], app.style.background_pattern and app.style.backdrop == o[1])) {
-                app.style.background_pattern = true;
-                app.style.backdrop = o[1];
-            }
-            ui.tooltip(o[2]);
+    inline for (.{
+        .{ "Space", .space, "Glowing bokeh, haze and sparkle stars, out of focus; turns with the camera." },
+        .{ "Cells", .cells, "Blobs with membranes and nuclei, out of focus as if seen up close; turns with the camera." },
+    }) |o| {
+        c.igSameLine(0, -1);
+        if (c.igRadioButton_Bool(o[0], app.style.background_pattern and app.style.backdrop == o[1])) {
+            app.style.background_pattern = true;
+            app.style.backdrop = o[1];
         }
+        ui.tooltip(o[2]);
     }
     if (app.style.background_pattern) {
         _ = c.igSliderFloat("Background blur", &app.style.background_blur, 0, 2.5, "%.2f", 0);

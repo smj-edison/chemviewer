@@ -110,6 +110,21 @@ pub const Backdrop = struct {
     glow_b: [3]f32,
 };
 
+test "flat's heavy atoms don't stand out as much, and its light ones are unchanged" {
+    const flat: Style = .{ .shading = .flat };
+    const cel: Style = .{ .shading = .cel };
+    const ratio = struct {
+        fn f(s: Style, z: u8) f32 {
+            return s.atomRadius(z) / s.atomRadius(6);
+        }
+    }.f;
+    try std.testing.expectApproxEqAbs(1.65, ratio(cel, 79), 0.02);
+    try std.testing.expectApproxEqAbs(1.3, ratio(flat, 79), 0.02);
+    try std.testing.expectApproxEqAbs(ratio(cel, 1), ratio(flat, 1), 1e-5);
+    // Still bigger for bigger atoms.
+    try std.testing.expect(ratio(flat, 15) > 1 and ratio(flat, 15) < ratio(flat, 79));
+}
+
 /// Background motif (both shadings).
 pub const BackdropKind = enum(c_int) {
     /// Out-of-focus cells: soft blobs with a membrane rim and a nucleus.
@@ -127,8 +142,7 @@ pub const Shading = enum(c_int) {
     /// toward the background, chunkier atoms.
     flat,
     /// In the spirit of Frutiger Aero (Vista/7-era gloss): glassy atoms with
-    /// an Aqua-style highlight cap, rim light and specular glints, in front
-    /// of a sky dome (or, in the dark theme, an aurora night) with bubbles.
+    /// an Aqua-style highlight cap, rim light and specular glints.
     aero,
     /// Experimental: inspired by Apple's "Liquid Glass". Translucent tinted
     /// glass atoms and bonds that refract everything behind them (other
@@ -190,7 +204,14 @@ pub const Style = struct {
             // Bigger droplets show more of the refraction.
             .glass => 1.2,
         };
-        return cv.elements.displayRadius(z) * s.atom_scale * k;
+        var r = cv.elements.displayRadius(z);
+        if (s.shading == .flat) {
+            // Without shading, big discs weigh more: atoms larger than carbon
+            // are drawn closer to its size (gold 1.3 times, not 1.65).
+            const carbon = cv.elements.displayRadius(6);
+            if (r > carbon) r = carbon * std.math.pow(f32, r / carbon, 0.52);
+        }
+        return r * s.atom_scale * k;
     }
 
     /// Liquid glass: how far the smooth union between atoms and bonds
@@ -1274,10 +1295,9 @@ fn frameUniforms(p: DrawParams, res: f32) FrameUniforms {
         .shadow_color = ratio,
         .fog_range = p.fog_range,
         .bg = bg,
-        // Backdrop motif; aero has its own sky (2 = day, 3 = night). With
-        // the pattern off the cache holds the plain background (4), which
-        // only glass sees.
-        .mode = if (!style.background_pattern) 4 else if (style.shading == .aero) (if (style.theme == .dark) 3 else 2) else @backingInt(style.backdrop),
+        // Backdrop motif. With the pattern off the cache holds the plain
+        // background (4), which only glass sees.
+        .mode = if (!style.background_pattern) 4 else @backingInt(style.backdrop),
         .ink = bd.ink,
         .radius = p.bg_radius,
         .deep = bd.deep,
@@ -1318,7 +1338,6 @@ const BackgroundCache = struct {
         theme: Theme,
         backdrop: BackdropKind,
         pattern: bool,
-        aero: bool,
         blur: f32,
     };
 
@@ -1723,7 +1742,6 @@ fn updateBackground(r: *Renderer, frame: Gpu.Frame, p: DrawParams, set: vk.Descr
         .theme = p.style.theme,
         .backdrop = p.style.backdrop,
         .pattern = p.style.background_pattern,
-        .aero = p.style.shading == .aero,
         .blur = p.style.background_blur,
     };
     if (cache.key != null and std.meta.eql(cache.key.?, key)) return;
