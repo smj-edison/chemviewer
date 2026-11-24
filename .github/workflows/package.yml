@@ -37,7 +37,7 @@ jobs:
       - name: Build
         run: |
           for kind in portable installer; do
-            zig build ${{ matrix.args }} -Dcpu=baseline -Doptimize=ReleaseFast \
+            zig build ${{ matrix.args }} -Dcpu=baseline -Doptimize=ReleaseSafe \
               -Dpackage=$kind -Dversion="${VERSION#v}" --prefix dist
           done
       - uses: actions/upload-artifact@v4

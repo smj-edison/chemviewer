@@ -27,7 +27,7 @@ prepare() {
 build() {
   cd "$pkgname"
   ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache" zig build --prefix "$srcdir/install" \
-    -Dcpu=baseline -Doptimize=ReleaseFast
+    -Dcpu=baseline -Doptimize=ReleaseSafe
 }
 
 package() {
