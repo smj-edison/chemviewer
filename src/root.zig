@@ -20,6 +20,7 @@ pub const formats = struct {
 pub const source = @import("source.zig");
 pub const stream = @import("stream.zig");
 pub const edit = @import("edit.zig");
+pub const picks = @import("picks.zig");
 pub const playback = @import("playback.zig");
 
 pub const Frame = structure.Frame;

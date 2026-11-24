@@ -130,13 +130,11 @@ dialog_ready: std.atomic.Value(bool) = .init(false),
 save_path: [4096]u8 = undefined,
 save_ready: std.atomic.Value(bool) = .init(false),
 
-/// Selected atoms in click order (indices into the frame). The first four
-/// define the measurement; any number can be copied as XYZ.
-selection: std.ArrayList(u32) = .empty,
+/// The selection and cuts of the shown frame.
+picks: cv.picks.Picks = .{},
 edit_mode: cv.geometry.Mode = .last,
 /// The current atoms of every frame, and the undo history.
 session: cv.edit.EditSession,
-cut_bonds: CutSet = .empty,
 /// Left-button press in the viewport, to tell clicks from drags.
 press: ?struct { moved: f32 } = null,
 /// Active lasso (Ctrl+left drag): outline in window points.
@@ -149,8 +147,7 @@ drag: ?drag_mod.Drag = null,
 drag_edit: ?cv.edit.Transaction = null,
 drag_button: u8 = 0,
 
-pub const CutSet = cv.edit.CutSet;
-pub const pairKey = cv.edit.pairKey;
+const pairKey = cv.picks.pairKey;
 
 pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window, gpu: *Gpu) !App {
     return .{ .io = io, .gpa = gpa, .window = window, .renderer = try Renderer.init(gpa, gpu), .session = .init(gpa) };
@@ -165,9 +162,8 @@ pub fn deinit(app: *App) void {
 fn deinitState(app: *App) void {
     app.closeDocument();
     app.session.deinit();
-    app.selection.deinit(app.gpa);
+    app.picks.deinit(app.gpa);
     app.lasso_points.deinit(app.gpa);
-    app.cut_bonds.deinit(app.gpa);
     app.interp_positions.deinit(app.gpa);
 }
 
@@ -188,8 +184,7 @@ pub fn status(app: *const App) []const u8 {
 pub fn closeDocument(app: *App) void {
     app.endDrag(false);
     app.session.clear();
-    app.clearSelection();
-    app.cut_bonds.clearRetainingCapacity();
+    app.picks.clear();
     app.press = null;
     app.lasso_active = false;
     app.lasso_points.clearRetainingCapacity();
@@ -392,11 +387,11 @@ fn appendFragment(app: *App, frag: Frame) !void {
     }
     const first: u32 = @intCast(f.len());
     const total: u32 = @intCast(first + frag.len());
-    try app.selection.ensureTotalCapacity(gpa, frag.len());
-    edit.replace(try f.concat(gpa, frag, offset));
-    _ = try app.commitEdit(&edit, null);
-    app.selection.clearRetainingCapacity();
-    for (first..total) |i| app.selection.appendAssumeCapacity(@intCast(i));
+    try app.picks.selection.ensureTotalCapacity(gpa, frag.len());
+    try edit.append(frag, offset);
+    _ = try app.commitEdit(&edit);
+    app.picks.selection.clearRetainingCapacity();
+    for (first..total) |i| app.picks.selection.appendAssumeCapacity(@intCast(i));
     app.scene_dirty = true;
     // Re-frame if any pasted atom is off-screen.
     const sp = app.screenProjector();
@@ -546,7 +541,7 @@ fn showFrame(app: *App, index: usize, frame: Frame) void {
     if (d.shown) |*old| old.deinit(app.gpa);
     d.shown = frame;
     d.shown_index = index;
-    app.dropInvalidSelection();
+    app.followPicks();
     app.bonds_dirty = true;
 }
 
@@ -718,11 +713,11 @@ fn rebuildScene(app: *App) !void {
     const f = d.shown orelse return r.upload();
     if (app.diff) |df| if (df.overlay and df.result != null) {
         _ = try r.addStructure(df.reference.positions, df.reference.numbers, df.ref_bonds.items, app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
-        const start = try r.addStructure(df.aligned.items, f.numbers, d.bonds.items, app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.cut_bonds);
+        const start = try r.addStructure(df.aligned.items, f.numbers, d.bonds.items, app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.picks.cuts);
         r.highlight(start, app.selected());
         return r.upload();
     };
-    const start = try r.addStructure(app.displayPositions(f), f.numbers, d.bonds.items, app.style, null, &app.cut_bonds);
+    const start = try r.addStructure(app.displayPositions(f), f.numbers, d.bonds.items, app.style, null, &app.picks.cuts);
     r.highlight(start, app.selected());
     if (app.style.show_cell) if (f.cell) |cell| try r.addCell(cell, app.style.theme.cellLine());
     try r.upload();
@@ -979,69 +974,56 @@ fn dialogCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filte
 // ------------------------------------------------------------ selection
 
 pub fn selected(app: *const App) []const u32 {
-    return app.selection.items;
+    return app.picks.selection.items;
 }
 
 pub fn clearSelection(app: *App) void {
-    if (app.selection.items.len == 0) return;
-    app.selection.clearRetainingCapacity();
+    if (app.picks.selection.items.len == 0) return;
+    app.picks.selection.clearRetainingCapacity();
     app.scene_dirty = true;
 }
 
 fn isSelected(app: *const App, atom: u32) ?usize {
-    return std.mem.indexOfScalar(u32, app.selection.items, atom);
+    return std.mem.indexOfScalar(u32, app.picks.selection.items, atom);
 }
 
 /// Click on an atom: add it to the selection, or remove it if already selected.
 pub fn toggleSelect(app: *App, atom: u32) void {
     if (app.isSelected(atom)) |k| {
-        _ = app.selection.orderedRemove(k);
+        _ = app.picks.selection.orderedRemove(k);
     } else {
-        app.selection.append(app.gpa, atom) catch return;
+        app.picks.selection.append(app.gpa, atom) catch return;
     }
     app.scene_dirty = true;
 }
 
-/// Drop selected indices that don't exist in the shown frame.
-fn dropInvalidSelection(app: *App) void {
-    const d = app.doc orelse return;
-    const n = if (d.shown) |f| f.len() else return;
-    var i: usize = 0;
-    while (i < app.selection.items.len) {
-        if (app.selection.items[i] >= n) {
-            _ = app.selection.orderedRemove(i);
-            app.scene_dirty = true;
-        } else i += 1;
-    }
-}
-
 pub fn isCut(app: *const App, a: u32, b: u32) bool {
-    return app.cut_bonds.contains(pairKey(a, b));
+    return app.picks.cuts.contains(pairKey(a, b));
 }
 
 /// Cut (or restore) the bond between atoms `a` and `b`.
 pub fn toggleCutPair(app: *App, a: u32, b: u32) void {
     const key = pairKey(a, b);
-    if (app.cut_bonds.remove(key)) {
+    if (app.picks.cuts.remove(key)) {
         app.setStatus("Restored bond", .{});
     } else {
-        app.cut_bonds.put(app.gpa, key, {}) catch return;
+        app.picks.cuts.put(app.gpa, key, {}) catch return;
         app.setStatus("Cut bond: ignored when moving groups and selecting molecules", .{});
     }
     app.scene_dirty = true;
 }
 
 pub fn restoreCuts(app: *App) void {
-    app.cut_bonds.clearRetainingCapacity();
+    app.picks.cuts.clearRetainingCapacity();
     app.scene_dirty = true;
 }
 
 pub fn selectAll(app: *App) void {
     const d = app.doc orelse return;
     const f = d.shown orelse return;
-    app.selection.clearRetainingCapacity();
-    app.selection.ensureTotalCapacity(app.gpa, f.len()) catch return;
-    for (0..f.len()) |i| app.selection.appendAssumeCapacity(@intCast(i));
+    app.picks.selection.clearRetainingCapacity();
+    app.picks.selection.ensureTotalCapacity(app.gpa, f.len()) catch return;
+    for (0..f.len()) |i| app.picks.selection.appendAssumeCapacity(@intCast(i));
     app.scene_dirty = true;
 }
 
@@ -1050,26 +1032,26 @@ pub fn selectAll(app: *App) void {
 pub fn expandSelection(app: *App) void {
     const d = app.doc orelse return;
     const f = d.shown orelse return;
-    if (app.selection.items.len == 0) return app.selectAll();
+    if (app.picks.selection.items.len == 0) return app.selectAll();
     const gpa = app.gpa;
     var graph = app.drawnGraph() catch return;
     defer graph.deinit(gpa);
     const mask = gpa.alloc(bool, f.len()) catch return;
     defer gpa.free(mask);
     @memset(mask, false);
-    for (app.selection.items) |i| mask[i] = true;
-    const before = app.selection.items.len;
+    for (app.picks.selection.items) |i| mask[i] = true;
+    const before = app.picks.selection.items.len;
     // BFS from the current selection; new atoms are appended in visit order.
     var head: usize = 0;
-    while (head < app.selection.items.len) : (head += 1) {
-        for (graph.neighbors(app.selection.items[head])) |j| if (!mask[j]) {
+    while (head < app.picks.selection.items.len) : (head += 1) {
+        for (graph.neighbors(app.picks.selection.items[head])) |j| if (!mask[j]) {
             mask[j] = true;
-            app.selection.append(gpa, j) catch return;
+            app.picks.selection.append(gpa, j) catch return;
         };
     }
-    if (app.selection.items.len == before) return app.selectAll();
+    if (app.picks.selection.items.len == before) return app.selectAll();
     app.scene_dirty = true;
-    app.setStatus("Selected {d} atoms (whole molecules); Ctrl+A again selects all", .{app.selection.items.len});
+    app.setStatus("Selected {d} atoms (whole molecules); Ctrl+A again selects all", .{app.picks.selection.items.len});
 }
 
 /// Add (or, with Ctrl+Shift, remove) every atom whose projection lies
@@ -1091,22 +1073,22 @@ fn applyLasso(app: *App) void {
     var changed: usize = 0;
     if (app.lasso_remove) {
         var i: usize = 0;
-        while (i < app.selection.items.len) {
-            if (mask[app.selection.items[i]]) {
-                _ = app.selection.orderedRemove(i);
+        while (i < app.picks.selection.items.len) {
+            if (mask[app.picks.selection.items[i]]) {
+                _ = app.picks.selection.orderedRemove(i);
                 changed += 1;
             } else i += 1;
         }
     } else {
-        for (app.selection.items) |i| mask[i] = false; // already selected
+        for (app.picks.selection.items) |i| mask[i] = false; // already selected
         for (mask, 0..) |m, i| if (m) {
-            app.selection.append(gpa, @intCast(i)) catch return;
+            app.picks.selection.append(gpa, @intCast(i)) catch return;
             changed += 1;
         };
     }
     app.scene_dirty = true;
     app.setStatus("{s} {d} atom{s} ({d} selected)", .{
-        if (app.lasso_remove) "Deselected" else "Selected", changed, if (changed == 1) "" else "s", app.selection.items.len,
+        if (app.lasso_remove) "Deselected" else "Selected", changed, if (changed == 1) "" else "s", app.picks.selection.items.len,
     });
 }
 
@@ -1354,7 +1336,7 @@ fn endDrag(app: *App, commit: bool) void {
     app.drag = null;
     app.drag_edit = null;
     if (commit and dr.moved) {
-        if (app.commitEdit(&edit, null)) |changed| {
+        if (app.commitEdit(&edit)) |changed| {
             if (changed) app.setStatus("Moved {d} atom{s} (Ctrl+Z undoes)", .{ dr.group.len, if (dr.group.len == 1) "" else "s" });
             return;
         } else |e| app.setStatus("Move failed: {t}", .{e});
@@ -1406,7 +1388,7 @@ fn applyEditInner(app: *App, edit: Edit) !void {
         .angle => |v| if (sel.len == 3) try cv.geometry.setAngle(gpa, p, graph, sel[0], sel[1], sel[2], v, app.edit_mode),
         .dihedral => |v| if (sel.len == 4) try cv.geometry.setDihedral(gpa, p, graph, sel[0], sel[1], sel[2], sel[3], v, app.edit_mode),
     }
-    _ = try app.commitEdit(&tx, null);
+    _ = try app.commitEdit(&tx);
 }
 
 /// Get ready to change the shown frame: abort a drag, and pause playback on
@@ -1444,15 +1426,15 @@ fn beginEdit(app: *App) !cv.edit.Transaction {
     return app.session.begin(d.shown_index, d.shown orelse return error.NoDocument);
 }
 
-/// Commit an edit of the shown frame and show it. `cuts_before`: see
-/// `Transaction.commit`. On error the frame is as it was.
-fn commitEdit(app: *App, edit: *cv.edit.Transaction, cuts_before: ?CutSet) !bool {
+/// Commit an edit of the shown frame and show it. On error the frame is as it
+/// was.
+fn commitEdit(app: *App, edit: *cv.edit.Transaction) !bool {
     const d = &(app.doc orelse return error.NoDocument);
     std.debug.assert(d.shown_index == edit.index);
     // Nothing may fail after the commit.
     var show = try edit.atoms.clone(app.gpa);
     errdefer show.deinit(app.gpa);
-    if (!try edit.commit(cuts_before)) {
+    if (!try edit.commit()) {
         show.deinit(app.gpa);
         return false;
     }
@@ -1475,21 +1457,25 @@ fn showChanged(app: *App, index: usize, frame: Frame) void {
     if (d.shown_index != index) return new.deinit(app.gpa);
     if (d.shown) |*old| old.deinit(app.gpa);
     d.shown = new;
-    app.dropInvalidSelection();
+    app.followPicks();
     app.bonds_dirty = true;
 }
 
-/// Show a change made by undo or revert, with the cuts that go with it.
-fn applyChange(app: *App, change: cv.edit.EditSession.Change) void {
+/// The selection and cuts follow the shown frame's numbering.
+fn followPicks(app: *App) void {
     const d = &app.doc.?;
-    if (change.cuts) |cs| {
-        app.cut_bonds.deinit(app.gpa);
-        app.cut_bonds = cs;
-        app.scene_dirty = true;
-    }
-    if (app.takeFrame(change.index)) |f| {
-        app.showChanged(change.index, f);
-    } else if (d.shown_index == change.index) {
+    app.picks.follow(app.gpa, d.shown_index, .{
+        .numbers = d.shown.?.numbers,
+        .origins = app.session.origins(d.shown_index),
+    });
+}
+
+/// Show a change made to frame `index` by undo or revert.
+fn showSessionChange(app: *App, index: usize) void {
+    const d = &app.doc.?;
+    if (app.takeFrame(index)) |f| {
+        app.showChanged(index, f);
+    } else if (d.shown_index == index) {
         // Out of memory: `update` tries again.
         if (d.shown) |*f| f.deinit(app.gpa);
         d.shown = null;
@@ -1507,53 +1493,29 @@ fn deleteSelectionInner(app: *App) !void {
     if (app.selected().len == 0) return app.setStatus("Select atoms to delete", .{});
     var edit = try app.beginEdit();
     defer edit.deinit();
-    const f = edit.atoms;
     const sel = app.selected();
-    if (sel.len >= f.len()) return app.setStatus("Can't delete every atom", .{});
+    const n = sel.len;
+    // It may have landed on a step with another numbering.
+    if (n == 0) return app.setStatus("Select atoms to delete", .{});
+    if (n >= edit.atoms.len()) return app.setStatus("Can't delete every atom", .{});
 
-    const remove = try gpa.alloc(bool, f.len());
+    const remove = try gpa.alloc(bool, edit.atoms.len());
     defer gpa.free(remove);
     @memset(remove, false);
     for (sel) |i| remove[i] = true;
-    // Old index -> new index (maxInt = deleted), to renumber cut bonds.
-    const new_index = try gpa.alloc(u32, f.len());
-    defer gpa.free(new_index);
-    var next: u32 = 0;
-    for (remove, new_index) |rm, *ni| {
-        ni.* = if (rm) std.math.maxInt(u32) else next;
-        if (!rm) next += 1;
-    }
-    var new_cuts: CutSet = .empty;
-    errdefer new_cuts.deinit(gpa);
-    var it = app.cut_bonds.keyIterator();
-    while (it.next()) |key| {
-        const a: u32 = @intCast(key.* >> 32);
-        const b: u32 = @truncate(key.*);
-        if (a >= new_index.len or b >= new_index.len) continue;
-        const na = new_index[a];
-        const nb = new_index[b];
-        if (na == std.math.maxInt(u32) or nb == std.math.maxInt(u32)) continue;
-        try new_cuts.put(gpa, pairKey(na, nb), {});
-    }
-
-    const n = sel.len;
-    edit.replace(try f.without(gpa, remove));
-    if (!try app.commitEdit(&edit, app.cut_bonds)) unreachable; // atoms were removed
-    // The history now owns the old cuts.
-    app.cut_bonds = new_cuts;
-    app.selection.clearRetainingCapacity();
-    app.scene_dirty = true;
+    try edit.delete(remove);
+    if (!try app.commitEdit(&edit)) unreachable; // atoms were removed
     app.setStatus("Deleted {d} atom{s} (Ctrl+Z undoes)", .{ n, if (n == 1) "" else "s" });
 }
 
 pub fn undo(app: *App) void {
     const d = &(app.doc orelse return);
     app.endDrag(false);
-    const change = app.session.undo() orelse return;
+    const index = app.session.undo() orelse return;
     app.playing = false;
-    app.applyChange(change);
-    if (d.current != change.index) app.setFrame(change.index) else app.setInterp(0);
-    app.setStatus("Undid the last change to frame {d}", .{change.index + 1});
+    app.showSessionChange(index);
+    if (d.current != index) app.setFrame(index) else app.setInterp(0);
+    app.setStatus("Undid the last change to frame {d}", .{index + 1});
 }
 
 /// Make the shown frame its file frame again (one geometry step).
@@ -1563,8 +1525,9 @@ pub fn revertFrame(app: *App) void {
     // The frame it is offered for, even if a blend is nearer to the next step.
     if (!app.session.isEdited(d.shown_index)) return;
     app.playing = false;
-    const change = app.session.revert(d.shown_index, app.cut_bonds) catch |e| return app.setStatus("Revert failed: {t}", .{e});
-    app.applyChange(change orelse return);
+    const reverted = app.session.revert(d.shown_index) catch |e| return app.setStatus("Revert failed: {t}", .{e});
+    if (!reverted) return;
+    app.showSessionChange(d.shown_index);
     // The frame asked for may be another one that can't be read.
     app.moveTo(d.shown_index);
     app.setStatus("Reverted frame {d} to the file (Ctrl+Z undoes)", .{d.shown_index + 1});
@@ -1647,17 +1610,17 @@ fn menuBar(app: *App) void {
     if (c.igBeginMenu("Edit", true)) {
         if (c.igMenuItem_Bool("Undo geometry edit", "Ctrl+Z", false, app.session.canUndo())) app.undo();
         const edited = if (app.doc) |d| app.session.isEdited(d.shown_index) else false;
-        if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.selection.items.len > 0)) app.deleteSelection();
+        if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.picks.selection.items.len > 0)) app.deleteSelection();
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
         c.igSeparator();
-        if (c.igMenuItem_Bool("Restore all cut bonds", null, false, app.cut_bonds.count() > 0)) app.restoreCuts();
+        if (c.igMenuItem_Bool("Restore all cut bonds", null, false, app.picks.cuts.count() > 0)) app.restoreCuts();
         c.igSeparator();
         if (c.igMenuItem_Bool("Copy as XYZ", "Ctrl+C", false, app.doc != null)) app.copyXyz();
         if (c.igMenuItem_Bool("Paste XYZ as fragment", "Ctrl+V", false, true)) app.pasteXyz(false);
         if (c.igMenuItem_Bool("Paste XYZ as new structure", "Ctrl+Shift+V", false, true)) app.pasteXyz(true);
         c.igSeparator();
         if (c.igMenuItem_Bool("Select molecule / all", "Ctrl+A", false, app.doc != null)) app.expandSelection();
-        if (c.igMenuItem_Bool("Clear selection", "Esc", false, app.selection.items.len > 0)) app.clearSelection();
+        if (c.igMenuItem_Bool("Clear selection", "Esc", false, app.picks.selection.items.len > 0)) app.clearSelection();
         c.igEndMenu();
     }
     if (c.igBeginMenu("View", true)) {
@@ -1929,10 +1892,37 @@ const TestApp = struct {
     }
 
     fn setDistance(t: *TestApp, v: f64) void {
-        t.app.selection.clearRetainingCapacity();
+        t.app.picks.selection.clearRetainingCapacity();
         t.app.toggleSelect(0);
         t.app.toggleSelect(1);
         t.app.applyEdit(.{ .distance = v });
+    }
+
+    fn select(t: *TestApp, atoms: []const u32) void {
+        t.app.clearSelection();
+        for (atoms) |a| t.app.toggleSelect(a);
+    }
+
+    fn deleteAtom(t: *TestApp, atom: u32) !void {
+        const n = t.app.doc.?.shown.?.len();
+        t.select(&.{atom});
+        t.app.deleteSelection();
+        try expectEqual(n - 1, t.app.doc.?.shown.?.len());
+    }
+
+    fn pasteAtom(t: *TestApp) !void {
+        var frag = try t.app.doc.?.shown.?.subset(gpa, &.{0});
+        defer frag.deinit(gpa);
+        try t.app.appendFragment(frag);
+    }
+
+    fn expectSelected(t: *TestApp, want: []const u32) !void {
+        try std.testing.expectEqualSlices(u32, want, t.app.selected());
+    }
+
+    fn expectCuts(t: *TestApp, want: []const [2]u32) !void {
+        try expectEqual(want.len, t.app.picks.cuts.count());
+        for (want) |w| try expect(t.app.isCut(w[0], w[1]));
     }
 
     /// Starts an Alt-drag of atom 1, as if it had been grabbed.
@@ -2043,8 +2033,8 @@ test "closing or opening a file resets everything about the old one" {
         t.app.playing = true;
         t.app.interp_t = 0.5;
         if (reopen) try t.open(2) else t.app.closeDocument();
-        try expectEqual(0, t.app.selection.items.len);
-        try expectEqual(0, t.app.cut_bonds.count());
+        try expectEqual(0, t.app.picks.selection.items.len);
+        try expectEqual(0, t.app.picks.cuts.count());
         try expect(!t.app.playing);
         try expectEqual(0, t.app.interp_t);
         try expect(!t.app.lasso_active);
@@ -2055,6 +2045,152 @@ test "closing or opening a file resets everything about the old one" {
         try expectEqual(1, t.distance());
         try t.expectCopyEdited(false);
     }
+}
+
+test "cuts end when the frame is left, and don't come back" {
+    const Way = enum { step, playback, undo };
+    for ([_]Way{ .step, .playback, .undo }) |way| {
+        errdefer std.debug.print("by {t}\n", .{way});
+        var t: TestApp = try .init(2);
+        defer t.deinit();
+        try t.show(1);
+        t.setDistance(1.5); // for undo to go back to
+        try t.show(0);
+        t.app.toggleCutPair(0, 1);
+        switch (way) {
+            .step => t.app.setFrame(1),
+            .playback => t.app.doc.?.current = 1, // as `advancePlayback` does
+            .undo => t.app.undo(),
+        }
+        try t.settle();
+        try t.expectCuts(&.{});
+        try t.show(0);
+        try t.expectCuts(&.{});
+    }
+}
+
+test "landing on the next step of a blend leaves the frame and its cuts" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.playBlend(0.7);
+    t.app.toggleCutPair(0, 1);
+    t.app.togglePlay();
+    try t.expectCuts(&.{});
+}
+
+test "cuts stay while the frame is shown, whatever is edited" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    t.app.toggleCutPair(1, 2);
+    t.setDistance(1.5);
+    t.setDistance(1.7);
+    try t.expectCuts(&.{.{ 1, 2 }});
+    t.app.toggleCutPair(0, 1);
+    t.app.undo();
+    t.app.revertFrame();
+    t.app.undo();
+    try t.expectCuts(&.{ .{ 1, 2 }, .{ 0, 1 } });
+}
+
+test "the selection carries over between frames with the same numbering" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    t.setDistance(1.5); // edited, but numbered as in the file
+    try t.show(1);
+    try t.expectSelected(&.{ 0, 1 });
+    try t.show(0);
+    try t.expectSelected(&.{ 0, 1 });
+}
+
+test "the selection is cleared between frames with different numberings" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    // Same numbers of atoms, but other elements.
+    try t.openText("3\n\nH 0 0 0\nH 0 0 1\nO 0 0 2\n" ++ "3\n\nO 0 0 0\nH 0 0 1\nH 0 0 2\n");
+    try t.show(0);
+    t.app.toggleSelect(0);
+    try t.show(1);
+    try t.expectSelected(&.{});
+}
+
+test "moving to or from a frame with deleted or pasted atoms clears the selection" {
+    const Edits = enum { delete, paste, replace };
+    for ([_]Edits{ .delete, .paste, .replace }) |edits| {
+        errdefer std.debug.print("{t}\n", .{edits});
+        var t: TestApp = try .init(2);
+        defer t.deinit();
+        try t.show(0);
+        // Replacing an H by an H looks like the file's atoms, but isn't.
+        if (edits != .paste) try t.deleteAtom(0);
+        if (edits != .delete) try t.pasteAtom();
+        t.select(&.{0});
+        try t.show(1);
+        try t.expectSelected(&.{});
+        t.select(&.{0});
+        try t.show(0);
+        try t.expectSelected(&.{});
+    }
+}
+
+test "delete translates cuts and its undo translates them and the selection back" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("5\n\nH 0 0 0\nH 0 0 1\nH 0 0 2\nH 0 0 3\nH 0 0 4\n");
+    try t.show(0);
+    t.app.toggleCutPair(0, 1);
+    t.app.toggleCutPair(2, 3);
+    try t.deleteAtom(1);
+    try t.expectCuts(&.{.{ 1, 2 }}); // was 2-3
+    t.app.toggleCutPair(2, 3); // was 3-4
+    t.select(&.{ 3, 0 });
+    t.app.undo();
+    // Back where they were; the cut on the deleted atom stays gone.
+    try t.expectCuts(&.{ .{ 2, 3 }, .{ 3, 4 } });
+    try t.expectSelected(&.{ 4, 0 });
+}
+
+test "a selection on deleted atoms stays gone when that is undone" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.show(0);
+    try t.deleteAtom(1);
+    try t.expectSelected(&.{});
+    t.app.undo();
+    try t.expectSelected(&.{});
+}
+
+test "revert translates cuts and selection, even past the undo limit" {
+    for ([_]bool{ false, true }) |past| {
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.show(0);
+        try t.deleteAtom(0);
+        if (past) for (0..cv.edit.max_steps) |i| t.setDistance(2 + 0.01 * @as(f64, @floatFromInt(i)));
+        t.app.toggleCutPair(0, 1);
+        t.select(&.{1});
+        t.app.revertFrame();
+        try t.expectCuts(&.{.{ 1, 2 }});
+        try t.expectSelected(&.{2});
+        t.app.undo();
+        try t.expectCuts(&.{.{ 0, 1 }});
+        try t.expectSelected(&.{1});
+    }
+}
+
+test "undoing a paste drops cuts and selection on the pasted atoms only" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.show(0);
+    t.app.toggleCutPair(0, 1);
+    try t.pasteAtom();
+    try t.expectSelected(&.{3});
+    t.app.toggleCutPair(2, 3);
+    t.app.toggleSelect(1);
+    t.app.undo();
+    try t.expectCuts(&.{.{ 0, 1 }});
+    try t.expectSelected(&.{1});
 }
 
 test "asking for another frame aborts a drag" {
@@ -2187,7 +2323,7 @@ test "an edit during interpolated playback pauses it and applies to the nearest 
         var t: TestApp = try .init(1);
         defer t.deinit();
         try t.playBlend(at);
-        t.app.selection.clearRetainingCapacity();
+        t.app.picks.selection.clearRetainingCapacity();
         switch (kind) {
             .drag => {
                 try t.startDrag();

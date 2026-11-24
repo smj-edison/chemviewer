@@ -309,8 +309,8 @@ the same weights.
 
 
 ### D24 — One owner for each fact about a frame
-*Decided 2026-11-24. Implemented so far: the frame stream and
-the edit session.* Terms are in GLOSSARY.md. Data flows
+*Decided 2026-11-24. Implemented so far: the frame stream,
+the edit session, and cuts and selection.* Terms are in GLOSSARY.md. Data flows
 one way: the frame stream owns file frames, the edit session owns the current
 atoms of every frame, and the displayed geometry is derived from both and never
 edited.
@@ -328,7 +328,10 @@ edited.
   The session keeps a copy of the file frame of each frame that was ever edited,
   so undo and revert are immediate even if the stream has evicted it.
 - **Cuts** end when the user leaves the frame; the selection carries over unless
-  the numbering differs. Delete and its undo translate both.
+  the numbering differs. Delete and its undo translate both. The session records
+  each atom's origin (its number in the file, or an id of its own if pasted), so
+  any two numberings of a frame can be translated without the history storing
+  cuts. Frames have the same numbering if their elements and origins match.
 - **Displayed geometry:** drawing, picking, lasso, labels and measured values
   use what is visible, blends included. Saving and copying use the real frame.
   Bonds always match the atoms.

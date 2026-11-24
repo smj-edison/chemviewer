@@ -3,13 +3,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Frame = @import("core/structure.zig").Frame;
-
-/// Bonds the user cut: drawn, but ignored as connections (key = `pairKey`).
-pub const CutSet = std.AutoHashMapUnmanaged(u64, void);
-
-pub fn pairKey(a: u32, b: u32) u64 {
-    return (@as(u64, @min(a, b)) << 32) | @max(a, b);
-}
+const Vec3 = @import("core/math.zig").Vec3;
 
 /// Geometry steps kept in the history; the oldest are dropped.
 pub const max_steps = 100;
@@ -20,30 +14,38 @@ pub const EditSession = struct {
     frames: std.AutoHashMapUnmanaged(usize, Held) = .empty,
     /// Oldest first.
     steps: std.ArrayList(Step) = .empty,
+    /// Origin of the next pasted atom; above any atom number in a file.
+    next_pasted: u32 = first_pasted,
+
+    const first_pasted = 1 << 31;
 
     const Held = struct {
         /// Kept so undo and revert never have to wait for the file to be read.
         file: Frame,
         /// Null = it is its file frame.
-        edited: ?Frame = null,
+        edited: ?Edited = null,
+    };
+
+    const Edited = struct {
+        frame: Frame,
+        /// See `EditSession.origins`.
+        origins: ?[]u32,
+
+        fn deinit(e: *Edited, gpa: Allocator) void {
+            e.frame.deinit(gpa);
+            if (e.origins) |o| gpa.free(o);
+        }
     };
 
     const Step = struct {
         index: usize,
         /// The atoms before it (null = the file frame).
-        before: ?Frame,
-        /// The cuts before it, if it renumbered atoms.
-        cuts: ?CutSet,
+        before: ?Edited,
 
         fn deinit(s: *Step, gpa: Allocator) void {
-            if (s.before) |*f| f.deinit(gpa);
-            if (s.cuts) |*c| c.deinit(gpa);
+            if (s.before) |*e| e.deinit(gpa);
         }
     };
-
-    /// The frame that changed, and the cuts to go back to if it was
-    /// renumbered (owned by the caller).
-    pub const Change = struct { index: usize, cuts: ?CutSet };
 
     pub fn init(gpa: Allocator) EditSession {
         return .{ .gpa = gpa };
@@ -61,8 +63,9 @@ pub const EditSession = struct {
         var it = s.frames.valueIterator();
         while (it.next()) |h| {
             h.file.deinit(s.gpa);
-            if (h.edited) |*f| f.deinit(s.gpa);
+            if (h.edited) |*e| e.deinit(s.gpa);
         }
+        s.next_pasted = first_pasted;
         s.frames.clearRetainingCapacity();
         for (s.steps.items) |*step| step.deinit(s.gpa);
         s.steps.clearRetainingCapacity();
@@ -81,7 +84,15 @@ pub const EditSession = struct {
     /// so is as the frame stream has it. Valid until the session changes.
     pub fn current(s: *const EditSession, index: usize) ?Frame {
         const h = s.frames.getPtr(index) orelse return null;
-        return h.edited orelse h.file;
+        return if (h.edited) |e| e.frame else h.file;
+    }
+
+    /// Where each current atom of frame `index` comes from: its number in the
+    /// file, or an id of its own if it was pasted. Ascending. Null while atoms
+    /// are numbered as in the file. Valid until the session changes.
+    pub fn origins(s: *const EditSession, index: usize) ?[]const u32 {
+        const h = s.frames.getPtr(index) orelse return null;
+        return if (h.edited) |e| e.origins else null;
     }
 
     /// Start an edit of frame `index`. `file` is its file frame, used only if
@@ -90,53 +101,36 @@ pub const EditSession = struct {
         const known = s.current(index);
         var atoms = try (known orelse file).clone(s.gpa);
         errdefer atoms.deinit(s.gpa);
+        const from = if (s.origins(index)) |o| try s.gpa.dupe(u32, o) else null;
+        errdefer if (from) |o| s.gpa.free(o);
         return .{
             .session = s,
             .index = index,
             .atoms = atoms,
+            .origins = from,
             .file = if (known == null) try file.clone(s.gpa) else null,
         };
     }
 
-    /// Undo the last geometry step, on whichever frame it was. The change
-    /// names that frame; its atoms are `current`.
-    pub fn undo(s: *EditSession) ?Change {
+    /// Undo the last geometry step, on whichever frame it was. Returns that
+    /// frame's index; its atoms are `current`.
+    pub fn undo(s: *EditSession) ?usize {
         const step = s.steps.pop() orelse return null;
         const h = s.frames.getPtr(step.index).?;
-        if (h.edited) |*f| f.deinit(s.gpa);
+        if (h.edited) |*e| e.deinit(s.gpa);
         h.edited = step.before;
-        return .{ .index = step.index, .cuts = step.cuts };
+        return step.index;
     }
 
-    /// Make frame `index` its file frame again, as a geometry step. `cuts_now`
-    /// comes back if that step is undone. Null if it isn't edited.
-    pub fn revert(s: *EditSession, index: usize, cuts_now: CutSet) !?Change {
-        const h = s.frames.getPtr(index) orelse return null;
-        if (h.edited == null) return null;
-        var cuts: ?CutSet = null;
-        if (s.cutsBeforeEdits(index)) |cs| cuts = try cs.clone(s.gpa);
-        errdefer if (cuts) |*cs| cs.deinit(s.gpa);
-        var undo_cuts: ?CutSet = if (cuts != null) try cuts_now.clone(s.gpa) else null;
-        errdefer if (undo_cuts) |*cs| cs.deinit(s.gpa);
+    /// Make frame `index` its file frame again, as a geometry step. False if
+    /// it isn't edited.
+    pub fn revert(s: *EditSession, index: usize) !bool {
+        const h = s.frames.getPtr(index) orelse return false;
+        if (h.edited == null) return false;
         try s.steps.ensureUnusedCapacity(s.gpa, 1);
-        s.push(.{ .index = index, .before = h.edited, .cuts = undo_cuts });
+        s.push(.{ .index = index, .before = h.edited });
         h.edited = null;
-        return .{ .index = index, .cuts = cuts };
-    }
-
-    /// The cuts from before the first edit in effect on frame `index` that
-    /// renumbered its atoms.
-    fn cutsBeforeEdits(s: *const EditSession, index: usize) ?CutSet {
-        var first: ?CutSet = null;
-        var i = s.steps.items.len;
-        while (i > 0) {
-            i -= 1;
-            const step = s.steps.items[i];
-            if (step.index != index) continue;
-            if (step.cuts) |cs| first = cs;
-            if (step.before == null) break; // it was the file frame before this one
-        }
-        return first;
+        return true;
     }
 
     /// Room for the step must have been reserved.
@@ -154,8 +148,11 @@ pub const EditSession = struct {
 pub const Transaction = struct {
     session: *EditSession,
     index: usize,
-    /// A working copy; may be replaced (`replace`) or written to.
+    /// A working copy. Positions may be written to; `delete` and `append`
+    /// change which atoms there are.
     atoms: Frame,
+    /// See `EditSession.origins`.
+    origins: ?[]u32,
     file: ?Frame,
     committed: bool = false,
 
@@ -163,28 +160,66 @@ pub const Transaction = struct {
         if (t.committed) return;
         const gpa = t.session.gpa;
         t.atoms.deinit(gpa);
+        if (t.origins) |o| gpa.free(o);
         if (t.file) |*f| f.deinit(gpa);
     }
 
-    /// Takes ownership of `atoms`.
-    pub fn replace(t: *Transaction, atoms: Frame) void {
+    /// Delete the atoms flagged in `remove` (one flag per atom).
+    pub fn delete(t: *Transaction, remove: []const bool) !void {
+        const gpa = t.session.gpa;
+        var atoms = try t.atoms.without(gpa, remove);
+        errdefer atoms.deinit(gpa);
+        const origins = try gpa.alloc(u32, atoms.len());
+        var k: usize = 0;
+        for (remove, 0..) |rm, i| if (!rm) {
+            origins[k] = t.originOf(i);
+            k += 1;
+        };
+        t.renumber(atoms, origins);
+    }
+
+    /// Append the atoms of `extra`, shifted by `offset`.
+    pub fn append(t: *Transaction, extra: Frame, offset: Vec3) !void {
+        if (extra.len() == 0) return;
+        const s = t.session;
+        const n = t.atoms.len();
+        const count = std.math.cast(u32, extra.len()) orelse return error.TooManyAtoms;
+        const next = std.math.add(u32, s.next_pasted, count) catch return error.TooManyAtoms;
+        var atoms = try t.atoms.concat(s.gpa, extra, offset);
+        errdefer atoms.deinit(s.gpa);
+        const origins = try s.gpa.alloc(u32, atoms.len());
+        for (origins[0..n], 0..) |*o, i| o.* = t.originOf(i);
+        for (origins[n..], s.next_pasted..) |*o, id| o.* = @intCast(id);
+        s.next_pasted = next;
+        t.renumber(atoms, origins);
+    }
+
+    fn originOf(t: *const Transaction, atom: usize) u32 {
+        return if (t.origins) |o| o[atom] else @intCast(atom);
+    }
+
+    fn renumber(t: *Transaction, atoms: Frame, origins: []u32) void {
         t.atoms.deinit(t.session.gpa);
+        if (t.origins) |o| t.session.gpa.free(o);
         t.atoms = atoms;
+        t.origins = origins;
     }
 
     /// Whether `commit` would change the frame.
     fn isChanged(t: *const Transaction) bool {
         const old = t.session.current(t.index) orelse t.file.?;
         if (!std.mem.eql(u8, t.atoms.numbers, old.numbers)) return true;
+        if (t.origins) |o| {
+            const before = t.session.origins(t.index) orelse return true;
+            if (!std.mem.eql(u32, o, before)) return true;
+        }
         for (t.atoms.positions, old.positions) |p, q| if (@reduce(.Or, p != q)) return true;
         return false;
     }
 
-    /// Make it one geometry step. `cuts_before` (owned by the session on
-    /// success) comes back on undo, for edits that renumber atoms. If nothing
-    /// changed there is no step, and false is returned. On error the frame and
-    /// the history are as they were.
-    pub fn commit(t: *Transaction, cuts_before: ?CutSet) !bool {
+    /// Make it one geometry step. If nothing changed there is no step, and
+    /// false is returned. On error the frame and the history are as they were.
+    pub fn commit(t: *Transaction) !bool {
         if (!t.isChanged()) return false;
         const s = t.session;
         try s.steps.ensureUnusedCapacity(s.gpa, 1);
@@ -194,8 +229,8 @@ pub const Transaction = struct {
         } else if (t.file) |*f| f.deinit(s.gpa);
         // The file's energy doesn't describe the new geometry.
         t.atoms.energy = null;
-        s.push(.{ .index = t.index, .before = gop.value_ptr.edited, .cuts = cuts_before });
-        gop.value_ptr.edited = t.atoms;
+        s.push(.{ .index = t.index, .before = gop.value_ptr.edited });
+        gop.value_ptr.edited = .{ .frame = t.atoms, .origins = t.origins };
         t.committed = true;
         return true;
     }
@@ -232,17 +267,30 @@ const TestSession = struct {
         var tx = try t.s.begin(index, t.file);
         defer tx.deinit();
         tx.atoms.positions[0][0] = x;
-        try testing.expect(try tx.commit(null));
+        try testing.expect(try tx.commit());
     }
 
     fn undo(t: *TestSession) ?usize {
-        const ch = t.s.undo() orelse return null;
-        return ch.index;
+        return t.s.undo();
     }
 
     fn revert(t: *TestSession, index: usize) !void {
-        const ch = (try t.s.revert(index, .empty)).?;
-        try testing.expectEqual(index, ch.index);
+        try testing.expect(try t.s.revert(index));
+    }
+
+    /// Commits an edit that appends an atom and deletes the ones in `remove`.
+    fn renumber(t: *TestSession, remove: []const bool) !void {
+        var tx = try t.s.begin(0, t.file);
+        defer tx.deinit();
+        try tx.append(t.file, .{ 3, 0, 0 });
+        try tx.delete(remove);
+        try testing.expect(try tx.commit());
+    }
+
+    fn expectOrigins(t: *TestSession, want: ?[]const u32) !void {
+        const have = t.s.origins(0) orelse return testing.expectEqual(null, want);
+        try testing.expectEqualSlices(u32, want.?, have);
+        try testing.expectEqual(have.len, t.s.current(0).?.len());
     }
 
     fn expectEdited(t: *TestSession, index: usize, x: f32) !void {
@@ -283,7 +331,7 @@ test "an edit that is dropped or changes nothing leaves no trace" {
     {
         var tx = try t.s.begin(0, t.file);
         defer tx.deinit();
-        try testing.expect(!try tx.commit(null));
+        try testing.expect(!try tx.commit());
     }
     try t.expectFileFrame(0);
     try testing.expect(!t.s.canUndo());
@@ -337,7 +385,7 @@ test "revert is one geometry step and leaves other frames alone" {
     try t.revert(0);
     try t.expectFileFrame(0);
     try t.expectEdited(1, 2);
-    try testing.expectEqual(null, try t.s.revert(0, .empty)); // nothing to revert
+    try testing.expect(!try t.s.revert(0)); // nothing to revert
     try testing.expectEqual(0, t.undo());
     try t.expectEdited(0, 3);
     try testing.expectEqual(0, t.undo());
@@ -349,40 +397,39 @@ test "revert is one geometry step and leaves other frames alone" {
     try testing.expectEqual(null, t.undo());
 }
 
-test "an edit may change the number of atoms" {
+test "origins tell which atoms are the file's and which were pasted" {
     var t: TestSession = try .init();
     defer t.deinit();
-    var tx = try t.s.begin(0, t.file);
-    defer tx.deinit();
-    tx.replace(try tx.atoms.concat(test_gpa, t.file, .{ 3, 0, 0 }));
-    try testing.expect(try tx.commit(null));
-    try testing.expectEqual(2, t.s.current(0).?.len());
+    const pasted = EditSession.first_pasted;
+    try t.moveTo(0, 1);
+    try t.expectOrigins(null);
+    try t.renumber(&.{ false, false });
+    try t.expectOrigins(&.{ 0, pasted });
+    // Another pasted atom isn't the same one, even in the same place.
+    try t.renumber(&.{ false, true, false });
+    try t.expectOrigins(&.{ 0, pasted + 1 });
+    try t.renumber(&.{ true, false, false });
+    try t.expectOrigins(&.{ pasted + 1, pasted + 2 });
+
     _ = t.undo();
-    try testing.expectEqual(1, t.s.current(0).?.len());
+    try t.expectOrigins(&.{ 0, pasted + 1 });
+    try t.revert(0);
+    try t.expectOrigins(null);
+    _ = t.undo();
+    try t.expectOrigins(&.{ 0, pasted + 1 });
+    _ = t.undo();
+    try t.expectOrigins(&.{ 0, pasted });
+    _ = t.undo();
+    try t.expectOrigins(null);
+    try t.expectEdited(0, 1);
 }
 
-test "renumbering steps give back the cuts of the numbering they return to" {
+test "moving atoms keeps a renumbered frame's origins" {
     var t: TestSession = try .init();
     defer t.deinit();
-    var cuts: CutSet = .empty;
-    try cuts.put(test_gpa, pairKey(5, 6), {});
-    var tx = try t.s.begin(0, t.file);
-    defer tx.deinit();
-    tx.replace(try tx.atoms.concat(test_gpa, t.file, .{ 3, 0, 0 }));
-    try testing.expect(try tx.commit(cuts));
-
-    var now: CutSet = .empty;
-    defer now.deinit(test_gpa);
-    try now.put(test_gpa, pairKey(2, 1), {});
-    var reverted = (try t.s.revert(0, now)).?;
-    defer reverted.cuts.?.deinit(test_gpa);
-    try testing.expect(reverted.cuts.?.contains(pairKey(5, 6)));
-    var back = t.s.undo().?;
-    defer back.cuts.?.deinit(test_gpa);
-    try testing.expect(back.cuts.?.contains(pairKey(1, 2)));
-    var first = t.s.undo().?;
-    defer first.cuts.?.deinit(test_gpa);
-    try testing.expect(first.cuts.?.contains(pairKey(5, 6)));
+    try t.renumber(&.{ false, false });
+    try t.moveTo(0, 5);
+    try t.expectOrigins(&.{ 0, EditSession.first_pasted });
 }
 
 test "clear forgets edits and history" {
@@ -416,29 +463,26 @@ test "running out of memory in an edit or revert leaves the frame as it was" {
                 var tx = try s.begin(0, file);
                 defer tx.deinit();
                 tx.atoms.positions[0][0] = to;
-                _ = try tx.commit(null);
+                _ = try tx.commit();
                 steps += 1;
                 x = to;
             }
-            // As a delete: renumbering, so revert has cuts to copy.
-            var cuts: CutSet = .empty;
-            var owned = true;
-            defer if (owned) cuts.deinit(a);
-            try cuts.put(a, pairKey(0, 1), {});
-            {
+            for ([_]f32{ 3, 4 }) |to| {
                 var tx = try s.begin(0, file);
                 defer tx.deinit();
-                tx.atoms.positions[0][0] = 3;
-                _ = try tx.commit(cuts);
-                owned = false;
+                tx.atoms.positions[0][0] = to;
+                try tx.append(file, .{ 3, 0, 0 });
+                try tx.append(file, .{ 6, 0, 0 });
+                const remove = try a.alloc(bool, tx.atoms.len());
+                defer a.free(remove);
+                @memset(remove, false);
+                remove[1] = true;
+                try tx.delete(remove);
+                _ = try tx.commit();
                 steps += 1;
-                x = 3;
+                x = to;
             }
-            var now: CutSet = .empty;
-            defer now.deinit(a);
-            try now.put(a, pairKey(1, 2), {});
-            var reverted = (try s.revert(0, now)).?;
-            reverted.cuts.?.deinit(a);
+            _ = try s.revert(0);
         }
     }.run;
     try testing.checkAllAllocationFailures(test_gpa, run, .{});

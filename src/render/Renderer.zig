@@ -373,7 +373,7 @@ pub fn addStructure(
     bonds: []const Bond,
     style: Style,
     tint: ?Tint,
-    /// Bonds cut by the user (keys from `App.pairKey`): drawn thin and red.
+    /// Bonds cut by the user (keys from `picks.pairKey`): drawn thin and red.
     cut: ?*const std.AutoHashMapUnmanaged(u64, void),
 ) !usize {
     const start = r.atoms.items.len;

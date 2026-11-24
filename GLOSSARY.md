@@ -33,6 +33,12 @@ _Avoid_: Broken bond, deleted bond
 **Selection**:
 The atoms the user has picked, in order. Unlike cuts it carries over between frames with the same atom numbering.
 
+**Origin**:
+Where an atom of a frame comes from: its number in the file, or an id of its own if it was pasted. It stays the same when other atoms are deleted.
+
+**Numbering**:
+Which atom each atom number of a frame means: its elements and origins. Frames have the same numbering if both match.
+
 **Geometry step**:
 One entry in the undo history that changed a frame's atoms.
 _Avoid_: Edit (for the history entry)
