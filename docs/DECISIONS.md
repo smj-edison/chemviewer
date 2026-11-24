@@ -309,13 +309,15 @@ the same weights.
 
 
 ### D24 — One owner for each fact about a frame
-*Decided 2026-11-24, not implemented yet.* Terms are in GLOSSARY.md. Data flows
+*Decided 2026-11-24. Implemented so far: the frame stream.* Terms are in GLOSSARY.md. Data flows
 one way: the frame stream owns file frames, the edit session owns the current
 atoms of every frame, and the displayed geometry is derived from both and never
 edited.
 - **Frame stream:** answers ready, pending or failed per frame. Prefetch and the
   energy scan continue past a bad frame; playback skips it. It is named once and
   retried only when the user goes back to it.
+  The timeline position stays at the bad frame (the last good one stays on
+  screen), so stepping on from it works. Holding the button there isn't a retry.
 - **Edit session:** an edit is a transaction tied to its frame. A frame change,
   undo, paste, revert, close or open aborts one in progress and restores the
   atoms. Starting an edit pauses playback. A frame is edited only while an edit

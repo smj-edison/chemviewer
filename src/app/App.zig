@@ -440,10 +440,20 @@ fn fineScrubMotion(app: *App, dx: f32) void {
     if (whole == 0) return;
     const last: i64 = @intCast(d.frameCount() - 1);
     const to = @as(i64, @intCast(d.current)) + @as(i64, @intFromFloat(whole));
-    app.setFrame(@intCast(std.math.clamp(to, 0, last)));
+    const index: usize = @intCast(std.math.clamp(to, 0, last));
+    // Pushing on at either end isn't asking for that frame again.
+    if (index != d.current) app.setFrame(index);
 }
 
+/// Go to a frame by hand, trying it again if it couldn't be read.
 pub fn setFrame(app: *App, index: usize) void {
+    const d = &(app.doc orelse return);
+    d.stream.retry(@min(index, d.frameCount() - 1));
+    app.moveTo(index);
+}
+
+/// Go to a frame without retrying it.
+pub fn moveTo(app: *App, index: usize) void {
     const d = &(app.doc orelse return);
     d.current = @min(index, d.frameCount() - 1);
     app.setInterp(0);
@@ -451,10 +461,12 @@ pub fn setFrame(app: *App, index: usize) void {
     d.stream.request(d.current);
 }
 
-/// True when the displayed frame is the requested one.
+/// True when the displayed frame is the requested one, or that one can't be
+/// read (the last good frame then stays on screen).
 pub fn isSettled(app: *const App) bool {
     const d = app.doc orelse return true;
-    return d.shown != null and d.shown_index == d.current;
+    if (d.shown != null and d.shown_index == d.current) return true;
+    return d.stream.state(d.current) == .failed;
 }
 
 /// Pull the requested frame from the stream when it's ready. Call once per UI frame.
@@ -478,9 +490,9 @@ pub fn update(app: *App) void {
     app.advancePlayback();
     d.stream.request(d.current);
     if (d.shown == null or d.shown_index != d.current) {
-        const got = d.stream.take(app.gpa, d.current) catch null;
-        if (got) |loaded| {
-            var frame = loaded;
+        const got = d.stream.take(app.gpa, d.current) catch .pending;
+        if (got == .ready) {
+            var frame = got.ready;
             // Edited frames replace what's in the file.
             if (app.edits.get(d.current)) |e| {
                 if (e.clone(app.gpa)) |copy| {
@@ -493,10 +505,9 @@ pub fn update(app: *App) void {
             app.dropInvalidSelection();
             d.shown_index = d.current;
             app.bonds_dirty = true;
-        } else if (d.stream.lastError()) |e| {
-            app.setStatus("Failed to load frame {d}: {t}", .{ d.current + 1, e });
         }
     }
+    while (d.stream.takeFailure()) |f| app.setStatus("Could not read frame {d}: {t}", .{ f.index + 1, f.err });
     app.updateNextFrame();
     if (app.bonds_dirty) {
         app.bonds_dirty = false;
@@ -525,63 +536,19 @@ pub fn update(app: *App) void {
 fn advancePlayback(app: *App) void {
     const d = &(app.doc orelse return);
     if (!app.playing) return;
-    const now = Io.Timestamp.now(app.io, .awake);
-    if (app.interpolate) return app.advanceInterpolated(d, now);
-    const period_ns: i96 = @intFromFloat(1e9 / @max(app.fps, 0.1));
-    const late = app.last_advance.durationTo(now).nanoseconds;
-    if (late < period_ns) return;
-    // Don't run ahead of the loader: wait until the current frame is on screen.
-    if (d.shown_index != d.current) return;
-    // Keep exact time: step the schedule by one period rather than
-    // restarting it at `now`, which lost up to a display frame per step.
-    // Resync if far behind (loading stalls, or fps above the display rate).
-    app.last_advance = if (late < 2 * period_ns) app.last_advance.addDuration(.{ .nanoseconds = period_ns }) else now;
-    if (d.current + 1 < d.frameCount()) {
-        d.current += 1;
-    } else if (app.loop_playback) {
-        d.current = 0;
-    } else {
-        app.playing = false;
-    }
-}
-
-/// Interpolated playback: move a fractional playhead by elapsed time x fps.
-/// Blending needs both steps, so it holds at a step until the next one is
-/// loaded rather than jumping; it never blends across the loop's wrap.
-fn advanceInterpolated(app: *App, d: *Document, now: Io.Timestamp) void {
-    const dt_ns = app.last_advance.durationTo(now).nanoseconds;
-    app.last_advance = now;
-    // Wait until the current step is on screen.
-    if (d.shown_index != d.current) return;
-    const dt: f32 = @min(@as(f32, @floatFromInt(dt_ns)) / 1e9, 0.1);
-    const n = d.frameCount();
-    // Never more than one step per rendered frame, like stepped playback:
-    // skipping steps would make the motion faster and jumpier than stepping.
-    // At or above the display rate each frame is simply the next real step.
-    const inc = dt * app.fps;
-    const pos = if (inc >= 1) 1 else app.interp_t + inc;
-    if (pos < 1) {
-        // Blend only once the next step is here; otherwise hold.
-        if (app.nextReady() or app.interp_t > 0) app.setInterp(pos);
-        return;
-    }
-    // Crossed into a later step (several at high fps on a slow display).
-    const steps: usize = @min(@as(usize, @intFromFloat(@floor(pos))), 1);
-    // Carry the leftover fraction so the step rate matches the fps. Blending
-    // resumes once the new step's successor is loaded (`displayPositions`
-    // draws the plain step until then).
-    var rest = if (inc >= 1) 0 else pos - @as(f32, @floatFromInt(steps));
-    if (d.current + steps < n) {
-        d.current += steps;
-    } else if (app.loop_playback) {
-        d.current = 0;
-        rest = 0;
-    } else {
-        d.current = n - 1;
-        rest = 0;
-        app.playing = false;
-    }
-    app.setInterp(rest);
+    var head: cv.playback.Playhead = .{ .current = d.current, .t = app.interp_t, .last = app.last_advance };
+    cv.playback.advance(&head, d.stream, .{
+        .now = Io.Timestamp.now(app.io, .awake),
+        .fps = app.fps,
+        .loop = app.loop_playback,
+        .interpolate = app.interpolate,
+        .shown = if (d.shown != null) d.shown_index else null,
+        .next_ready = app.nextReady(),
+    });
+    d.current = head.current;
+    app.playing = head.playing;
+    app.last_advance = head.last;
+    app.setInterp(head.t);
 }
 
 fn setInterp(app: *App, t: f32) void {
@@ -594,7 +561,7 @@ fn nextReady(app: *const App) bool {
     const d = app.doc orelse return false;
     const s = d.shown orelse return false;
     const nx = d.next orelse return false;
-    return d.shown_index == d.current and d.next_index == d.current + 1 and
+    return d.shown_index == d.current and d.next_index > d.current and
         nx.positions.len == s.positions.len and app.diff == null;
 }
 
@@ -603,12 +570,14 @@ fn nextReady(app: *const App) bool {
 /// curve; optional). Edits are applied, as for the shown frame.
 fn updateNextFrame(app: *App) void {
     const d = &(app.doc orelse return);
-    const n = d.frameCount();
     const on = app.interpolate and app.playing;
     const i = d.current;
-    app.keepFrame(&d.next, &d.next_index, if (on and i + 1 < n) i + 1 else null);
-    app.keepFrame(&d.prev, &d.prev_index, if (on and i >= 1 and i + 1 < n) i - 1 else null);
-    app.keepFrame(&d.next2, &d.next2_index, if (on and i + 2 < n) i + 2 else null);
+    // Past frames that failed, so the curve bridges the gap.
+    const next = if (on) d.stream.nextPlayable(i, false) else null;
+    const next2 = if (next) |k| d.stream.nextPlayable(k, false) else null;
+    app.keepFrame(&d.next, &d.next_index, next);
+    app.keepFrame(&d.prev, &d.prev_index, if (next != null and i >= 1) d.stream.prevPlayable(i) else null);
+    app.keepFrame(&d.next2, &d.next2_index, next2);
 }
 
 /// Makes `slot` hold frame `want` (taken from the stream's cache when
@@ -619,8 +588,9 @@ fn keepFrame(app: *App, slot: *?Frame, index: *usize, want: ?usize) void {
     if (slot.*) |*f| f.deinit(app.gpa);
     slot.* = null;
     const w = want orelse return;
-    const got = (d.stream.take(app.gpa, w) catch null) orelse return;
-    var frame = got;
+    const got = d.stream.take(app.gpa, w) catch return;
+    if (got != .ready) return;
+    var frame = got.ready;
     if (app.edits.get(w)) |e| {
         if (e.clone(app.gpa)) |copy| {
             frame.deinit(app.gpa);
@@ -643,8 +613,8 @@ fn displayPositions(app: *App, f: Frame) []const Vec3 {
     if (app.interp_t <= 0 or !app.nextReady()) return f.positions;
     const nx = d.next.?;
     const len = f.positions.len;
-    const pv: ?[]const Vec3 = if (d.prev) |p| (if (d.prev_index + 1 == d.current and p.positions.len == len) p.positions else null) else null;
-    const n2: ?[]const Vec3 = if (d.next2) |p| (if (d.next2_index == d.current + 2 and p.positions.len == len) p.positions else null) else null;
+    const pv: ?[]const Vec3 = if (d.prev) |p| (if (d.prev_index < d.current and p.positions.len == len) p.positions else null) else null;
+    const n2: ?[]const Vec3 = if (d.next2) |p| (if (d.next2_index > d.next_index and p.positions.len == len) p.positions else null) else null;
     app.interp_positions.resize(app.gpa, len) catch return f.positions;
     const t = app.interp_t;
     const t2 = t * t;
@@ -949,8 +919,8 @@ pub fn togglePlay(app: *App) void {
     app.last_advance = Io.Timestamp.now(app.io, .awake);
     // Pausing an interpolated playback stops on the nearest real step.
     if (!app.playing and app.interp_t > 0) {
-        const near = if (app.interp_t >= 0.5) d.current + 1 else d.current;
-        app.setFrame(@min(near, d.frameCount() - 1));
+        const next = if (app.interp_t >= 0.5) d.stream.nextPlayable(d.current, false) else null;
+        app.moveTo(next orelse d.current);
     }
 }
 
@@ -1551,6 +1521,8 @@ pub fn revertFrame(app: *App) void {
     }
     if (d.shown) |*f| f.deinit(app.gpa);
     d.shown = null;
+    // The frame asked for may be another one that can't be read.
+    app.moveTo(d.shown_index);
 }
 
 fn clearEdits(app: *App) void {

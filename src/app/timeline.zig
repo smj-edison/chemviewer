@@ -62,7 +62,7 @@ pub fn draw(app: *App, h: f32) void {
     c.igSameLine(0, -1);
     _ = c.igCheckbox("Loop", &app.loop_playback);
     c.igSameLine(0, -1);
-    if (c.igCheckbox("Interpolate", &app.interpolate) and !app.interpolate) app.setFrame(d.current);
+    if (c.igCheckbox("Interpolate", &app.interpolate) and !app.interpolate) app.moveTo(d.current);
     ui.tooltip("Play smoothly at the screen's frame rate: atoms follow a smooth curve through every real step (never overshooting between steps); the fps sets steps per second. Pausing stops on the nearest real step.");
     c.igSameLine(0, -1);
     var lock = app.lock_rotation;
@@ -95,7 +95,9 @@ fn energyPlot(app: *App, d: *App.Document) void {
     _ = c.igInvisibleButton("##energy", ui.v2(w, h), 0);
     const hovered = c.igIsItemHovered(0);
     if (c.igIsItemActive() and n > 0) {
-        app.setFrame(frameAt(c.igGetMousePos().x, n, p0.x, w));
+        // Holding the button still isn't asking for the frame again.
+        const i = frameAt(c.igGetMousePos().x, n, p0.x, w);
+        if (c.igIsItemActivated() or i != d.current) app.setFrame(i) else app.moveTo(i);
     }
     if (hovered and c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Right, false)) app.beginFineScrub();
 
