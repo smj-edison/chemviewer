@@ -1,4 +1,4 @@
-//! The timeline docked at the bottom: transport controls, a frame slider and
+//! The timeline docked at the bottom: transport controls, a frame number and
 //! an energy plot you can click or drag to scrub (right drag: one frame per pixel).
 const std = @import("std");
 const c = @import("c");
@@ -44,16 +44,18 @@ pub fn draw(app: *App, h: f32) void {
     if (c.igButton(">|", ui.v2(0, 0))) app.setFrame(n - 1);
     c.igSameLine(0, -1);
 
-    // Frame slider fills the space left of the playback options.
-    const right_w: f32 = c.igGetFontSize() * 29;
-    c.igSetNextItemWidth(@max(80, c.igGetContentRegionAvail().x - right_w));
+    // Frame number: type one and press Enter to go there, or select and copy it.
+    c.igAlignTextToFramePadding();
+    ui.text("frame", .{});
+    c.igSameLine(0, -1);
+    c.igSetNextItemWidth(c.igGetFontSize() * 4.5);
     var cur: c_int = @intCast(d.current + 1);
-    var fmt_buf: [64]u8 = undefined;
-    const fmt = ui.printZ(&fmt_buf, "frame %d / {d}", .{n}) catch "%d";
-    if (c.igSliderInt("##frame", &cur, 1, @intCast(@max(n, 1)), fmt.ptr, c.ImGuiSliderFlags_AlwaysClamp)) {
-        app.setFrame(@intCast(cur - 1));
+    if (c.igInputInt("##frame", &cur, 0, 0, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_AutoSelectAll)) {
+        app.setFrame(@intCast(std.math.clamp(cur, 1, @as(c_int, @intCast(@max(n, 1)))) - 1));
     }
-    if (c.igIsItemHovered(0) and c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Right, false)) app.beginFineScrub();
+    ui.tooltip("Type a frame number and press Enter.");
+    c.igSameLine(0, -1);
+    ui.text("/ {d}", .{n});
     c.igSameLine(0, -1);
     c.igSetNextItemWidth(c.igGetFontSize() * 10);
     _ = c.igSliderFloat("##fps", &app.fps, 1, 240, "%.0f fps", c.ImGuiSliderFlags_Logarithmic);

@@ -65,17 +65,18 @@ something is picked up.
 - [x] When there's only a few frames (like 6), the timeline line desynchronizes
   from the energy line.
   *The energy line, playhead and mouse now share one mapping from frame to x,
-  and short files are drawn as a line through the frames. The frame slider
-  above still has its own spacing (see the discussion point below).*
+  and short files are drawn as a line through the frames.*
 - [x] Make space the default background. Also have a "none" background.
   *Display > Background: None / Space / Cells, replacing the pattern checkbox
   (`--backdrop none|space|cells`).*
-- [ ] Discussion point (not settled but I want to remember it): do we need
+- [x] Discussion point (not settled but I want to remember it): do we need
   a timeline slider as well as the energy timeline? It might be simpler to
   just have the timeline, along with a frame count above/below. That way the
   frame number could also be copied.
+  *Settled: the slider is gone. The frame number is a field next to the play
+  buttons: type a number and press Enter, or select and copy it.*
 - [ ] Right-click scrubbing moves one frame per-pixel. Maybe wrap mouse around?
   *There was no right-click scrubbing, so this is read as a request: right-drag
-  on the energy plot or slider moves one frame per pixel. The pointer is hidden
+  on the energy plot moves one frame per pixel. The pointer is hidden
   and captured while dragging (Wayland can't wrap it), so the screen edge
   doesn't stop it. Not yet tried with a real mouse.*

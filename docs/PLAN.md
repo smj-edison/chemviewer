@@ -58,7 +58,7 @@ src/
   main.zig            GUI entry point: SDL + Vulkan + ImGui setup, main loop, --screenshot
   app/
     App.zig           application state, document lifecycle, inspector + diff panels, input
-    timeline.zig      bottom timeline (transport, frame slider, energy envelope plot)
+    timeline.zig      bottom timeline (transport, frame number, energy envelope plot)
     ui.zig            cimgui helpers (formatted text, gradient legend)
   render/
     Gpu.zig           Vulkan instance/device, swapchain, MSAA targets, frame loop, readback
