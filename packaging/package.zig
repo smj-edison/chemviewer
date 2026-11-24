@@ -6,11 +6,11 @@ const Compile = std.Build.Step.Compile;
 
 pub const Kind = enum { none, portable, installer };
 
-pub fn add(b: *std.Build, kind: Kind, version: []const u8, exe: *Compile, inspect: *Compile) void {
+pub fn add(b: *std.Build, kind: Kind, version: []const u8, makensis: []const u8, exe: *Compile, inspect: *Compile) void {
     if (kind == .none) return;
     const target = exe.rootModuleTarget();
     switch (target.os.tag) {
-        .windows => windows(b, kind, b.fmt("chemviewer-{s}-windows-{t}", .{ version, target.cpu.arch }), version, exe, inspect),
+        .windows => windows(b, kind, b.fmt("chemviewer-{s}-windows-{t}", .{ version, target.cpu.arch }), version, makensis, exe, inspect),
         .macos => macos(b, kind, b.fmt("chemviewer-{s}-macos-{t}", .{ version, target.cpu.arch }), version, exe, inspect),
         else => b.getInstallStep().dependOn(&b.addFail("-Dpackage is for Windows and macOS; on Arch use packaging/aur").step),
     }
@@ -21,7 +21,7 @@ fn installOutput(b: *std.Build, file: std.Build.LazyPath, name: []const u8) void
 }
 
 /// Portable zip, or a per-user NSIS installer (needs `makensis`).
-fn windows(b: *std.Build, kind: Kind, name: []const u8, version: []const u8, exe: *Compile, inspect: *Compile) void {
+fn windows(b: *std.Build, kind: Kind, name: []const u8, version: []const u8, makensis: []const u8, exe: *Compile, inspect: *Compile) void {
     if (kind == .portable) {
         const tool = b.addExecutable(.{
             .name = "zip",
@@ -39,7 +39,6 @@ fn windows(b: *std.Build, kind: Kind, name: []const u8, version: []const u8, exe
         run.addPrefixedFileArg(b.fmt("{s}/README.md=", .{name}), b.path("README.md"));
         return installOutput(b, zip, zip_name);
     }
-    const makensis = b.option([]const u8, "makensis", "Path to the NSIS compiler") orelse "makensis";
     const run = b.addSystemCommand(&.{ makensis, "-V2", "-NOCD" });
     run.addArg(b.fmt("-DVERSION={s}", .{version}));
     run.addPrefixedFileArg("-DEXE=", exe.getEmittedBin());

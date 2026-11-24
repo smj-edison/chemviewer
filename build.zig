@@ -5,6 +5,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // All options are declared before the early return below (while a lazy
+    // dependency is fetched), or Zig would reject them as unknown there.
+    const glslc = b.option([]const u8, "glslc", "Path to the glslc shader compiler") orelse "glslc";
+    const package_kind = b.option(package.Kind, "package", "Also build a Windows/macOS package") orelse .none;
+    const version = b.option([]const u8, "version", "Version shown in packages") orelse "0.0.0";
+    const makensis = b.option([]const u8, "makensis", "Path to the NSIS compiler, for Windows installers") orelse "makensis";
+
     // SDL3: use the system package (pkg-config) by default, except on Windows
     // where none is usually installed; there it is built from source via the
     // castholm/SDL Zig package. Override with -Dsystem-sdl=true|false.
@@ -117,7 +124,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     linkSdl(exe_mod, sdl_lib);
-    addShaders(b, exe_mod);
+    addShaders(b, exe_mod, glslc);
     exe_mod.linkLibrary(imgui_lib);
 
     const exe = b.addExecutable(.{ .name = "chemviewer", .root_module = exe_mod });
@@ -159,9 +166,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(inspect);
 
     // -------------------------------------------------------- packages
-    const package_kind = b.option(package.Kind, "package", "Also build a Windows/macOS package") orelse .none;
-    const version = b.option([]const u8, "version", "Version shown in packages") orelse "0.0.0";
-    package.add(b, package_kind, version, exe, inspect);
+    package.add(b, package_kind, version, makensis, exe, inspect);
 
     const inspect_run = b.addRunArtifact(inspect);
     inspect_run.addPassthruArgs();
@@ -179,8 +184,7 @@ pub fn build(b: *std.Build) void {
 /// Compiles the GLSL in src/render/shaders to SPIR-V with glslc (from the
 /// Vulkan SDK or the distribution's shaderc package). Each is importable as
 /// e.g. `@embedFile("sphere.vert.spv")`.
-fn addShaders(b: *std.Build, mod: *std.Build.Module) void {
-    const glslc = b.option([]const u8, "glslc", "Path to the glslc shader compiler") orelse "glslc";
+fn addShaders(b: *std.Build, mod: *std.Build.Module, glslc: []const u8) void {
     const dir = "src/render/shaders";
     const includes = [_][]const u8{ "common.glsl", "lighting.glsl", "glass.glsl" };
     const stages = [_][]const u8{
