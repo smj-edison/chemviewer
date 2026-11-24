@@ -122,6 +122,18 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{ .name = "chemviewer", .root_module = exe_mod });
     b.installArtifact(exe);
 
+    // Desktop entry, file types and icons, for `zig build --prefix /usr`.
+    if (target.result.os.tag == .linux) {
+        b.installFile("packaging/chemviewer.desktop", "share/applications/chemviewer.desktop");
+        b.installFile("packaging/chemviewer-mime.xml", "share/mime/packages/chemviewer.xml");
+        for ([_][]const u8{ "16", "24", "32", "48", "64", "128", "256", "512" }) |n| {
+            b.installFile(
+                b.fmt("packaging/icons/{s}.png", .{n}),
+                b.fmt("share/icons/hicolor/{s}x{s}/apps/chemviewer.png", .{ n, n }),
+            );
+        }
+    }
+
     const run_step = b.step("run", "Run the viewer");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

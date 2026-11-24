@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="chemical/x-xyz">
+    <comment>XYZ molecular structure</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.xyz"/>
+    <glob pattern="*.extxyz"/>
+  </mime-type>
+  <mime-type type="chemical/x-gaussian-input">
+    <comment>Gaussian input</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.gjf"/>
+  </mime-type>
+  <mime-type type="application/x-ase-trajectory">
+    <comment>ASE trajectory</comment>
+    <glob pattern="*.traj"/>
+  </mime-type>
+</mime-info>

@@ -4,3 +4,4 @@ zig-out/
 zig-pkg/
 docs/style-refs/**/*.jpg
 renders/
+!packaging/icons/*.png

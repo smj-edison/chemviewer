@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=chemviewer
+GenericName=Molecule Viewer
+Comment=View molecular structures and trajectories
+Exec=chemviewer %f
+Icon=chemviewer
+Terminal=false
+Categories=Science;Chemistry;
+Keywords=molecule;trajectory;xyz;gaussian;orca;ase;
+MimeType=chemical/x-xyz;chemical/x-gaussian-input;application/x-ase-trajectory;
+StartupWMClass=chemviewer

@@ -195,6 +195,9 @@ pub fn main(init: std.process.Init) !void {
         return e;
     };
 
+    // The app ID (Wayland) and window class (X11) match packaging/chemviewer.desktop,
+    // so the desktop shows its icon on the window.
+    _ = c.SDL_SetAppMetadata("chemviewer", null, "chemviewer");
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer c.SDL_Quit();
 
