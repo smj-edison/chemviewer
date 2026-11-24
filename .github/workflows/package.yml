@@ -1,0 +1,58 @@
+# Builds the Windows and macOS packages. Run by hand (Actions > Package), or
+# push a tag like v0.1.0 to also put them on a draft GitHub release.
+name: Package
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+env:
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0' }}
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows is cross-compiled; macOS needs Apple's SDK.
+          - name: windows
+            os: ubuntu-24.04
+            setup: sudo apt-get update && sudo apt-get install -y glslc nsis
+            args: -Dtarget=x86_64-windows-gnu
+          - name: macos-arm64
+            os: macos-15
+            setup: brew install shaderc
+            args: -Dsystem-sdl=false
+          - name: macos-intel
+            os: macos-15-intel
+            setup: brew install shaderc
+            args: -Dsystem-sdl=false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with: { version: 0.17.1 }
+      - run: ${{ matrix.setup }}
+      - name: Build
+        run: |
+          for kind in portable installer; do
+            zig build ${{ matrix.args }} -Dcpu=baseline -Doptimize=ReleaseFast \
+              -Dpackage=$kind -Dversion="${VERSION#v}" --prefix dist
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/chemviewer-*
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --generate-notes dist/*
+        env:
+          GH_TOKEN: ${{ github.token }}
