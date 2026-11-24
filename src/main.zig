@@ -296,6 +296,7 @@ pub fn main(init: std.process.Init) !void {
         c.igNewFrame();
         app.drawUi();
         c.igRender();
+        app.refresh();
 
         // Nothing to draw into while minimized.
         const frame = try gpu.beginFrame() orelse continue;
@@ -432,8 +433,9 @@ const Startup = struct {
                     s.phase = .target;
                 } else if (app.isSettled()) {
                     if (!isShown(app) and s.isScripted()) return error.FrameNotReadable;
-                    if (s.args.diff_ref != null) app.setReference();
+                    // First, so that ending the diff leaves it on.
                     if (s.args.lock_rotation) app.setLockRotation(true);
+                    if (s.args.diff_ref != null) app.setReference();
                     app.setFrame(s.args.frame orelse 0);
                     s.phase = .target;
                 }

@@ -362,5 +362,6 @@ geometry edit unlocks it, which just stops the updates, so nothing jumps;
 relocking refits. The current structure is drawn at its own coordinates, so
 Alt-drag works in the overlay. The reference has a placement applied only when
 drawing. Camera and placement move together, so on screen the reference and the
-background stay still. The diff panel has a Reset to see both frames at their
+background stay still. A frame with another numbering leaves both as they are
+while diffing, instead of restarting the lock there (D21). The diff panel has a Reset to see both frames at their
 file positions.

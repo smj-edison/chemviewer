@@ -456,20 +456,29 @@ pub fn update(app: *App) void {
     app.pullFrame();
     app.reportFailures(d);
     app.updateNextFrame();
-    const now = .{ .changes = d.display.real.changes, .bond_params = app.bond_params };
-    if (d.display.real.frame != null and (d.followed == null or
-        d.followed.?.changes != now.changes or !std.meta.eql(d.followed.?.bond_params, now.bond_params)))
-    {
-        d.followed = .{ .changes = now.changes, .bond_params = now.bond_params };
-        app.updateDiff();
-        if (d.needs_fit) {
-            d.needs_fit = false;
-            app.fitCamera();
+    app.refresh();
+}
+
+/// Bring the scene in line with everything else. Part of `update`; call it
+/// again after `drawUi`, so that what the UI changed is never drawn half (a
+/// moved camera with the old scene).
+pub fn refresh(app: *App) void {
+    if (app.doc) |*d| if (d.display.real.frame != null) {
+        const changes = d.display.real.changes;
+        if (d.followed == null or d.followed.?.changes != changes or
+            !std.meta.eql(d.followed.?.bond_params, app.bond_params))
+        {
+            d.followed = .{ .changes = changes, .bond_params = app.bond_params };
+            app.updateDiff();
+            if (d.needs_fit) {
+                d.needs_fit = false;
+                app.fitCamera();
+            }
+            app.scene_dirty = true;
         }
-        app.scene_dirty = true;
-    }
+    };
     if (app.scene_dirty) {
-        app.followRotationLock();
+        app.followRotationLock(); // may set it too
         app.scene_dirty = false;
         app.rebuildScene() catch |e| app.setStatus("Scene build failed: {t}", .{e});
     }
@@ -605,12 +614,20 @@ fn boundingSphere(app: *App) ?struct { center: Vec3, radius: f32 } {
             b.max = @max(b.max, corner);
         }
     };
+    const reference: []const Vec3 = app.drawnReference() orelse &.{};
+    for (reference) |p| {
+        b.min = @min(b.min, p);
+        b.max = @max(b.max, p);
+    }
     const center = (b.min + b.max) * cv.math.splat(0.5);
     // Bounding sphere around the box centre: farthest atom plus its display radius.
     var radius: f32 = 0;
     for (f.positions, f.numbers) |p, z| {
         radius = @max(radius, cv.math.length(p - center) + app.style.atomRadius(z));
     }
+    if (reference.len > 0) for (reference, app.diff.?.numbering().numbers) |p, z| {
+        radius = @max(radius, cv.math.length(p - center) + app.style.atomRadius(z));
+    };
     if (app.style.show_cell) if (f.cell) |_| {
         radius = @max(radius, cv.math.length(b.max - b.min) * 0.5);
     };
@@ -623,12 +640,15 @@ fn rebuildScene(app: *App) !void {
     r.clear();
     const d = app.doc orelse return r.upload();
     const f = d.display.real.frame orelse return r.upload();
-    if (app.diff) |*df| if (df.overlay and df.result != null) {
-        _ = try r.addStructure(df.placed.items, df.numbering().numbers, app.bondsOf(&df.reference), app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
+    if (app.drawnReference()) |reference| {
+        const df = &app.diff.?;
+        // Unlocked, it may be far off; don't clip it.
+        for (reference) |p| app.scene_radius = @max(app.scene_radius, cv.math.length(p - app.camera.target));
+        _ = try r.addStructure(reference, df.numbering().numbers, app.bondsOf(&df.reference), app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
         const start = try r.addStructure(app.drawnPositions().?, f.numbers, app.bonds(), app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.picks.cuts);
         r.highlight(start, app.selected());
         return r.upload();
-    };
+    }
     const start = try r.addStructure(app.drawnPositions().?, f.numbers, app.bonds(), app.style, null, &app.picks.cuts);
     r.highlight(start, app.selected());
     if (app.style.show_cell) if (f.cell) |cell| try r.addCell(cell, app.style.theme.cellLine());
@@ -641,9 +661,11 @@ pub fn setReference(app: *App) void {
     const d = app.doc orelse return;
     const f = d.display.real.frame orelse return;
     const index = d.display.real.index;
-    app.clearDiff();
-    app.diff = cv.diff.Diff.init(app.gpa, index, f, app.session.origins(index), app.lock_rotation) catch |e|
+    const was_locked = if (app.diff) |df| df.was_locked else app.lock_rotation;
+    const new = cv.diff.Diff.init(app.gpa, index, f, app.session.origins(index), was_locked) catch |e|
         return app.setStatus("Can't set the reference: {t}", .{e});
+    if (app.diff) |*old| old.deinit(app.gpa);
+    app.diff = new;
     app.show_diff = true;
     app.setLockRotation(true);
     app.updateDiff();
@@ -654,10 +676,15 @@ pub fn clearDiff(app: *App) void {
     var df = app.diff orelse return;
     app.diff = null;
     // Without the diff, the lock starts again at the current frame.
-    app.dropRotationLock();
-    app.lock_rotation = df.was_locked;
+    app.setLockRotation(df.was_locked);
     df.deinit(app.gpa);
     app.scene_dirty = true;
+}
+
+/// Where the reference's atoms are drawn, if they are.
+fn drawnReference(app: *const App) ?[]const Vec3 {
+    const df = app.diff orelse return null;
+    return if (df.overlay and df.result != null) df.placed.items else null;
 }
 
 /// Show the reference and the current frame at their file positions.
@@ -1879,8 +1906,9 @@ fn diffPanel(app: *App) void {
     if (c.igCheckbox("Overlay (reference red, current green)", &df.overlay)) app.scene_dirty = true;
     if (c.igSmallButton("Reset")) app.resetPlacement();
     ui.tooltip("Show both frames at their file positions, and switch Lock rotation off. Lock rotation lines them up again.");
+    app.updateDiff(); // again, if it ran out of memory
     const res = df.result orelse {
-        ui.textWrapped("Current frame has different atoms than the reference. Matching without a known correspondence is planned (Phase 3).", .{});
+        if (df.followed == null) ui.textWrapped("Out of memory.", .{}) else ui.textWrapped("Current frame has different atoms than the reference, or numbered differently. Matching without a known correspondence is planned (Phase 3).", .{});
         return;
     };
     c.igSeparator();
@@ -3482,19 +3510,6 @@ test "the lock is off for a file that is opened" {
     try expect(!t.app.lock_rotation);
 }
 
-test "while locked, switching a diff overlay is followed" {
-    var t = try lockedTest(3);
-    defer t.deinit();
-    t.app.setReference();
-    try t.show(2);
-    t.app.diff.?.overlay = false;
-    t.app.setLockRotation(true);
-    const first = onScreen(&t);
-    t.app.diff.?.overlay = true;
-    t.app.followRotationLock();
-    try expectOnScreen(&t, first);
-}
-
 test "in a diff overlay the current structure is drawn at its own coordinates" {
     var t = try lockedTest(3);
     defer t.deinit();
@@ -3520,7 +3535,6 @@ test "starting a diff locks, and ending it restores the lock" {
 /// The reference as drawn and a point of the background, in view space.
 fn referenceOnScreen(t: *TestApp) [6]Vec3 {
     var out = onScreen(t);
-    t.app.updateDiff();
     for (out[0..5], t.app.diff.?.placed.items) |*o, p| o.* = t.app.camera.view().transformPoint(p);
     return out;
 }
@@ -3643,6 +3657,56 @@ test "ending a diff that was unlocked by an edit moves nothing" {
         try std.testing.expectEqualDeep(view, t.app.camera);
         try expectEqual(before, t.app.lock_rotation);
     }
+}
+
+test "ending a diff locks again at the frame shown then, not the next one" {
+    var t = try lockedTest(3);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    t.app.setReference();
+    const before = onScreen(&t);
+    t.app.clearDiff();
+    try t.show(2); // arrives before the next update
+    t.app.followRotationLock();
+    try expectOnScreen(&t, before);
+}
+
+test "a reference that can't be set leaves the diff as it was" {
+    var t = try lockedTest(3);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    t.app.setReference();
+    try t.show(2);
+    t.app.followRotationLock();
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        var failing: std.testing.FailingAllocator = .init(TestApp.gpa, .{ .fail_index = fail_index });
+        t.app.gpa = failing.allocator();
+        t.app.setReference();
+        t.app.gpa = TestApp.gpa;
+        if (t.app.diff.?.reference.index == 2) break;
+        try expectEqual(0, t.app.diff.?.reference.index);
+        try expect(t.app.lock_rotation);
+        try expect(t.app.rotation_lock != null);
+    }
+    try expect(fail_index > 0);
+    t.app.clearDiff();
+    try expect(t.app.lock_rotation); // as before the first one
+}
+
+test "fitting a diff overlay includes the reference" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("3\n\nH 0 0 0\nH 3 0 0\nH 0 4 0\n" ++ "3\n\nH 50 0 0\nH 53 0 0\nH 50 4 0\n");
+    try t.show(0);
+    t.app.setReference();
+    try t.show(1);
+    t.app.resetPlacement();
+    t.app.fitCamera();
+    try expect(t.app.scene_radius > 25);
+    t.app.diff.?.overlay = false;
+    t.app.fitCamera();
+    try expect(t.app.scene_radius < 10);
 }
 
 test "Alt-drag works in a diff overlay" {
