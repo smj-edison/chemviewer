@@ -55,3 +55,27 @@ something is picked up.
   *Bonds can't be selected any more: a single click on a bond does nothing,
   a double click cuts or restores it. The cut checkboxes, the X key and the
   Edit > Cut / restore menu item are gone; Edit > Restore all cut bonds stays.*
+- [x] IRC files aren't read based on normal convention, e.g. the peaks should
+  meet at the middle, and then get lower as the energy profile travels left
+  or right along the reaction coordinate.
+  *Gaussian IRC logs now run reverse endpoint, TS, forward endpoint, as in
+  Gaussian's summary table. Geometries that aren't path points (such as the
+  endpoint printed again at the end) are dropped. The plot is still by frame,
+  so the TS is off-centre when the two paths differ in length.*
+- [x] When there's only a few frames (like 6), the timeline line desynchronizes
+  from the energy line.
+  *The energy line, playhead and mouse now share one mapping from frame to x,
+  and short files are drawn as a line through the frames. The frame slider
+  above still has its own spacing (see the discussion point below).*
+- [x] Make space the default background. Also have a "none" background.
+  *Display > Background: None / Space / Cells, replacing the pattern checkbox
+  (`--backdrop none|space|cells`).*
+- [ ] Discussion point (not settled but I want to remember it): do we need
+  a timeline slider as well as the energy timeline? It might be simpler to
+  just have the timeline, along with a frame count above/below. That way the
+  frame number could also be copied.
+- [ ] Right-click scrubbing moves one frame per-pixel. Maybe wrap mouse around?
+  *There was no right-click scrubbing, so this is read as a request: right-drag
+  on the energy plot or slider moves one frame per pixel. The pointer is hidden
+  and captured while dragging (Wayland can't wrap it), so the screen edge
+  doesn't stop it. Not yet tried with a real mouse.*
