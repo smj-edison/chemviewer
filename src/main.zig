@@ -11,10 +11,20 @@
 //! `--screenshot` renders once the requested frame is loaded, writes a PNG and
 //! exits. It works headless with SDL_VIDEO_DRIVER=offscreen.
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const c = @import("c");
 const Gpu = @import("render/Gpu.zig");
 const App = @import("app/App.zig");
+
+pub const std_options: std.Options = .{
+    // On Windows Zig's handler sees exceptions before the code that raised
+    // them, and ends the program even for ones that would be handled. The file
+    // dialog runs other people's code (shell extensions, network drives) in
+    // our process, so release builds leave crashes to Windows.
+    .enable_segfault_handler = std.debug.default_enable_segfault_handler and
+        !(builtin.os.tag == .windows and builtin.mode != .debug),
+};
 
 const Args = struct {
     file: ?[]const u8 = null,
