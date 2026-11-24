@@ -75,8 +75,16 @@ something is picked up.
   frame number could also be copied.
   *Settled: the slider is gone. The frame number is a field next to the play
   buttons: type a number and press Enter, or select and copy it.*
-- [ ] Right-click scrubbing moves one frame per-pixel. Maybe wrap mouse around?
+- [x] Right-click scrubbing moves one frame per-pixel. Maybe wrap mouse around?
   *There was no right-click scrubbing, so this is read as a request: right-drag
   on the energy plot moves one frame per pixel. The pointer is hidden
   and captured while dragging (Wayland can't wrap it), so the screen edge
   doesn't stop it. Not yet tried with a real mouse.*
+- [x] Could you add a checkbox for "rotation lock", where when you go from
+  one frame to the next, it finds the closest matching rotation, similar
+  to the diff, but only for a single view?
+  *"Lock rotation", next to Loop and Interpolate above the energy plot
+  (`--lock-rotation` on the CLI). It matches each frame to the one shown when
+  it was switched on, rather than to the previous frame, so a frame looks the
+  same however you reach it. Interpolated playback used to swing between
+  steps and snap back at each one; fixed.*
