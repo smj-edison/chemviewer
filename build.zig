@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
     // All options are declared before the early return below (while a lazy
     // dependency is fetched), or Zig would reject them as unknown there.
     const glslc = b.option([]const u8, "glslc", "Path to the glslc shader compiler") orelse "glslc";
-    const package_kind = b.option(package.Kind, "package", "Also build a Windows/macOS package") orelse .none;
+    const package_kind = b.option(package.Kind, "package", "Also build a package") orelse .none;
     const version = b.option([]const u8, "version", "Version shown in packages") orelse "0.0.0";
     const makensis = b.option([]const u8, "makensis", "Path to the NSIS compiler, for Windows installers") orelse "makensis";
 
@@ -137,14 +137,7 @@ pub fn build(b: *std.Build) void {
 
     // Desktop entry, file types and icons, for `zig build --prefix /usr`.
     if (target.result.os.tag == .linux) {
-        b.installFile("packaging/chemviewer.desktop", "share/applications/chemviewer.desktop");
-        b.installFile("packaging/chemviewer-mime.xml", "share/mime/packages/chemviewer.xml");
-        for ([_][]const u8{ "16", "24", "32", "48", "64", "128", "256", "512" }) |n| {
-            b.installFile(
-                b.fmt("packaging/icons/{s}.png", .{n}),
-                b.fmt("share/icons/hicolor/{s}x{s}/apps/chemviewer.png", .{ n, n }),
-            );
-        }
+        for (package.linux_files) |f| b.installFile(f[0], f[1]);
     }
 
     const run_step = b.step("run", "Run the viewer");

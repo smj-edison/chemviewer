@@ -1,4 +1,4 @@
-# The same environment as the Windows job in .github/workflows/package.yml.
+# The same environment as the Linux and Windows jobs in .github/workflows/package.yml.
 FROM docker.io/library/ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git xz-utils glslc nsis
 RUN curl -fsSLo /tmp/zig.tar.xz https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz \

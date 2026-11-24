@@ -16,6 +16,10 @@ jobs:
       matrix:
         include:
           # Windows is cross-compiled; macOS needs Apple's SDK.
+          - name: linux
+            system: linux
+            os: ubuntu-24.04
+            setup: sudo apt-get update && sudo apt-get install -y glslc
           - name: windows
             system: windows
             os: ubuntu-24.04
@@ -32,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
-        with: { version: 0.17.1 }
+        with: { version: 0.17.1, cache-key: "${{ matrix.name }}" }
       - run: ${{ matrix.setup }}
       - run: packaging/build-packages.sh ${{ matrix.system }} "${VERSION#v}"
       - uses: actions/upload-artifact@v4

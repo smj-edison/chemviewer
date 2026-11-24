@@ -85,6 +85,12 @@ zig build -Dtarget=x86_64-windows-gnu -Dcpu=baseline -Doptimize=ReleaseSafe -Dpa
 zig build -Dsystem-sdl=false -Doptimize=ReleaseSafe -Dpackage=portable            # .app in a .zip
 ```
 
+`packaging/build-packages.sh linux|windows|macos VERSION` runs the same builds as
+CI. The Linux one is a `.tar.gz` with SDL linked in, needing only glibc 2.31+
+and a Vulkan driver; unpack it into `~/.local` with `--strip-components=1` to
+install. `packaging/test-in-podman.sh linux|windows` runs the Linux or Windows
+CI build locally, from scratch.
+
 `-Dpackage=installer` makes a per-user setup program (needs NSIS's `makensis`)
 or a `.dmg` instead; `-Dversion=X.Y.Z` sets the version. The GitHub workflow
 `package.yml` builds them all; pushing a `v*` tag puts them on a draft release.
