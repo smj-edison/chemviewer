@@ -93,3 +93,12 @@ something is picked up.
   *Knob colours re-chosen in all four themes (light, dark, Aero light/dark):
   at least 4.5:1 against the text on top and 2:1 against the track. Comparison:
   renders/slider-contrast/compare.png.*
+- [x] Make chemviewer installable with a desktop entry. I don't feel strongly
+  about an icon, but it might be nice to have a glass rendering of something
+  like H2O or CH4 to make it look distinctive. Could you also make an AUR
+  build for it so I can install it on my computer, as well as upgrade it?
+  *`packaging/aur/PKGBUILD` (chemviewer-git): `makepkg -Csi` installs, and
+  again upgrades, from the latest commit on GitHub. Includes a desktop entry,
+  a glass H2O icon and the .xyz/.gjf/.traj file types (.log, .inp and .out are
+  too generic to claim). Not published to the AUR: that needs the user's AUR
+  account, and the project has no license yet.*
