@@ -16,10 +16,11 @@ jobs:
       matrix:
         include:
           # Windows is cross-compiled; macOS needs Apple's SDK.
+          # No -Dcpu on macOS: SDL's build then takes it for a cross build.
           - name: windows
             os: ubuntu-24.04
             setup: sudo apt-get update && sudo apt-get install -y glslc nsis
-            args: -Dtarget=x86_64-windows-gnu
+            args: -Dtarget=x86_64-windows-gnu -Dcpu=baseline
           - name: macos-arm64
             os: macos-15
             setup: brew install shaderc
