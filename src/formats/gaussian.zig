@@ -66,7 +66,8 @@ fn isInt(s: []const u8) bool {
 /// Parse every geometry in a Gaussian output file. Prefers "Input orientation"
 /// (a consistent frame across steps) and falls back to "Standard orientation".
 /// Each frame gets the most recent "SCF Done" (or external "Recovered energy")
-/// printed after it.
+/// printed after it. IRC jobs are put in reaction-coordinate order (see
+/// `Irc`): reverse endpoint, TS, forward endpoint.
 pub fn parseOutput(gpa: Allocator, buf: []const u8) Error![]Frame {
     const has_input = std.mem.indexOf(u8, buf, "Input orientation:") != null or
         std.mem.indexOf(u8, buf, "Z-Matrix orientation:") != null;
@@ -76,6 +77,8 @@ pub fn parseOutput(gpa: Allocator, buf: []const u8) Error![]Frame {
         for (frames.items) |*f| f.deinit(gpa);
         frames.deinit(gpa);
     }
+    var irc: Irc = .{};
+    defer irc.points.deinit(gpa);
     var b: structure.FrameBuilder = .{};
     defer b.deinit(gpa);
 
@@ -107,6 +110,12 @@ pub fn parseOutput(gpa: Allocator, buf: []const u8) Error![]Frame {
                 try b.append(gpa, if (z <= elements.max_z) z else 0, p);
             }
             if (b.len() > 0) try frames.append(gpa, try b.finish(gpa));
+        } else if (std.mem.startsWith(u8, t, "Point Number:")) {
+            try irc.point(gpa, t, frames.items.len);
+        } else if (std.mem.startsWith(u8, t, "Calculation of REVERSE path")) {
+            irc.reverse = true;
+        } else if (std.mem.startsWith(u8, t, "Entering Link 1 ")) {
+            try irc.finishJob(gpa, &frames);
         } else if (std.mem.startsWith(u8, t, "SCF Done:") or std.mem.startsWith(u8, t, "Recovered energy=")) {
             // "Recovered energy=" is printed by external-program jobs (e.g. xTB).
             if (frames.items.len == 0) continue;
@@ -118,8 +127,124 @@ pub fn parseOutput(gpa: Allocator, buf: []const u8) Error![]Frame {
             }
         }
     }
+    try irc.finishJob(gpa, &frames);
     if (frames.items.len == 0) return error.NoGeometry;
     return frames.toOwnedSlice(gpa);
+}
+
+/// Reorders the frames of an IRC job. Gaussian prints the TS, then the forward
+/// path, then starts again from the TS for the reverse path; the convention
+/// (and Gaussian's own summary table) is reverse endpoint, TS, forward endpoint.
+/// Each geometry that became a point on the path is followed by "Point Number:".
+const Irc = struct {
+    const Point = struct {
+        frame: usize,
+        path: i32,
+        /// Signed position along the path: 0 = TS, negative = reverse.
+        pos: i32,
+
+        fn lessThan(_: void, a: Point, b: Point) bool {
+            return a.pos < b.pos;
+        }
+    };
+
+    /// First frame of the current job.
+    job_start: usize = 0,
+    /// A reverse path was calculated. It is path 2, or path 1 if it's the only one.
+    reverse: bool = false,
+    points: std.ArrayList(Point) = .empty,
+
+    /// "Point Number:  31          Path Number:   2" after `n_frames` frames.
+    fn point(irc: *Irc, gpa: Allocator, line: []const u8, n_frames: usize) !void {
+        if (n_frames <= irc.job_start) return;
+        var it = text.tokens(line);
+        var nums: [2]i32 = undefined;
+        var k: usize = 0;
+        while (it.next()) |tok| {
+            const v = std.fmt.parseInt(i32, tok, 10) catch continue;
+            if (k < 2) nums[k] = v;
+            k += 1;
+        }
+        if (k != 2) return;
+        const frame = n_frames - 1;
+        // One point per geometry.
+        if (irc.points.items.len > 0 and irc.points.items[irc.points.items.len - 1].frame == frame) return;
+        try irc.points.append(gpa, .{ .frame = frame, .path = nums[1], .pos = nums[0] });
+    }
+
+    /// Sort the current job's points and drop its other geometries
+    /// (unconverged corrector steps, and the endpoint printed again at the end).
+    fn finishJob(irc: *Irc, gpa: Allocator, frames: *std.ArrayList(Frame)) !void {
+        const pts = irc.points.items;
+        if (pts.len > 0) {
+            var two_paths = false;
+            for (pts) |p| two_paths = two_paths or p.path == 2;
+            for (pts) |*p| {
+                if (p.path == 2 or (irc.reverse and !two_paths)) p.pos = -p.pos;
+            }
+            std.mem.sort(Point, pts, {}, Point.lessThan);
+
+            const job = frames.items[irc.job_start..];
+            const old = try gpa.dupe(Frame, job);
+            defer gpa.free(old);
+            const keep = try gpa.alloc(bool, old.len);
+            defer gpa.free(keep);
+            @memset(keep, false);
+            for (pts, 0..) |p, i| {
+                job[i] = old[p.frame - irc.job_start];
+                keep[p.frame - irc.job_start] = true;
+            }
+            for (old, keep) |*f, k| if (!k) f.deinit(gpa);
+            frames.shrinkRetainingCapacity(irc.job_start + pts.len);
+        }
+        irc.points.clearRetainingCapacity();
+        irc.reverse = false;
+        irc.job_start = frames.items.len;
+    }
+};
+
+test "gaussian IRC is in reaction-coordinate order" {
+    const gpa = std.testing.allocator;
+    const Step = struct { x: []const u8, after: []const u8 };
+    const ts: Step = .{ .x = "0.0", .after = " SCF Done:  E(R) =  -1.0 A.U.\n Point Number:   0          Path Number:   1\n" };
+    const f1: Step = .{ .x = "1.0", .after = " SCF Done:  E(R) =  -1.1 A.U.\n Point Number:   1          Path Number:   1\n" };
+    const f2: Step = .{ .x = "2.0", .after = " Point Number:   2          Path Number:   1\n Calculation of FORWARD path complete.\n" };
+    const r1: Step = .{ .x = "-1.0", .after = " Point Number:   1          Path Number:   2\n" };
+    const r2: Step = .{ .x = "-2.0", .after = " Point Number:   2          Path Number:   2\n Calculation of REVERSE path complete.\n" };
+    const b1: Step = .{ .x = "-1.0", .after = " Point Number:   1          Path Number:   1\n Calculation of REVERSE path complete.\n" };
+    const extra: Step = .{ .x = "9.0", .after = "" };
+    const opt: Step = .{ .x = "7.0", .after = " Entering Link 1 = l1.exe PID= 1.\n" };
+    const Case = struct { steps: []const Step, xs: []const f32 };
+    const cases = [_]Case{
+        .{ .steps = &.{ ts, f1, f2, r1, r2, extra }, .xs = &.{ -2, -1, 0, 1, 2 } },
+        // Still running, with a rejected corrector step before f1.
+        .{ .steps = &.{ ts, extra, f1, f2, r1, extra }, .xs = &.{ -1, 0, 1, 2 } },
+        .{ .steps = &.{ ts, f1, f2 }, .xs = &.{ 0, 1, 2 } },
+        // Reverse direction only: printed as path 1.
+        .{ .steps = &.{ ts, b1 }, .xs = &.{ -1, 0 } },
+        // Another job before the IRC keeps its frames.
+        .{ .steps = &.{ extra, opt, ts, f1, r1 }, .xs = &.{ 9, 7, -1, 0, 1 } },
+    };
+    for (cases) |cs| {
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(gpa);
+        for (cs.steps) |s| {
+            try src.appendSlice(gpa, " Input orientation:\n ---\n h\n h\n ---\n 1 8 0 ");
+            try src.appendSlice(gpa, s.x);
+            try src.appendSlice(gpa, " 0.0 0.0\n -----\n");
+            try src.appendSlice(gpa, s.after);
+        }
+        const frames = try parseOutput(gpa, src.items);
+        defer {
+            for (frames) |*f| f.deinit(gpa);
+            gpa.free(frames);
+        }
+        try std.testing.expectEqual(cs.xs.len, frames.len);
+        for (cs.xs, frames) |x, f| {
+            try std.testing.expectEqual(x, f.positions[0][0]);
+            if (x == 1) try std.testing.expectEqual(@as(?f64, -1.1), f.energy);
+        }
+    }
 }
 
 test "gaussian input" {
