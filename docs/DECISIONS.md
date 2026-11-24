@@ -240,6 +240,8 @@ measured against the same anchor, a frame looks the same however you got to
 it (scrubbing, stepping, playback), and the user's own rotations in between
 are kept. The backdrop pattern gets the same correction, so the scene as a
 whole stays still. A frame with different atoms restarts the lock there.
+Interpolated positions are superposed as they are drawn, so the camera turns
+evenly between steps too.
 
 ### D22 — Glass style: translucent atoms and bonds drawn in layers
 A fourth style (experimental, `--glass`), inspired by Apple's "Liquid Glass":

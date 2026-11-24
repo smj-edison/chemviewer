@@ -66,8 +66,9 @@ pub const RotationLock = struct {
     numbers: []u8,
     /// Superposition of the frame the camera currently follows onto the anchor.
     current: cv.align_.Transform = .identity,
-    /// That frame's index.
+    /// That frame's index, and how far it was blended towards the next step.
     index: usize,
+    blend: f32 = 0,
 
     fn deinit(l: *RotationLock, gpa: Allocator) void {
         gpa.free(l.anchor);
@@ -511,12 +512,12 @@ pub fn update(app: *App) void {
                 d.needs_fit = false;
                 app.fitCamera();
             }
-            app.followRotationLock();
             app.scene_dirty = true;
         }
     }
     if (app.scene_dirty) {
         app.scene_dirty = false;
+        app.followRotationLock();
         app.rebuildScene() catch |e| app.setStatus("Scene build failed: {t}", .{e});
     }
 }
@@ -765,14 +766,17 @@ fn dropRotationLock(app: *App) void {
 /// the camera by that frame's motion relative to the last one it followed
 /// (both measured by superposing onto the anchor, so the view of a frame does
 /// not depend on the path taken to it). Frames whose atoms don't match the
-/// anchor's restart the lock there.
+/// anchor's restart the lock there. Interpolated positions are followed too,
+/// so the view turns evenly between steps instead of correcting at each one.
 fn followRotationLock(app: *App) void {
     if (!app.lock_rotation) return;
     const d = app.doc orelse return;
     const f = d.shown orelse return;
-    const pos = app.displayedPositions() orelse return;
+    // What is drawn: blended between steps, or the plain step (aligned, when diffing).
+    const blend = if (app.nextReady()) app.interp_t else 0;
+    const pos = if (blend > 0) app.displayPositions(f) else app.displayedPositions() orelse return;
     if (app.rotation_lock) |*l| {
-        if (l.index == d.shown_index) return;
+        if (l.index == d.shown_index and l.blend == blend) return;
         if (l.anchor.len == pos.len and std.mem.eql(u8, l.numbers, f.numbers)) {
             const next = cv.align_.superpose(l.anchor, pos, null).transform;
             // Frame-to-frame motion M = current⁻¹ ∘ next, with T(p) = R (p - from) + to:
@@ -793,6 +797,7 @@ fn followRotationLock(app: *App) void {
             app.camera.followRigid(rot, @floatCast(next.from_center), @floatCast(to));
             l.current = next;
             l.index = d.shown_index;
+            l.blend = blend;
             return;
         }
         app.dropRotationLock();
@@ -802,7 +807,7 @@ fn followRotationLock(app: *App) void {
         app.gpa.free(anchor);
         return;
     };
-    app.rotation_lock = .{ .anchor = anchor, .numbers = numbers, .index = d.shown_index };
+    app.rotation_lock = .{ .anchor = anchor, .numbers = numbers, .index = d.shown_index, .blend = blend };
 }
 
 fn updateDiff(app: *App) void {
