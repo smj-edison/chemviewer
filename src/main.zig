@@ -3,7 +3,7 @@
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
 //!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
 //!                   [--play] [--interpolate] [--fps N] [--atom-numbers]
-//!                   [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
+//!                   [--no-bg-pattern] [--backdrop none|cells|space] [--bg-blur K]
 //!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
 //!                   [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
 //!                   [--cut I,J]... [--add FRAGMENT_FILE]
@@ -95,7 +95,7 @@ fn parseArgs(argv: []const []const u8) !Args {
             } else if (eql(u8, arg, "--bg-blur")) {
                 a.bg_blur = try std.fmt.parseFloat(f32, v);
             } else if (eql(u8, arg, "--backdrop")) {
-                if (!eql(u8, v, "cells") and !eql(u8, v, "space")) return error.BadBackdrop;
+                if (!eql(u8, v, "none") and !eql(u8, v, "cells") and !eql(u8, v, "space")) return error.BadBackdrop;
                 a.backdrop = v;
             } else if (eql(u8, arg, "--frame")) {
                 a.frame = (try std.fmt.parseInt(usize, v, 10)) -| 1;
@@ -185,7 +185,7 @@ pub fn main(init: std.process.Init) !void {
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
             \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
             \\                  [--play] [--interpolate] [--fps N] [--atom-numbers]
-            \\                  [--no-bg-pattern] [--backdrop cells|space] [--bg-blur K]
+            \\                  [--no-bg-pattern] [--backdrop none|cells|space] [--bg-blur K]
             \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
             \\                  [--select I,J[,K[,L]]] [--set VALUE] [--save OUT.xyz]
             \\                  [--cut I,J]... [--add FRAGMENT_FILE]
@@ -246,9 +246,12 @@ pub fn main(init: std.process.Init) !void {
     if (args.flat_pop) app.style.flat_pop = true;
     app.interpolate = args.interpolate;
     if (args.fps) |v| app.fps = v;
+    if (args.backdrop) |b| {
+        app.style.background_pattern = !std.mem.eql(u8, b, "none");
+        app.style.backdrop = if (std.mem.eql(u8, b, "cells")) .cells else .space;
+    }
     if (args.no_bg_pattern) app.style.background_pattern = false;
     if (args.bg_blur) |b| app.style.background_blur = b;
-    if (args.backdrop) |b| app.style.backdrop = if (std.mem.eql(u8, b, "space")) .space else .cells;
     app.show_atom_numbers = args.atom_numbers;
     if (args.file) |f| app.openFile(f);
 

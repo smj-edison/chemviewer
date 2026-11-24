@@ -1707,16 +1707,28 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (app.style.shading == .cel) {
         _ = c.igSliderFloat("Outline", &app.style.outline_px, 0, 4, "%.1f px", 0);
     }
-    _ = c.igCheckbox("Background pattern", &app.style.background_pattern);
-    ui.tooltip("Pattern behind the molecule that turns with the camera.");
-    if (app.style.background_pattern and app.style.shading != .aero) {
-        c.igSameLine(0, -1);
-        var kind: c_int = @backingInt(app.style.backdrop);
-        _ = c.igRadioButton_IntPtr("Cells", &kind, 0);
-        c.igSameLine(0, -1);
-        _ = c.igRadioButton_IntPtr("Space", &kind, 1);
-        ui.tooltip("Backdrop motif, out of focus as if seen up close: cells (blobs with membranes and nuclei) or space (glowing bokeh, haze, sparkle stars).");
-        app.style.backdrop = @fromBackingInt(@intCast(kind));
+    c.igAlignTextToFramePadding();
+    ui.text("Background", .{});
+    c.igSameLine(0, -1);
+    if (c.igRadioButton_Bool("None", !app.style.background_pattern)) app.style.background_pattern = false;
+    ui.tooltip("Plain solid colour.");
+    c.igSameLine(0, -1);
+    if (app.style.shading == .aero) {
+        // Aero has its own scenery.
+        if (c.igRadioButton_Bool("Sky", app.style.background_pattern)) app.style.background_pattern = true;
+        ui.tooltip("Sky dome with bubbles (aurora night in the dark theme); turns with the camera.");
+    } else {
+        inline for (.{
+            .{ "Space", .space, "Glowing bokeh, haze and sparkle stars, out of focus; turns with the camera." },
+            .{ "Cells", .cells, "Blobs with membranes and nuclei, out of focus as if seen up close; turns with the camera." },
+        }, 0..) |o, i| {
+            if (i > 0) c.igSameLine(0, -1);
+            if (c.igRadioButton_Bool(o[0], app.style.background_pattern and app.style.backdrop == o[1])) {
+                app.style.background_pattern = true;
+                app.style.backdrop = o[1];
+            }
+            ui.tooltip(o[2]);
+        }
     }
     if (app.style.background_pattern) {
         _ = c.igSliderFloat("Background blur", &app.style.background_blur, 0, 2.5, "%.2f", 0);

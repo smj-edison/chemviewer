@@ -168,7 +168,7 @@ pub const Style = struct {
     /// shaders/background.frag). Off gives the plain solid background.
     background_pattern: bool = true,
     /// Motif behind the molecule.
-    backdrop: BackdropKind = .cells,
+    backdrop: BackdropKind = .space,
     /// Flat style experiment: soft (feathered) drop shadows plus a thin dark
     /// outline on atoms and bonds, so the molecule stands out more.
     flat_pop: bool = false,
