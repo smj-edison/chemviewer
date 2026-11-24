@@ -102,3 +102,44 @@ something is picked up.
   a glass H2O icon and the .xyz/.gjf/.traj file types (.log, .inp and .out are
   too generic to claim). Not published to the AUR: that needs the user's AUR
   account, and the project has no license yet.*
+- [ ] Split Flat + checkbox into Flat and Flat+. Remove aero background. Double
+  check contrast for all text for all themes. Make Flat's bigger atoms not quite
+  as relatively big (the gold in particular stands out.) Also in the File
+  section, why do you have the atom types with their atomic number? Shouldn't it
+  just be the type of atom? The Display section should also be collapsable. Also
+  what does the Unit Cell view do? Also using the UI scale slider is impossible,
+  since the UI shifts while it adjusts. Wait until the user lets go before
+  adjusting. The Mouse and Key section is also really hard to read, be sure to
+  separate parts with enters.
+  *Done, to be tried by hand: Flat and Flat+, gold in Flat 1.3x carbon (was
+  1.65x), Aero without its sky, all text at least 4.5:1 (checked by a test),
+  "34 C" in the element key (it was a count), File/Bonds/Display collapse and are
+  remembered, "Unit cell box" says when there is none (it draws the periodic box),
+  UI scale applies on release, Mouse & keys is a table. Agreed in
+  `.scratch/ui-and-timeline/decisions.md`.*
+- [ ] Audit current UI design based on the principles in "The Design of Everyday
+  Things." Make sure we have signifiers for standard things and progressive
+  discoverability for others. Also make sure we avoid modes as much as
+  reasonably possible.
+- [ ] Small visual glitch in Cel display style. If you look at the root where a bond
+  joins with an atom, you can see a black halo around the bond, but it should appear
+  to be a filled cylinder with the bond embedded inside of it.
+  *Not reproduced yet: waiting for a screenshot.*
+- [ ] Adjust mouse buttons with Alt. Alt + Left should translate, Alt + Right should
+  rotate along the bond axis, and Alt + Center should rotate around the center atom.
+  Also, when a single atom is selected, it should have a tooltip in the bar above
+  the timeline where it describes what mouse button does what operation.
+- [ ] Design discussion: I'd like to be able to have multiple values plotted in
+  the timeline, both overlayed on one timeline, and with multiple timelines. I'd
+  like to be able to ingest data from PLUMED log files, ASE dynamics logs, and
+  such. This does mean that the scrubber will need to be based on time when more
+  than one data source is there (or maybe have the smallest step size be based
+  on the smallest step size of the combined data, but still allow for the, user
+  to see things in terms of frames and edit the frame number.) This also means
+  there needs to be a data ingestion interface, where someone could a folder,
+  and/or multiple files. Then the data ingestion would have a tree view, with
+  subsets of data under a tree branch (for example with PLUMED, you could select
+  what types of data you want plotted.) Being able to reopen the ingestion panel
+  should be easy later on, and so should organizing graphs. The timeline will
+  probably also need a zoom feature. I have a feeling taking navgation ideas
+  from video editors would be a good start.
