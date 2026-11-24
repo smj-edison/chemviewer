@@ -18,7 +18,13 @@ _Avoid_: Edit state, edits map
 
 **Displayed geometry**:
 The atoms and bonds on screen now, derived from the file frames and the edit session. Never edited directly.
-_Avoid_: Shown frame, displayed positions, display positions
+_Avoid_: Displayed positions, display positions
+
+**Shown frame**:
+Which frame is on screen. It lags behind the timeline position while a frame loads, and stays at the last good one if that frame can't be read. Its atoms on screen are the displayed geometry.
+
+**Transaction**:
+One edit of one frame in the making. Nothing changes until it is committed as a geometry step, or it is aborted.
 
 **Cut**:
 A bond the user has set aside on the current frame, so edits and molecule selection treat its two sides as separate. It ends when the user leaves the frame.

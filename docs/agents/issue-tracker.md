@@ -10,6 +10,14 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 
+## Closing a ticket
+
+Close it after review, once the review's fixes are committed:
+
+1. Tick each criterion that was met as written. Leave the others open and say why in the answer.
+2. Append an `## Answer`: what was built and where, what was left to which ticket, and which tests were seen failing before the code that made them pass.
+3. Set `Status: resolved`.
+
 ## Inbox: docs/feature-requests.md
 
 The user writes ideas here, often while an agent is working. Read it at the
@@ -35,4 +43,4 @@ Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 - **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
 - **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
 - **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+- **Resolve**: close the ticket as above, with the question's answer as its `## Answer`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
