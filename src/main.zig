@@ -250,6 +250,11 @@ pub fn main(init: std.process.Init) !void {
     // ---- App
     var app = try App.init(io, gpa, window, gpu);
     defer app.deinit();
+    // Not for scripted runs, which look the same everywhere.
+    if (args.screenshot == null and args.profile == null) if (c.SDL_GetPrefPath(null, "chemviewer")) |dir| {
+        defer c.SDL_free(dir);
+        app.loadSettings(std.mem.span(dir));
+    };
     if (args.ui_scale) |u| app.ui_scale = u;
     if (args.dark) app.style.theme = .dark;
     if (args.flat) app.style.shading = .flat;

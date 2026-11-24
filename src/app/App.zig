@@ -77,6 +77,11 @@ show_atom_numbers: bool = false,
 show_element_labels: bool = true,
 /// User multiplier on top of the monitor's content scale (View menu).
 ui_scale: f32 = 1.0,
+/// What the View menu slider shows while it is dragged.
+ui_scale_edit: ?f32 = null,
+settings: cv.settings.Settings = .{},
+/// Where they are kept (null = nowhere).
+settings_path: ?[]u8 = null,
 /// Font size the panel layout was last placed for; when it changes the
 /// panels are re-placed so they scale with the UI.
 layout_font_size: f32 = 0,
@@ -125,6 +130,7 @@ pub fn deinit(app: *App) void {
 
 /// Everything but the renderer.
 fn deinitState(app: *App) void {
+    if (app.settings_path) |p| app.gpa.free(p);
     app.closeDocument();
     app.session.deinit();
     app.picks.deinit(app.gpa);
@@ -1720,14 +1726,28 @@ fn menuBar(app: *App) void {
     if (c.igBeginMenu("View", true)) {
         _ = c.igMenuItem_BoolPtr("Inspector", null, &app.show_inspector, true);
         _ = c.igMenuItem_BoolPtr("Diff", null, &app.show_diff, true);
-        _ = c.igMenuItem_BoolPtr("Unit cell", null, &app.style.show_cell, true);
+        const has_cell = if (app.doc) |d| (if (d.display.real.frame) |f| f.cell != null else false) else false;
+        _ = c.igMenuItem_BoolPtr("Unit cell box", null, &app.style.show_cell, has_cell);
+        if (c.igIsItemHovered(c.ImGuiHoveredFlags_AllowWhenDisabled)) {
+            const why: [:0]const u8 = if (has_cell) "Draw the periodic box that repeats to fill space." else "This frame has no unit cell.";
+            _ = c.igSetTooltip("%s", why.ptr);
+        }
         _ = c.igMenuItem_BoolPtr("Atom numbers", "N", &app.show_atom_numbers, true);
         _ = c.igMenuItem_BoolPtr("Element labels", null, &app.show_element_labels, true);
         ui.tooltip("Show element symbols on atoms whose colour could be mistaken for another element in the structure (the rarer of the two).");
         if (c.igMenuItem_Bool("Fit to view", "F", false, app.doc != null)) app.fitCamera();
         c.igSeparator();
         c.igSetNextItemWidth(c.igGetFontSize() * 8);
-        _ = c.igSliderFloat("UI scale", &app.ui_scale, 0.5, 2.0, "%.2fx", 0);
+        // Applied when let go: the slider would move away under the pointer.
+        var scale = app.ui_scale_edit orelse app.ui_scale;
+        _ = c.igSliderFloat("UI scale", &scale, 0.5, 2.0, "%.2fx", c.ImGuiSliderFlags_AlwaysClamp);
+        ui.tooltip("Applied when you let go. Ctrl+click to type a number.");
+        if (c.igIsItemActive()) {
+            app.ui_scale_edit = scale;
+        } else if (app.ui_scale_edit != null) {
+            app.ui_scale = scale;
+            app.ui_scale_edit = null;
+        }
         c.igEndMenu();
     }
     if (app.status_len > 0) {
@@ -1749,8 +1769,20 @@ fn inspector(app: *App, timeline_h: f32) void {
     c.igPushItemWidth(c.igGetContentRegionAvail().x * 0.55);
     defer c.igPopItemWidth();
 
+    const before = app.settings;
     if (app.doc) |d| {
-        c.igSeparatorText("File");
+        if (ui.section("File", &app.settings.file_open)) app.fileSection(d);
+    } else {
+        ui.textWrapped("No file open. Use File > Open, drop a file on the window, or pass a path on the command line.", .{});
+    }
+    if (ui.section("Bonds", &app.settings.bonds_open)) app.bondsSection();
+    if (ui.section("Display", &app.settings.display_open)) app.displaySection();
+    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) mouseAndKeys();
+    if (!std.meta.eql(before, app.settings)) app.saveSettings();
+}
+
+fn fileSection(app: *App, d: Document) void {
+    {
         ui.selectableText("##path", "{s}", .{std.fs.path.basename(d.path)});
         ui.textDisabled("{s}{s}", .{ d.format.label(), if (d.source.isStreamed()) ", streamed" else "" });
         if (d.display.real.frame) |f| {
@@ -1765,11 +1797,10 @@ fn inspector(app: *App, timeline_h: f32) void {
             if (f.comment.len > 0) ui.selectableText("##comment", "{s}", .{f.comment});
             app.composition(f);
         } else ui.textDisabled("loading...", .{});
-    } else {
-        ui.textWrapped("No file open. Use File > Open, drop a file on the window, or pass a path on the command line.", .{});
     }
+}
 
-    c.igSeparatorText("Bonds");
+fn bondsSection(app: *App) void {
     var coloring: c_int = @backingInt(app.style.bond_coloring);
     _ = c.igRadioButton_IntPtr("Character gradient", &coloring, 0);
     c.igSameLine(0, -1);
@@ -1782,8 +1813,9 @@ fn inspector(app: *App, timeline_h: f32) void {
     ui.tooltip("Pairs closer than this multiple of their single-bond length get a link.");
     _ = c.igSliderFloat("Hide below", &app.style.min_character, 0, 3, "%.2f", 0);
     ui.tooltip("Hide links whose bond character is below this value (1 = single). Only drawn links connect atoms when moving groups or selecting molecules.");
+}
 
-    c.igSeparatorText("Display");
+fn displaySection(app: *App) void {
     var theme: c_int = @backingInt(app.style.theme);
     _ = c.igRadioButton_IntPtr("Light", &theme, 0);
     c.igSameLine(0, -1);
@@ -1834,8 +1866,77 @@ fn inspector(app: *App, timeline_h: f32) void {
     _ = c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0);
     _ = c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0);
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
+}
 
-    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. Right drag on the timeline: scrub one frame per pixel. F: fit. Double-click a bond: cut / restore it, until you leave the frame. Alt + drag an atom: move its group, also in a diff overlay (Esc cancels). Ctrl+Z: undo (selecting and cutting too). Ctrl+Shift+Z or Ctrl+Y: redo.", .{});
+const help = .{
+    .{ "Camera", .{
+        .{ "Left drag", "rotate" },
+        .{ "Right drag left/right", "rotate about the viewing axis" },
+        .{ "Right drag up/down", "zoom (up = closer)" },
+        .{ "Middle drag, or Shift + left or right drag", "translate" },
+        .{ "Wheel", "zoom" },
+        .{ "F", "fit to view" },
+    } },
+    .{ "Selecting", .{
+        .{ "Left click", "select / deselect an atom; empty space: clear selection" },
+        .{ "Ctrl + left drag", "lasso: add atoms inside (including hidden ones)" },
+        .{ "Ctrl + Shift + left drag", "lasso: remove atoms inside" },
+        .{ "Ctrl+A", "grow selection to whole molecules; again: select all" },
+        .{ "Esc", "cancel a fragment drag, else clear selection" },
+        .{ "N", "show / hide atom numbers" },
+    } },
+    .{ "Editing", .{
+        .{ "Alt + left drag", "on a selected atom: rotate the selection; with one base atom selected, on another atom: swing its branch around the base" },
+        .{ "Alt + right drag", "twist the group about the base-grabbed axis" },
+        .{ "Alt + middle drag, or Alt + Shift + left or right drag", "translate the group" },
+        .{ "Double-click a bond", "cut / restore it (until you leave the frame)" },
+        .{ "Delete / Backspace", "delete the selected atoms" },
+        .{ "Ctrl+Z", "undo the last edit, selection or cut" },
+        .{ "Ctrl+Shift+Z / Ctrl+Y", "redo" },
+    } },
+    .{ "Timeline", .{
+        .{ "Space", "play / pause" },
+        .{ "Left / Right, or , .", "previous / next frame" },
+        .{ "PgUp / PgDn", "jump 5%" },
+        .{ "Home / End", "first / last frame" },
+        .{ "Right drag on the timeline", "scrub one frame per pixel" },
+    } },
+    .{ "Files", .{
+        .{ "Ctrl+C", "copy selection (or whole frame) as XYZ" },
+        .{ "Ctrl+V", "paste as a fragment into the current structure" },
+        .{ "Ctrl+Shift+V", "paste as a new structure" },
+        .{ "Ctrl+S", "save current frame (with edits) as XYZ" },
+        .{ "Ctrl+O", "open file (or drop a file on the window)" },
+    } },
+};
+
+fn mouseAndKeys() void {
+    inline for (help) |group| {
+        c.igSeparatorText(group[0]);
+        if (c.igBeginTable("##" ++ group[0], 2, c.ImGuiTableFlags_RowBg | c.ImGuiTableFlags_SizingStretchProp, ui.v2(0, 0), 0)) {
+            c.igTableSetupColumn("input", c.ImGuiTableColumnFlags_WidthStretch, 0.42, 0);
+            c.igTableSetupColumn("action", c.ImGuiTableColumnFlags_WidthStretch, 0.58, 0);
+            inline for (group[1]) |row| ui.helpRow(row[0], row[1]);
+            c.igEndTable();
+        }
+    }
+}
+
+/// Use, and from now on save, the settings kept in `dir`.
+pub fn loadSettings(app: *App, dir: []const u8) void {
+    app.settings_path = std.fs.path.join(app.gpa, &.{ dir, "settings" }) catch return;
+    var buf: [4096]u8 = undefined;
+    const text = Io.Dir.cwd().readFile(app.io, app.settings_path.?, &buf) catch return;
+    app.settings = .parse(text);
+}
+
+fn saveSettings(app: *App) void {
+    const path = app.settings_path orelse return;
+    var buf: [4096]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    app.settings.write(&w) catch return;
+    Io.Dir.cwd().writeFile(app.io, .{ .sub_path = path, .data = w.buffered() }) catch |e|
+        app.setStatus("Could not save settings: {t}", .{e});
 }
 
 /// Element key: a colour swatch and count per element present, in Hill
@@ -1868,7 +1969,7 @@ fn composition(app: *App, f: Frame) void {
     const outline = c.igGetColorU32_Col(c.ImGuiCol_Border, 1);
     for (order[0..n], 0..) |z, i| {
         var buf: [24]u8 = undefined;
-        const t = ui.printZ(&buf, "{s}{d}", .{ cv.elements.symbol(z), counts[z] }) catch continue;
+        const t = ui.printZ(&buf, "{d} {s}", .{ counts[z], cv.elements.symbol(z) }) catch continue;
         const w = swatch + fs * 0.3 + c.igCalcTextSize(t.ptr, null, false, -1).x;
         if (i > 0) {
             c.igSameLine(0, fs * 0.8);

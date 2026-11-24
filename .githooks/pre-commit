@@ -2,4 +2,5 @@
 # Enable once per clone: git config core.hooksPath .githooks
 set -eu
 zig fmt --check build.zig build.zig.zon src packaging
+zig build --error-style minimal
 zig build test --error-style minimal

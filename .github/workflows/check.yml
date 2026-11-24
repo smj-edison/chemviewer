@@ -16,4 +16,5 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y glslc
       - run: zig fmt --check build.zig build.zig.zon src packaging
       # Ubuntu 24.04 has no SDL3 package.
+      - run: zig build -Dsystem-sdl=false --error-style minimal
       - run: zig build test -Dsystem-sdl=false --error-style minimal

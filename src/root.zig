@@ -17,6 +17,7 @@ pub const formats = struct {
     pub const orca = @import("formats/orca.zig");
     pub const traj = @import("formats/traj.zig");
 };
+pub const settings = @import("settings.zig");
 pub const source = @import("source.zig");
 pub const stream = @import("stream.zig");
 pub const diff = @import("diff.zig");

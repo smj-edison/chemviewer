@@ -58,6 +58,27 @@ pub fn tooltip(s: [:0]const u8) void {
     }
 }
 
+/// A section that can be collapsed, starting as `open` says and keeping it up
+/// to date. Whether to draw its contents.
+pub fn section(label: [:0]const u8, open: *bool) bool {
+    c.igSetNextItemOpen(open.*, c.ImGuiCond_Always);
+    open.* = c.igCollapsingHeader_TreeNodeFlags(label.ptr, 0);
+    return open.*;
+}
+
+/// A table row of the mouse and keys help.
+pub fn helpRow(input: [:0]const u8, action: [:0]const u8) void {
+    c.igTableNextRow(0, 0);
+    _ = c.igTableNextColumn();
+    c.igPushTextWrapPos(0);
+    c.igTextUnformatted(input.ptr, input.ptr + input.len);
+    c.igPopTextWrapPos();
+    _ = c.igTableNextColumn();
+    c.igPushTextWrapPos(0);
+    c.igTextUnformatted(action.ptr, action.ptr + action.len);
+    c.igPopTextWrapPos();
+}
+
 /// Put the next radio button or checkbox on the same line, if it fits.
 pub fn sameLineIfFits(label: [:0]const u8) void {
     const style = c.igGetStyle();
