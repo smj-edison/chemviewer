@@ -53,7 +53,7 @@ pub fn bar(app: *App) void {
         ui.textDisabled("No structure loaded", .{});
         return;
     };
-    const f = d.display.frame orelse {
+    const f = d.display.real.frame orelse {
         c.igAlignTextToFramePadding();
         ui.textDisabled("loading...", .{});
         return;
@@ -80,7 +80,8 @@ pub fn bar(app: *App) void {
     }
     var lb: [128]u8 = undefined;
     const labels = joinedLabels(&lb, f.numbers, sel);
-    const p = f.positions;
+    const p = app.drawnPositions() orelse return;
+    const value = app.measured();
     // Applied last: an edit replaces the frame and may change the selection.
     var submitted: ?App.Edit = null;
     switch (sel.len) {
@@ -91,8 +92,7 @@ pub fn bar(app: *App) void {
         2 => {
             ui.text("Distance {s}", .{labels});
             c.igSameLine(0, -1);
-            const dist = geom.distance(p, sel[0], sel[1]);
-            if (valueField("##dist", dist, "%.5f", fs * 7)) |v| submitted = .{ .distance = v };
+            if (valueField("##dist", value.?.distance, "%.5f", fs * 7)) |v| submitted = .{ .distance = v };
             c.igSameLine(0, 4);
             ui.text("Å", .{});
             if (app.bondCharacter(sel[0], sel[1])) |ch| {
@@ -105,16 +105,14 @@ pub fn bar(app: *App) void {
         3 => {
             ui.text("Angle {s}", .{labels});
             c.igSameLine(0, -1);
-            const ang = geom.angle(p, sel[0], sel[1], sel[2]);
-            if (angleFields("ang", ang)) |v| submitted = .{ .angle = v };
+            if (angleFields("ang", value.?.angle)) |v| submitted = .{ .angle = v };
             var l2: [16]u8 = undefined;
             modeSelector(app, atomLabel(&l2, f.numbers, sel[2]));
         },
         else => {
             ui.text("Dihedral {s}", .{labels});
             c.igSameLine(0, -1);
-            const dih = geom.dihedral(p, sel[0], sel[1], sel[2], sel[3]);
-            if (angleFields("dih", dih)) |v| submitted = .{ .dihedral = v };
+            if (angleFields("dih", value.?.dihedral)) |v| submitted = .{ .dihedral = v };
             var l2: [16]u8 = undefined;
             modeSelector(app, atomLabel(&l2, f.numbers, sel[2]));
         },
@@ -146,7 +144,7 @@ pub fn overlay(app: *App) void {
     const sel = app.selected();
     // Rings come from the renderer; numbers and the path only make sense for measurements.
     if (sel.len == 0 or sel.len > 4) return;
-    const pos = app.displayedPositions() orelse return;
+    const pos = app.drawnPositions() orelse return;
     const proj = app.screenProjector();
     const dl = c.igGetBackgroundDrawList_Nil();
     const ac = app.style.theme.accent();
@@ -185,8 +183,8 @@ pub fn atomLabels(app: *App) void {
 }
 
 fn atomLabelsInner(app: *App) !void {
-    const pos = app.displayedPositions() orelse return;
-    const f = app.doc.?.display.frame.?;
+    const pos = app.drawnPositions() orelse return;
+    const f = app.doc.?.display.real.frame.?;
     const numbers = app.show_atom_numbers;
     var ambiguous: [cv.elements.max_z + 1]bool = @splat(false);
     var any_ambiguous = false;

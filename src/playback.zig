@@ -169,6 +169,52 @@ test "playback stops when no frame can be read" {
     }
 }
 
+test "interpolated playback holds at a step until the next one is loaded" {
+    var t: TestTrajectory = undefined;
+    try t.init(100, &.{}, .{ .start = false });
+    defer t.deinit();
+    var head: Playhead = .{ .current = 1, .last = .zero };
+    var now: Io.Timestamp = .zero;
+    for (0..5) |_| {
+        now = now.addDuration(.fromMilliseconds(20));
+        advance(&head, &t.stream, .{ .now = now, .fps = 10, .loop = false, .interpolate = true, .shown = 1 });
+        try std.testing.expectEqual(0, head.t);
+        try std.testing.expectEqual(1, head.current);
+    }
+    try t.stream.start();
+    t.stream.request(1);
+    _ = try t.settle(2);
+    now = now.addDuration(.fromMilliseconds(20));
+    advance(&head, &t.stream, .{ .now = now, .fps = 10, .loop = false, .interpolate = true, .shown = 1 });
+    try std.testing.expectApproxEqAbs(0.2, head.t, 1e-5);
+}
+
+test "interpolated playback carries what is left of a step over, but not across the loop's wrap" {
+    var t: TestTrajectory = undefined;
+    try t.init(3, &.{}, .{});
+    defer t.deinit();
+    t.stream.request(0);
+    for (0..3) |i| _ = try t.settle(i);
+    for ([_]usize{ 0, 2 }, [_]usize{ 1, 0 }, [_]f32{ 0.1, 0 }) |from, to, rest| {
+        var head: Playhead = .{ .current = from, .t = 0.9, .last = .zero };
+        advance(&head, &t.stream, .{ .now = Io.Timestamp.zero.addDuration(.fromMilliseconds(20)), .fps = 10, .loop = true, .interpolate = true, .shown = from });
+        try std.testing.expectEqual(to, head.current);
+        try std.testing.expectApproxEqAbs(rest, head.t, 1e-5);
+    }
+}
+
+test "interpolated playback never moves more than a step at a time" {
+    var t: TestTrajectory = undefined;
+    try t.init(5, &.{}, .{});
+    defer t.deinit();
+    t.stream.request(0);
+    _ = try t.settle(1);
+    var head: Playhead = .{ .current = 0, .t = 0.5, .last = .zero };
+    advance(&head, &t.stream, .{ .now = Io.Timestamp.zero.addDuration(.fromMilliseconds(5000)), .fps = 240, .loop = false, .interpolate = true, .shown = 0 });
+    try std.testing.expectEqual(1, head.current);
+    try std.testing.expectEqual(0, head.t);
+}
+
 test "an interpolated step before a failed frame lasts its time" {
     var t: TestTrajectory = undefined;
     try t.init(8, &.{2}, .{});

@@ -412,7 +412,7 @@ const Startup = struct {
     /// The frame asked for is on screen, not a stand-in for one that can't be read.
     fn isShown(app: *const App) bool {
         const d = app.doc orelse return true;
-        return d.display.frame != null and d.display.index == d.current;
+        return d.display.real.frame != null and d.display.real.index == d.current;
     }
 
     /// Called once per frame before it is submitted.
@@ -494,7 +494,7 @@ const Startup = struct {
         for (s.args.cuts[0..s.args.cuts_len]) |pair| app.toggleCutPair(pair[0], pair[1]);
         app.clearSelection();
         const sel = s.args.select[0..s.args.select_len];
-        const n = app.doc.?.display.frame.?.len();
+        const n = app.doc.?.display.real.frame.?.len();
         for (sel) |i| {
             if (i >= n) return error.SelectedAtomOutOfRange;
             app.toggleSelect(i);
