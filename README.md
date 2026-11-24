@@ -22,7 +22,7 @@ ImGui (via cimgui) doing the heavy lifting.
 - **Measure and edit.** Click two to four atoms to get a distance, angle or
   dihedral in the bottom bar. Type a new value (degrees or radians for
   angles) and the attached group moves with it, Chemcraft-style. Edits are per
-  frame, undoable, and can be saved as XYZ.
+  frame, undoable (reverting to the file too), and can be saved as XYZ.
 - **XYZ clipboard.** Ctrl+C copies the selected atoms (or the whole frame) as
   XYZ, with the source in the comment line. Ctrl+V pastes XYZ, bare
   `El x y z` lines, or a Gaussian/ORCA input into the current structure as a
@@ -156,7 +156,7 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Ctrl+Shift+V | paste as a new structure |
 | N | show / hide atom numbers |
 | Delete / Backspace | delete the selected atoms |
-| Ctrl+Z | undo geometry edit (including deletes and pastes) |
+| Ctrl+Z | undo geometry edit (including deletes, pastes and reverts) |
 | Ctrl+S | save current frame (with edits) as XYZ |
 | Ctrl+O | open file (or drop a file on the window) |
 

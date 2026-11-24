@@ -531,6 +531,7 @@ fn savePng(io: Io, gpu: *const Gpu, path: []const u8, extent: @import("vulkan").
 }
 
 test {
+    _ = App;
     _ = @import("render/Camera.zig");
     _ = @import("render/glass_layers.zig");
     _ = @import("app/lasso.zig");

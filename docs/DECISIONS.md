@@ -106,7 +106,7 @@ known geometries.
 
 Edits are stored per frame and replace the file's frame whenever it's shown.
 The frame's energy is dropped, since it no longer describes the geometry. Undo
-restores positions, and edited frames can be saved as XYZ (Ctrl+S). The same
+restores the atoms (and the energy, once no edit is left), and edited frames can be saved as XYZ (Ctrl+S). The same
 path can be scripted from the CLI (`--select`, `--set`, `--save`), which is how
 it's verified headlessly.
 
@@ -309,7 +309,8 @@ the same weights.
 
 
 ### D24 — One owner for each fact about a frame
-*Decided 2026-11-24. Implemented so far: the frame stream.* Terms are in GLOSSARY.md. Data flows
+*Decided 2026-11-24. Implemented so far: the frame stream and
+the edit session, except aborting drags.* Terms are in GLOSSARY.md. Data flows
 one way: the frame stream owns file frames, the edit session owns the current
 atoms of every frame, and the displayed geometry is derived from both and never
 edited.
@@ -324,6 +325,8 @@ edited.
   atoms. Starting an edit pauses playback. A frame is edited only while an edit
   is in effect (or its first edit has left the history). Revert is undoable.
   Opening or closing a file resets everything, including drag and playback.
+  The session keeps a copy of the file frame of each frame that was ever edited,
+  so undo and revert are immediate even if the stream has evicted it.
 - **Cuts** end when the user leaves the frame; the selection carries over unless
   the numbering differs. Delete and its undo translate both.
 - **Displayed geometry:** drawing, picking, lasso, labels and measured values
