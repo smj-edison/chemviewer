@@ -187,6 +187,7 @@ pub fn overlay(app: *App) void {
     const proj = app.screenProjector();
     const dl = c.igGetBackgroundDrawList_Nil();
     const ac = app.style.theme.accent();
+    const oa = app.style.theme.onAccent();
     const col = ui.rgba(ac[0], ac[1], ac[2], 1);
     const fs = c.igGetFontSize();
     var prev: ?c.ImVec2_c = null;
@@ -204,7 +205,7 @@ pub fn overlay(app: *App) void {
         const t = ui.printZ(&buf, "{d}", .{k + 1}) catch continue;
         const at = ui.v2(s.x + fs * 0.6, s.y - fs * 1.4);
         c.ImDrawList_AddCircleFilled(dl, ui.v2(at.x + fs * 0.3, at.y + fs * 0.5), fs * 0.7, col, 0);
-        c.ImDrawList_AddText_Vec2(dl, at, ui.rgba(1, 1, 1, 1), t.ptr, null);
+        c.ImDrawList_AddText_Vec2(dl, at, ui.rgba(oa[0], oa[1], oa[2], 1), t.ptr, null);
     }
 }
 

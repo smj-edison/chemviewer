@@ -107,7 +107,7 @@ fn energyPlot(app: *App, d: *App.Document) void {
 
     const light = app.style.theme == .light;
     const accent = if (light) ui.rgba(0.12, 0.35, 0.80, 0.95) else ui.rgba(0.45, 0.75, 1.0, 0.9);
-    const label_col = c.igGetColorU32_Col(c.ImGuiCol_Text, 0.55);
+    const label_col = c.igGetColorU32_Col(c.ImGuiCol_TextDisabled, 1);
     c.ImDrawList_AddRectFilled(dl, p0, p1, c.igGetColorU32_Col(c.ImGuiCol_FrameBg, 1), 3, 0);
 
     // Known energies: a line through the frames, or with more frames than

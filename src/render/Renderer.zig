@@ -94,6 +94,12 @@ pub const Theme = enum(c_int) {
         };
     }
 
+    /// Text on the accent colour.
+    pub fn onAccent(t: Theme) [3]f32 {
+        _ = t;
+        return .{ 0.08, 0.06, 0.04 };
+    }
+
     pub fn cellLine(t: Theme) [4]f32 {
         return switch (t) {
             .light => .{ 0.30, 0.32, 0.36, 1 },

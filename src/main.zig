@@ -550,6 +550,77 @@ test {
     _ = @import("app/occlusion.zig");
 }
 
+/// WCAG contrast of `text` on `under`, each over what is below it.
+fn contrast(text: [4]f32, under: []const [4]f32) f32 {
+    const luminance = struct {
+        fn f(rgb: [3]f32) f32 {
+            var sum: f32 = 0;
+            for (rgb, [_]f32{ 0.2126, 0.7152, 0.0722 }) |v, w| {
+                sum += w * if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+            }
+            return sum;
+        }
+    }.f;
+    var bg: [3]f32 = .{ 0, 0, 0 };
+    for (under) |layer| for (&bg, layer[0..3]) |*b, v| {
+        b.* = b.* * (1 - layer[3]) + v * layer[3];
+    };
+    var fg = bg;
+    for (&fg, text[0..3]) |*f, v| f.* = f.* * (1 - text[3]) + v * text[3];
+    const a = luminance(fg);
+    const b = luminance(bg);
+    return (@max(a, b) + 0.05) / (@min(a, b) + 0.05);
+}
+
+test "text and hints can be read on everything they are drawn on, in every colour set" {
+    c.cvImGuiCreateContext();
+    defer c.cvImGuiDestroyContext();
+    const Theme = @import("render/Renderer.zig").Theme;
+    var failed = false;
+    for ([_]Theme{ .light, .dark }) |theme| for ([_]bool{ false, true }) |aero| {
+        if (aero) aeroImGuiColors(theme == .dark) else if (theme == .dark) darkImGuiColors() else lightImGuiColors();
+        const cols = &c.igGetStyle().*.Colors;
+        const get = struct {
+            fn f(cs: anytype, i: c_int) [4]f32 {
+                const v = cs[@intCast(i)];
+                return .{ v.x, v.y, v.z, v.w };
+            }
+        }.f;
+        const scene = theme.background();
+        const ac = theme.accent();
+        const badge = theme.onAccent();
+        try std.testing.expect(contrast(.{ badge[0], badge[1], badge[2], 1 }, &.{.{ ac[0], ac[1], ac[2], 1 }}) >= 4.5);
+        const panels = [_]c_int{ c.ImGuiCol_WindowBg, c.ImGuiCol_PopupBg, c.ImGuiCol_MenuBarBg };
+        const widgets = [_]c_int{
+            c.ImGuiCol_FrameBg,       c.ImGuiCol_FrameBgHovered, c.ImGuiCol_FrameBgActive,
+            c.ImGuiCol_Button,        c.ImGuiCol_ButtonHovered,  c.ImGuiCol_ButtonActive,
+            c.ImGuiCol_Header,        c.ImGuiCol_HeaderHovered,  c.ImGuiCol_HeaderActive,
+            c.ImGuiCol_TitleBgActive, c.ImGuiCol_SliderGrab,     c.ImGuiCol_SliderGrabActive,
+        };
+        for (panels) |panel| {
+            // Panels let some of the scene's background through.
+            const base = [_][4]f32{ .{ scene[0], scene[1], scene[2], 1 }, get(cols, panel) };
+            for ([_]c_int{ c.ImGuiCol_Text, c.ImGuiCol_TextDisabled }) |text| {
+                const k = contrast(get(cols, text), &base);
+                if (k < 4.5) {
+                    failed = true;
+                    std.debug.print("{t} aero={}: {s} on panel {d}: {d:.2}\n", .{ theme, aero, std.mem.span(c.igGetStyleColorName(text)), panel, k });
+                }
+            }
+            for (widgets) |w| for ([_]c_int{ c.ImGuiCol_Text, c.ImGuiCol_TextDisabled }) |text| {
+                // Hints are drawn on frames (the plot), not on buttons.
+                if (text == c.ImGuiCol_TextDisabled and w != c.ImGuiCol_FrameBg) continue;
+                const k = contrast(get(cols, text), &(base ++ [_][4]f32{get(cols, w)}));
+                if (k < 4.5) {
+                    failed = true;
+                    std.debug.print("{t} aero={}: {s} on {s}: {d:.2}\n", .{ theme, aero, std.mem.span(c.igGetStyleColorName(text)), std.mem.span(c.igGetStyleColorName(w)), k });
+                }
+            };
+        }
+    };
+    try std.testing.expect(!failed);
+}
+
 fn setColor(cs: anytype, i: c_int, hex: u24, a: f32) void {
     cs[@intCast(i)] = .{
         .x = @as(f32, @floatFromInt((hex >> 16) & 0xFF)) / 255.0,
@@ -566,6 +637,11 @@ fn setColor(cs: anytype, i: c_int, hex: u24, a: f32) void {
 fn darkImGuiColors() void {
     c.igStyleColorsDark(null);
     const col = &c.igGetStyle().*.Colors;
+    setColor(col, c.ImGuiCol_TextDisabled, 0x9C9C9C, 1);
+    setColor(col, c.ImGuiCol_ButtonHovered, 0x2F66AE, 1);
+    setColor(col, c.ImGuiCol_ButtonActive, 0x255796, 1);
+    setColor(col, c.ImGuiCol_HeaderHovered, 0x2F66AE, 1);
+    setColor(col, c.ImGuiCol_HeaderActive, 0x255796, 1);
     setColor(col, c.ImGuiCol_FrameBgHovered, 0x2A4568, 1);
     setColor(col, c.ImGuiCol_FrameBgActive, 0x2A4568, 1);
     setColor(col, c.ImGuiCol_SliderGrab, 0x3976C4, 1);
@@ -598,7 +674,7 @@ fn lightImGuiColors() void {
     setColor(col, c.ImGuiCol_PlotLines, 0x5540F0, 1);
     setColor(col, c.ImGuiCol_PlotHistogram, 0xFF2E7E, 1);
     setColor(col, c.ImGuiCol_Text, 0x2A1F66, 1);
-    setColor(col, c.ImGuiCol_TextDisabled, 0x8A7FB8, 1);
+    setColor(col, c.ImGuiCol_TextDisabled, 0x665AA0, 1);
 }
 
 /// Aero ImGui colours: frosted sky-glass panels with aqua buttons (light),
@@ -628,7 +704,7 @@ fn aeroImGuiColors(dark: bool) void {
         setColor(col, c.ImGuiCol_PlotLines, 0x1A7FD4, 1);
         setColor(col, c.ImGuiCol_PlotHistogram, 0x58B84A, 1);
         setColor(col, c.ImGuiCol_Text, 0x0B3A5B, 1);
-        setColor(col, c.ImGuiCol_TextDisabled, 0x5A85A3, 1);
+        setColor(col, c.ImGuiCol_TextDisabled, 0x426886, 1);
     } else {
         setColor(col, c.ImGuiCol_WindowBg, 0x06222C, 0.80);
         setColor(col, c.ImGuiCol_PopupBg, 0x06222C, 0.95);
@@ -640,11 +716,11 @@ fn aeroImGuiColors(dark: bool) void {
         setColor(col, c.ImGuiCol_FrameBgHovered, 0x0F4552, 0.9);
         setColor(col, c.ImGuiCol_FrameBgActive, 0x0F4552, 1);
         setColor(col, c.ImGuiCol_Button, 0x135A6A, 0.9);
-        setColor(col, c.ImGuiCol_ButtonHovered, 0x1C7F86, 1);
-        setColor(col, c.ImGuiCol_ButtonActive, 0x2AA88F, 1);
+        setColor(col, c.ImGuiCol_ButtonHovered, 0x18757C, 1);
+        setColor(col, c.ImGuiCol_ButtonActive, 0x1B7A68, 1);
         setColor(col, c.ImGuiCol_Header, 0x135A6A, 0.8);
         setColor(col, c.ImGuiCol_HeaderHovered, 0x1C7F86, 0.9);
-        setColor(col, c.ImGuiCol_HeaderActive, 0x2AA88F, 1);
+        setColor(col, c.ImGuiCol_HeaderActive, 0x1B7A68, 1);
         setColor(col, c.ImGuiCol_CheckMark, 0x5CF2B0, 1);
         setColor(col, c.ImGuiCol_SliderGrab, 0x147D77, 1);
         setColor(col, c.ImGuiCol_SliderGrabActive, 0x208050, 1);
