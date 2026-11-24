@@ -39,10 +39,11 @@ jobs:
         with: { version: 0.17.1, cache-key: "${{ matrix.name }}" }
       - run: ${{ matrix.setup }}
       - run: packaging/build-packages.sh ${{ matrix.system }} "${VERSION#v}"
+      # Not archived: each artifact is the package itself, named after its file.
       - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.name }}
-          path: dist/chemviewer-*
+        with: { path: dist/chemviewer-*-local*, archive: false, if-no-files-found: error }
+      - uses: actions/upload-artifact@v7
+        with: { path: dist/chemviewer-*-installer*, archive: false, if-no-files-found: error }
   release:
     if: github.ref_type == 'tag'
     needs: build
@@ -50,8 +51,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+      # Keep the macOS .zip as it is.
       - uses: actions/download-artifact@v8
-        with: { path: dist, merge-multiple: true }
-      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --generate-notes dist/*
+        with: { path: dist, merge-multiple: true, skip-decompress: true }
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --generate-notes dist/* LICENSE packaging/THIRD-PARTY-NOTICES.txt
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1,20 +1,23 @@
-//! Packaging for `zig build -Dpackage=portable|installer` (see build.zig).
+//! Packaging for `zig build -Dpackage=local|installer` (see build.zig).
 //! Linux and Windows packages can be built on any system; macOS ones only on a Mac,
-//! because SDL needs Apple's SDK. Output goes to the install prefix.
+//! because SDL needs Apple's SDK. Output goes to the install prefix, as
+//! chemviewer-VERSION-OS-ARCH-local* or -installer*.
 const std = @import("std");
 const Compile = std.Build.Step.Compile;
 
 const notices = "packaging/THIRD-PARTY-NOTICES.txt";
 
-pub const Kind = enum { none, portable, installer };
+/// `local` runs from wherever it is put; `installer` installs.
+pub const Kind = enum { none, local, installer };
 
 pub fn add(b: *std.Build, kind: Kind, version: []const u8, makensis: []const u8, exe: *Compile, inspect: *Compile) void {
     if (kind == .none) return;
     const target = exe.rootModuleTarget();
+    const name = b.fmt("chemviewer-{s}-{t}-{t}-{t}", .{ version, target.os.tag, target.cpu.arch, kind });
     switch (target.os.tag) {
-        .windows => windows(b, kind, b.fmt("chemviewer-{s}-windows-{t}", .{ version, target.cpu.arch }), version, makensis, exe, inspect),
-        .macos => macos(b, kind, b.fmt("chemviewer-{s}-macos-{t}", .{ version, target.cpu.arch }), version, exe, inspect),
-        .linux => linux(b, kind, b.fmt("chemviewer-{s}-linux-{t}", .{ version, target.cpu.arch }), exe, inspect),
+        .linux => linux(b, kind, name, exe, inspect),
+        .windows => windows(b, kind, name, version, makensis, exe, inspect),
+        .macos => macos(b, kind, name, version, exe, inspect),
         else => b.getInstallStep().dependOn(&b.addFail("-Dpackage is for Linux, Windows and macOS").step),
     }
 }
@@ -35,17 +38,16 @@ fn runTool(b: *std.Build, name: []const u8) *std.Build.Step.Run {
     }));
 }
 
-/// A .tar.gz laid out like an installed copy, so it runs in place or can be
-/// unpacked into ~/.local. Build with -Dsystem-sdl=false and an old glibc
+/// The program by itself, or a .tar.gz with the desktop entry, icons, file
+/// types and an install script. Build with -Dsystem-sdl=false and an old glibc
 /// target to need nothing but glibc and a Vulkan driver. (A musl build could
 /// not load the driver or the Wayland/X11 libraries.)
 fn linux(b: *std.Build, kind: Kind, name: []const u8, exe: *Compile, inspect: *Compile) void {
-    if (kind == .installer) {
-        return b.getInstallStep().dependOn(&b.addFail("no Linux installer; on Arch use packaging/aur").step);
-    }
+    if (kind == .local) return installOutput(b, exe.getEmittedBin(), name);
     const run = runTool(b, "targz");
     const file_name = b.fmt("{s}.tar.gz", .{name});
     const out = run.addOutputFileArg(file_name);
+    run.addPrefixedFileArg(b.fmt("{s}/install.sh=", .{name}), b.path("packaging/linux-install.sh"));
     run.addPrefixedFileArg(b.fmt("{s}/bin/chemviewer=", .{name}), exe.getEmittedBin());
     run.addPrefixedFileArg(b.fmt("{s}/bin/chemviewer-inspect=", .{name}), inspect.getEmittedBin());
     for (linux_files) |f| run.addPrefixedFileArg(b.fmt("{s}/{s}=", .{ name, f[1] }), b.path(f[0]));
@@ -65,19 +67,10 @@ pub const linux_files = blk: {
     break :blk files;
 };
 
-/// Portable zip, or a per-user NSIS installer (needs `makensis`).
+/// The program by itself, or a per-user NSIS installer (needs `makensis`).
 fn windows(b: *std.Build, kind: Kind, name: []const u8, version: []const u8, makensis: []const u8, exe: *Compile, inspect: *Compile) void {
-    if (kind == .portable) {
-        const run = runTool(b, "zip");
-        const zip_name = b.fmt("{s}.zip", .{name});
-        const zip = run.addOutputFileArg(zip_name);
-        run.addPrefixedFileArg(b.fmt("{s}/chemviewer.exe=", .{name}), exe.getEmittedBin());
-        run.addPrefixedFileArg(b.fmt("{s}/chemviewer-inspect.exe=", .{name}), inspect.getEmittedBin());
-        run.addPrefixedFileArg(b.fmt("{s}/README.md=", .{name}), b.path("README.md"));
-        run.addPrefixedFileArg(b.fmt("{s}/LICENSE.txt=", .{name}), b.path("LICENSE"));
-        run.addPrefixedFileArg(b.fmt("{s}/THIRD-PARTY-NOTICES.txt=", .{name}), b.path(notices));
-        return installOutput(b, zip, zip_name);
-    }
+    const file_name = b.fmt("{s}.exe", .{name});
+    if (kind == .local) return installOutput(b, exe.getEmittedBin(), file_name);
     const run = b.addSystemCommand(&.{ makensis, "-V2", "-NOCD" });
     run.addArg(b.fmt("-DVERSION={s}", .{version}));
     run.addPrefixedFileArg("-DEXE=", exe.getEmittedBin());
@@ -85,13 +78,13 @@ fn windows(b: *std.Build, kind: Kind, name: []const u8, version: []const u8, mak
     run.addPrefixedFileArg("-DLICENSE=", b.path("LICENSE"));
     run.addPrefixedFileArg("-DNOTICES=", b.path(notices));
     run.addPrefixedFileArg("-DICON=", b.path("packaging/windows/chemviewer.ico"));
-    const setup_name = b.fmt("{s}-setup.exe", .{name});
-    const setup = run.addPrefixedOutputFileArg("-DOUT=", setup_name);
+    const setup = run.addPrefixedOutputFileArg("-DOUT=", file_name);
     run.addFileArg(b.path("packaging/windows/chemviewer.nsi"));
-    installOutput(b, setup, setup_name);
+    installOutput(b, setup, file_name);
 }
 
-/// chemviewer.app as a zip (portable) or a drag-to-Applications disk image.
+/// chemviewer.app in a zip (an app is a folder, with MoltenVK inside), or a
+/// drag-to-Applications disk image.
 fn macos(b: *std.Build, kind: Kind, name: []const u8, version: []const u8, exe: *Compile, inspect: *Compile) void {
     const moltenvk = b.lazyDependency("moltenvk", .{}) orelse return; // being fetched
     const run = b.addSystemCommand(&.{"sh"});
@@ -104,7 +97,7 @@ fn macos(b: *std.Build, kind: Kind, name: []const u8, version: []const u8, exe: 
     run.addFileArg(moltenvk.path("MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib"));
     run.addFileArg(b.path("LICENSE"));
     run.addFileArg(b.path(notices));
-    const file_name = b.fmt("{s}.{s}", .{ name, if (kind == .portable) "zip" else "dmg" });
+    const file_name = b.fmt("{s}.{s}", .{ name, if (kind == .local) "zip" else "dmg" });
     const out = run.addOutputFileArg(file_name);
     installOutput(b, out, file_name);
 }

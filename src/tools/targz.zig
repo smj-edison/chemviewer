@@ -1,5 +1,5 @@
 //! Build tool: `targz OUT.tar.gz NAME=FILE...` writes a gzipped tar archive.
-//! Files in a `bin` directory are made executable. Used by
+//! Files in a `bin` directory and shell scripts are made executable. Used by
 //! packaging/package.zig.
 const std = @import("std");
 const Io = std.Io;
@@ -21,7 +21,8 @@ pub fn main(init: std.process.Init) !void {
         const eq = std.mem.indexOfScalar(u8, arg, '=') orelse return error.ExpectedNameEqualsFile;
         const name = arg[0..eq];
         const data = try Io.Dir.cwd().readFileAlloc(io, arg[eq + 1 ..], arena, .limited(max_file));
-        const mode: u32 = if (std.mem.indexOf(u8, name, "/bin/") != null) 0o755 else 0o644;
+        const executable = std.mem.indexOf(u8, name, "/bin/") != null or std.mem.endsWith(u8, name, ".sh");
+        const mode: u32 = if (executable) 0o755 else 0o644;
         try tar.writeFileBytes(name, data, .{ .mode = mode });
     }
     try tar.finishPedantically();

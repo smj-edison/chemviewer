@@ -77,22 +77,20 @@ cd packaging/aur && makepkg -Csi
 
 On other Linux systems, `zig build -Doptimize=ReleaseSafe --prefix ~/.local`.
 
-Windows and macOS packages are written to the install prefix. Windows ones can
-be built on any system, macOS ones only on a Mac (SDL needs Apple's SDK):
+`packaging/build-packages.sh linux|windows|macos VERSION` builds the packages into
+`dist/`, as CI does (`zig build -Dpackage=local|installer`). macOS ones need a
+Mac, as SDL needs Apple's SDK; the others can be built anywhere.
 
-```sh
-zig build -Dtarget=x86_64-windows-gnu -Dcpu=baseline -Doptimize=ReleaseSafe -Dpackage=portable   # .zip
-zig build -Dsystem-sdl=false -Doptimize=ReleaseSafe -Dpackage=portable            # .app in a .zip
-```
+| | `-local` | `-installer` |
+|---|---|---|
+| Linux | the program (`chmod +x` it) | `.tar.gz` with `install.sh`, desktop entry, icons, file types |
+| Windows | the program | per-user setup program (building it needs NSIS's `makensis`) |
+| macOS | `.app` in a `.zip` | `.dmg` |
 
-`packaging/build-packages.sh linux|windows|macos VERSION` runs the same builds as
-CI. The Linux one is a `.tar.gz` with SDL linked in, needing only glibc 2.31+
-and a Vulkan driver; unpack it into `~/.local` with `--strip-components=1` to
-install. `packaging/test-in-podman.sh linux|windows` runs the Linux or Windows
-CI build locally, from scratch.
-
-`-Dpackage=installer` makes a per-user setup program (needs NSIS's `makensis`)
-or a `.dmg` instead; `-Dversion=X.Y.Z` sets the version. The GitHub workflow
+The Linux program needs only glibc 2.31+ and a Vulkan driver. The macOS app is
+a folder with MoltenVK inside, so it can't be a single file.
+`packaging/test-in-podman.sh linux|windows` runs the Linux or Windows CI build
+locally, from scratch. The GitHub workflow
 `package.yml` builds them all; pushing a `v*` tag puts them on a draft release.
 They are not signed by a paid certificate, so Windows SmartScreen and macOS
 Gatekeeper warn on first launch.
