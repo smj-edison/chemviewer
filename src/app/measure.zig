@@ -23,12 +23,51 @@ fn joinedLabels(buf: []u8, numbers: []const u8, sel: []const u32) []const u8 {
     return w.buffered();
 }
 
-/// An editable number: applies on Enter. Returns the new value if submitted.
-fn valueField(id: [:0]const u8, value: f64, fmt: [:0]const u8, width: f32) ?f64 {
-    var v = value;
+/// What the field being edited (there is only one) held when it was clicked.
+var clicked_text: [64]u8 = undefined;
+var clicked_len: usize = 0;
+
+/// An editable number: applies on Enter. Returns the new value if one was
+/// typed. The text is as it was when clicked, so an untouched one is rounded,
+/// and during playback old: Enter doesn't apply it.
+fn valueField(id: [:0]const u8, value: f64, comptime fmt: []const u8, width: f32) ?f64 {
+    var buf: [64]u8 = undefined;
+    const shown = ui.printZ(&buf, fmt, .{value}) catch return null;
+    var before: [64]u8 = undefined;
+    @memcpy(before[0..shown.len], shown);
+    const shown_len = shown.len;
     c.igSetNextItemWidth(width);
-    if (c.igInputDouble(id.ptr, &v, 0, 0, fmt.ptr, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CharsScientific)) return v;
-    return null;
+    const flags = c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CharsScientific | c.ImGuiInputTextFlags_AutoSelectAll;
+    const entered = c.igInputText(id.ptr, &buf, buf.len, flags, null, null);
+    if (c.igIsItemActivated()) {
+        clicked_text = before;
+        clicked_len = shown_len;
+    }
+    if (!entered) return null;
+    return typedValue(clicked_text[0..clicked_len], std.mem.sliceTo(&buf, 0));
+}
+
+/// The number in `text`, or null if it isn't one or is still what it was.
+fn typedValue(before: []const u8, text: []const u8) ?f64 {
+    if (std.mem.eql(u8, before, text)) return null;
+    const v = std.fmt.parseFloat(f64, std.mem.trim(u8, text, " ")) catch return null;
+    return if (std.math.isFinite(v)) v else null;
+}
+
+test "only a number that was typed is applied" {
+    const Case = struct { []const u8, []const u8, ?f64 };
+    for ([_]Case{
+        .{ "1.54000", "1.54000", null },
+        .{ "1.54000", "1.54", 1.54 }, // exactly that, not what was rounded to it
+        .{ "1.54000", " 2 ", 2 },
+        .{ "1.54000", "1.", 1 },
+        .{ "109.500", "-1e2", -100 },
+        .{ "109.500", "+90", 90 },
+        .{ "109.500", "", null },
+        .{ "109.500", "1.2.3", null },
+        .{ "109.500", "2*3", null },
+        .{ "109.500", "1e999", null },
+    }) |case| try std.testing.expectEqual(case[2], typedValue(case[0], case[1]));
 }
 
 fn modeSelector(app: *App, last_label: []const u8) void {
@@ -92,7 +131,7 @@ pub fn bar(app: *App) void {
         2 => {
             ui.text("Distance {s}", .{labels});
             c.igSameLine(0, -1);
-            if (valueField("##dist", value.?.distance, "%.5f", fs * 7)) |v| submitted = .{ .distance = v };
+            if (valueField("##dist", value.?.distance, "{d:.5}", fs * 7)) |v| submitted = .{ .distance = v };
             c.igSameLine(0, 4);
             ui.text("Å", .{});
             if (app.bondCharacter(sel[0], sel[1])) |ch| {
@@ -128,11 +167,11 @@ fn angleFields(comptime id: []const u8, rad: f64) ?f64 {
     const fs = c.igGetFontSize();
     const deg = std.math.radiansToDegrees(rad);
     var submitted: ?f64 = null;
-    if (valueField("##" ++ id ++ "deg", deg, "%.3f", fs * 6.5)) |v| submitted = std.math.degreesToRadians(v);
+    if (valueField("##" ++ id ++ "deg", deg, "{d:.3}", fs * 6.5)) |v| submitted = std.math.degreesToRadians(v);
     c.igSameLine(0, 4);
     ui.text("°", .{});
     c.igSameLine(0, fs);
-    if (valueField("##" ++ id ++ "rad", rad, "%.6f", fs * 6.5)) |v| submitted = v;
+    if (valueField("##" ++ id ++ "rad", rad, "{d:.6}", fs * 6.5)) |v| submitted = v;
     c.igSameLine(0, 4);
     ui.text("rad", .{});
     return submitted;

@@ -107,6 +107,8 @@ lasso_remove: bool = false,
 drag: ?drag_mod.Drag = null,
 drag_edit: ?cv.edit.Transaction = null,
 drag_button: u8 = 0,
+/// Button of an aborted drag; moving does nothing until it is let go.
+aborted_button: ?u8 = null,
 
 /// What was drawn: the displayed geometry, how far blended.
 const LockFollowed = struct { changes: u64, blend: f32, held: u64 };
@@ -791,6 +793,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
         c.SDL_EVENT_QUIT => app.quit_requested = true,
         c.SDL_EVENT_DROP_FILE => if (ev.drop.data) |p| app.openFile(std.mem.span(p)),
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+            if (app.aborted_button == ev.button.button) app.aborted_button = null;
             if (want_mouse) return;
             const mods0 = c.SDL_GetModState();
             if ((mods0 & c.SDL_KMOD_ALT) != 0 and app.drag == null) {
@@ -822,6 +825,10 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
                 if (ev.button.button == c.SDL_BUTTON_RIGHT) app.endFineScrub();
                 return;
             }
+            if (app.aborted_button == ev.button.button) {
+                app.aborted_button = null;
+                return;
+            }
             if (app.drag != null) {
                 if (ev.button.button == app.drag_button) app.endDrag(true);
                 return;
@@ -843,6 +850,12 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
                 // Released before the UI frame that started the scrub.
                 if ((ev.motion.state & c.SDL_BUTTON_RMASK) == 0) return app.endFineScrub();
                 return app.fineScrubMotion(ev.motion.xrel);
+            }
+            if (app.aborted_button) |button| {
+                const held = @as(u32, 1) << @intCast(button -| 1);
+                if ((ev.motion.state & held) != 0 and app.drag == null) return;
+                // Let go where it wasn't seen.
+                if ((ev.motion.state & held) == 0) app.aborted_button = null;
             }
             if (app.drag != null) return app.dragMotion(ev.motion.x, ev.motion.y, ev.motion.xrel, ev.motion.yrel);
             if (app.press) |*pr| pr.moved += @abs(ev.motion.xrel) + @abs(ev.motion.yrel);
@@ -1344,6 +1357,7 @@ fn endDrag(app: *App, commit: bool) void {
     if (dr.moved) app.showDragged(edit.before());
     app.drag = null;
     app.drag_edit = null;
+    if (!commit) app.aborted_button = app.drag_button;
     if (commit and dr.moved) {
         if (app.commitEdit(&edit)) |changed| {
             if (changed) app.setStatus("Moved {d} atom{s} (Ctrl+Z undoes)", .{ dr.group.len, if (dr.group.len == 1) "" else "s" });
@@ -3842,6 +3856,56 @@ test "while locked, a blend that gets another shape is followed" {
     d.display.keep(TestApp.gpa, .prev, .{ .index = 0, .atoms = prev });
     t.app.followRotationLock();
     try expect(!std.meta.eql(before, t.app.camera));
+}
+
+/// A mouse event with the left button down, or going down or up.
+fn leftButton(t: *TestApp, kind: enum { move, up }, down: bool) void {
+    var ev: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    switch (kind) {
+        .move => {
+            ev.type = c.SDL_EVENT_MOUSE_MOTION;
+            ev.motion.xrel = 20;
+            ev.motion.yrel = 10;
+            if (down) ev.motion.state = c.SDL_BUTTON_LMASK;
+        },
+        .up => {
+            ev.type = c.SDL_EVENT_MOUSE_BUTTON_UP;
+            ev.button.button = c.SDL_BUTTON_LEFT;
+        },
+    }
+    t.app.handleEvent(&ev, false, false);
+}
+
+test "after a drag is aborted, the held button doesn't turn the camera" {
+    // It is let go where the app sees it, or not.
+    for ([_]bool{ false, true }) |seen| {
+        var t: TestApp = try .init(2);
+        defer t.deinit();
+        try t.show(0);
+        t.app.drag_button = c.SDL_BUTTON_LEFT;
+        try t.dragSome();
+        t.esc();
+        const view = t.app.camera;
+        leftButton(&t, .move, true);
+        leftButton(&t, .move, true);
+        try std.testing.expectEqualDeep(view, t.app.camera);
+        if (seen) leftButton(&t, .up, false) else leftButton(&t, .move, false);
+        leftButton(&t, .move, true); // pressed again
+        try expect(!std.meta.eql(view, t.app.camera));
+    }
+}
+
+test "after a completed drag, the button turns the camera as usual" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    t.app.drag_button = c.SDL_BUTTON_LEFT;
+    try t.dragSome();
+    leftButton(&t, .up, false);
+    try expect(t.app.drag == null);
+    const view = t.app.camera;
+    leftButton(&t, .move, true);
+    try expect(!std.meta.eql(view, t.app.camera));
 }
 
 test "Alt-drag works in a diff overlay" {
