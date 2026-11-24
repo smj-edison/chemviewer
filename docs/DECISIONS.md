@@ -354,7 +354,7 @@ left since. Scripted picks
 (`--select`, `--cut`) aren't steps.
 
 ### D26 — One rotation lock, for playback and diffs
-*Decided 2026-11-24, not implemented yet; extends D21.* Lining frames up is only
+*Decided 2026-11-24; implemented so far for playback, not for diffs; extends D21.* Lining frames up is only
 ever a change of view. The checkbox stays where it is, above the energy plot.
 While diffing, its anchor is the reference. Starting a diff turns it on and
 ending the diff restores its previous state; otherwise it is off by default. A

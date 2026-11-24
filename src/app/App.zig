@@ -51,24 +51,6 @@ pub const Diff = struct {
     overlay: bool = true,
 };
 
-/// "Lock rotation": the camera follows each new frame's rigid motion
-/// relative to an anchor frame, so the structure keeps its orientation.
-pub const RotationLock = struct {
-    /// Displayed positions and elements of the frame shown when it started.
-    anchor: []Vec3,
-    numbers: []u8,
-    /// Superposition of the frame the camera currently follows onto the anchor.
-    current: cv.align_.Transform = .identity,
-    /// That frame's index, and how far it was blended towards the next step.
-    index: usize,
-    blend: f32 = 0,
-
-    fn deinit(l: *RotationLock, gpa: Allocator) void {
-        gpa.free(l.anchor);
-        gpa.free(l.numbers);
-    }
-};
-
 io: Io,
 gpa: Allocator,
 window: *c.SDL_Window,
@@ -87,9 +69,11 @@ loop_playback: bool = true,
 fine_scrub: ?f32 = null,
 /// Frame last scrubbed to by the current drag on the energy plot.
 plot_drag: ?usize = null,
-/// Keep the structure's orientation steady across frames (see RotationLock).
+/// Keep the structure's orientation steady across frames (see `cv.lock`).
 lock_rotation: bool = false,
-rotation_lock: ?RotationLock = null,
+rotation_lock: ?cv.lock.RotationLock = null,
+/// What the lock followed last (null = nothing).
+lock_followed: ?LockFollowed = null,
 last_advance: Io.Timestamp = .zero,
 /// Interpolated playback: render at the display's frame rate, blending atom
 /// positions between steps; pausing snaps to the nearest step.
@@ -136,6 +120,7 @@ drag: ?drag_mod.Drag = null,
 drag_edit: ?cv.edit.Transaction = null,
 drag_button: u8 = 0,
 
+const LockFollowed = struct { changes: u64, blend: f32 };
 const pairKey = cv.picks.pairKey;
 
 pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window, gpu: *Gpu) !App {
@@ -696,54 +681,37 @@ pub fn setLockRotation(app: *App, on: bool) void {
 fn dropRotationLock(app: *App) void {
     if (app.rotation_lock) |*l| l.deinit(app.gpa);
     app.rotation_lock = null;
+    app.lock_followed = null;
 }
 
-/// Starts the lock at the shown frame, or, if the shown frame changed, turns
-/// the camera by that frame's motion relative to the last one it followed
-/// (both measured by superposing onto the anchor, so the view of a frame does
-/// not depend on the path taken to it). Frames whose atoms don't match the
-/// anchor's restart the lock there. Interpolated positions are followed too,
-/// so the view turns evenly between steps instead of correcting at each one.
+/// A geometry edit unlocks. That only stops the updates, so nothing jumps.
+fn unlockRotation(app: *App) void {
+    app.lock_rotation = false;
+    app.dropRotationLock();
+}
+
+/// Starts the lock at what is drawn, or, if that changed, turns the camera by
+/// its motion. Blends are followed too, so the view turns evenly between steps
+/// instead of correcting at each one. Atoms that don't match the anchor's
+/// restart the lock there.
 fn followRotationLock(app: *App) void {
     if (!app.lock_rotation) return;
     const d = app.doc orelse return;
     const f = d.display.real.frame orelse return;
-    // What is drawn: blended between steps, or the plain step (aligned, when diffing).
-    const blend = app.blendTime();
+    const now: LockFollowed = .{ .changes = d.display.real.changes, .blend = app.blendTime() };
+    if (app.rotation_lock != null and std.meta.eql(app.lock_followed, now)) return;
     const pos = app.drawnPositions() orelse return;
+    const numbering = app.numberingOf(d.display.real.index, f);
     if (app.rotation_lock) |*l| {
-        if (l.index == d.display.real.index and l.blend == blend) return;
-        if (l.anchor.len == pos.len and std.mem.eql(u8, l.numbers, f.numbers)) {
-            const next = cv.align_.superpose(l.anchor, pos, null).transform;
-            // Frame-to-frame motion M = current⁻¹ ∘ next, with T(p) = R (p - from) + to:
-            // M(p) = curᵀ next (p - next.from) + curᵀ (next.to - cur.to) + cur.from.
-            const cur = l.current;
-            var rot: cv.math.Mat3 = undefined;
-            for (0..3) |row| for (0..3) |col| {
-                var s: f64 = 0;
-                for (0..3) |k| s += cur.rot[k][row] * next.rot[k][col];
-                rot.m[col][row] = @floatCast(s);
-            };
-            const dt = next.to_center - cur.to_center;
-            const to = cur.from_center + cv.math.Vec3d{
-                cur.rot[0][0] * dt[0] + cur.rot[1][0] * dt[1] + cur.rot[2][0] * dt[2],
-                cur.rot[0][1] * dt[0] + cur.rot[1][1] * dt[1] + cur.rot[2][1] * dt[2],
-                cur.rot[0][2] * dt[0] + cur.rot[1][2] * dt[1] + cur.rot[2][2] * dt[2],
-            };
-            app.camera.followRigid(rot, @floatCast(next.from_center), @floatCast(to));
-            l.current = next;
-            l.index = d.display.real.index;
-            l.blend = blend;
+        if (l.follow(pos, numbering)) |m| {
+            app.camera.followRigid(m.rot, m.from, m.to);
+            app.lock_followed = now;
             return;
         }
         app.dropRotationLock();
     }
-    const anchor = app.gpa.dupe(Vec3, pos) catch return;
-    const numbers = app.gpa.dupe(u8, f.numbers) catch {
-        app.gpa.free(anchor);
-        return;
-    };
-    app.rotation_lock = .{ .anchor = anchor, .numbers = numbers, .index = d.display.real.index, .blend = blend };
+    app.rotation_lock = cv.lock.RotationLock.init(app.gpa, pos, numbering) catch return;
+    app.lock_followed = now;
 }
 
 fn updateDiff(app: *App) void {
@@ -1329,6 +1297,7 @@ fn dragMotion(app: *App, x: f32, y: f32, dx: f32, dy: f32) void {
         },
     }
     dr.moved = true;
+    app.unlockRotation();
     dr.apply(edit.atoms.positions, axes[2]);
     app.showDragged(edit.atoms);
 }
@@ -1416,6 +1385,8 @@ fn stopForEdit(app: *App) void {
     app.playing = false;
     // Never a step that is still loading.
     if (was_playing and !app.showNearerNext() and d.display.real.frame != null) app.moveTo(d.display.real.index);
+    // The edit may unlock, and the frame it is on should be in place by then.
+    app.followRotationLock();
 }
 
 /// Stopping a blend: if it is nearer to the next step, show that one.
@@ -1465,6 +1436,7 @@ fn commitKeeping(app: *App, edit: *cv.edit.Transaction, kept: ?cv.picks.Kept) !b
         show.deinit(app.gpa);
         return false;
     }
+    app.unlockRotation();
     show.energy = app.session.current(edit.index).?.energy;
     app.showChanged(edit.index, show);
     return true;
@@ -1559,6 +1531,7 @@ fn showPicks(app: *App, comptime what: []const u8) void {
 fn jumpToChange(app: *App, index: usize, kept: ?cv.picks.Kept, side: cv.picks.Side) void {
     const d = &app.doc.?;
     app.playing = false;
+    app.unlockRotation();
     app.showSessionChange(index);
     if (d.current != index) app.setFrame(index) else app.setInterp(0);
     app.pullFrame(); // the session has its atoms
@@ -1593,6 +1566,7 @@ pub fn revertFrame(app: *App) void {
     if (!app.session.isEdited(d.display.real.index)) return;
     app.playing = false;
     app.revertShown() catch |e| return app.setStatus("Revert failed: {t}", .{e});
+    app.unlockRotation();
     app.showSessionChange(d.display.real.index);
     // The frame asked for may be another one that can't be read.
     app.moveTo(d.display.real.index);
@@ -3333,6 +3307,204 @@ test "a diff isn't blended" {
     t.app.setReference();
     t.app.diff.?.overlay = false;
     try expectEqual(t.app.doc.?.display.real.frame.?.positions[1], t.app.drawnPositions().?[1]);
+}
+
+/// Five atoms, turned by `angle` about z and moved, as frame text.
+fn turnedFrame(buf: []u8, angle: f32) []const u8 {
+    const atoms = [_]Vec3{ .{ 0, 0, 0 }, .{ 3, 0, 0 }, .{ 0, 4, 1 }, .{ -3, 1, 2 }, .{ 1, -3, -2 } };
+    const q = cv.math.Quat.fromAxisAngle(.{ 0, 0, 1 }, angle);
+    var w: Io.Writer = .fixed(buf);
+    w.writeAll("5\n\n") catch unreachable;
+    for (atoms) |a| {
+        const p = q.rotate(a) + Vec3{ angle, -2 * angle, 0 };
+        w.print("H {d:.6} {d:.6} {d:.6}\n", .{ p[0], p[1], p[2] }) catch unreachable;
+    }
+    return w.buffered();
+}
+
+/// Frames turning by 0.2 each, the first one shown and locked.
+fn lockedTest(frames: usize) !TestApp {
+    var t: TestApp = try .init(1);
+    errdefer t.deinit();
+    var text: Io.Writer.Allocating = .init(TestApp.gpa);
+    defer text.deinit();
+    var buf: [512]u8 = undefined;
+    for (0..frames) |i| try text.writer.writeAll(turnedFrame(&buf, 0.2 * @as(f32, @floatFromInt(i))));
+    try t.openText(text.written());
+    try t.show(0);
+    t.app.fitCamera();
+    return t;
+}
+
+/// The drawn atoms and a point of the background, in view space.
+fn onScreen(t: *TestApp) [6]Vec3 {
+    var out: [6]Vec3 = undefined;
+    const p = t.app.drawnPositions().?;
+    for (out[0..5], p[0..5]) |*o, q| o.* = t.app.camera.view().transformPoint(q);
+    out[5] = t.app.camera.bgView().transformPoint(.{ 1, 2, 3 });
+    return out;
+}
+
+fn expectOnScreen(t: *TestApp, want: [6]Vec3) !void {
+    for (want, onScreen(t)) |a, b| try expect(cv.math.length(a - b) < 2e-3);
+}
+
+test "while locked, molecule and background stay still on screen, by any path" {
+    var t = try lockedTest(6);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    const first = onScreen(&t);
+    for ([_]usize{ 1, 2, 5, 3, 0, 4, 1 }) |i| {
+        try t.show(i);
+        t.app.followRotationLock();
+        try expectOnScreen(&t, first);
+    }
+    // The user's own rotations are kept.
+    t.app.camera.orbit(30, 12);
+    const turned = onScreen(&t);
+    for ([_]usize{ 4, 0 }) |i| {
+        try t.show(i);
+        t.app.followRotationLock();
+        try expectOnScreen(&t, turned);
+    }
+}
+
+test "while locked, a blend stays still on screen" {
+    var t = try lockedTest(2);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    const first = onScreen(&t);
+    t.app.interpolate = true;
+    t.app.playing = true;
+    for (0..2000) |_| {
+        t.app.updateNextFrame();
+        if (t.app.nextReady()) break;
+        try TestApp.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    for ([_]f32{ 0.3, 0.8, 0.5 }) |at| {
+        t.app.interp_t = at;
+        t.app.followRotationLock();
+        // A straight blend of a turn shrinks it a little.
+        for (first[0..5], onScreen(&t)[0..5]) |a, b| try expect(cv.math.length(a - b) < 0.1);
+        try expect(cv.math.length(first[5] - onScreen(&t)[5]) < 2e-3);
+    }
+}
+
+test "each geometry edit unlocks, without moving view or background" {
+    const Kind = enum { drag, set, paste, delete, undo, redo, revert };
+    for (std.enums.values(Kind)) |kind| {
+        errdefer std.debug.print("{t}\n", .{kind});
+        var t = try lockedTest(3);
+        defer t.deinit();
+        try t.show(2);
+        if (kind == .undo or kind == .redo or kind == .revert) t.setDistance(3.5);
+        if (kind == .redo) t.app.undo();
+        try t.show(0);
+        t.app.setLockRotation(true);
+        try t.show(2);
+        t.app.followRotationLock();
+        const view = t.app.camera;
+        switch (kind) {
+            .drag => {
+                try t.startDrag();
+                try expect(t.app.lock_rotation); // not moved yet
+                t.app.dragMotion(0, 0, 0.1, 0);
+                try expect(!t.app.lock_rotation);
+                t.app.endDrag(true);
+            },
+            .set => t.setDistance(3.5),
+            .paste => {
+                t.app.scene_radius = 1000;
+                try t.pasteAtom();
+            },
+            .delete => try t.deleteAtom(1),
+            .undo => t.app.undo(),
+            .redo => t.app.redo(),
+            .revert => t.app.revertFrame(),
+        }
+        try expect(!t.app.lock_rotation);
+        t.app.followRotationLock();
+        // Pasting may zoom out to show the fragment.
+        if (kind != .paste) try std.testing.expectEqualDeep(view, t.app.camera);
+        if (kind != .undo) t.app.undo() else t.app.redo();
+        try expect(!t.app.lock_rotation);
+        const after = t.app.camera;
+        try t.show(1);
+        t.app.followRotationLock();
+        try std.testing.expectEqualDeep(after, t.app.camera);
+    }
+}
+
+test "an edit that changes nothing, a click and a selection step keep the lock" {
+    var t = try lockedTest(1);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    const d = t.distance();
+    t.setDistance(d);
+    t.app.deselect();
+    t.app.undo();
+    try t.startDrag();
+    t.app.endDrag(true);
+    try expect(t.app.lock_rotation);
+}
+
+test "an edit that lands on the next step follows it there before unlocking" {
+    var t = try lockedTest(2);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    const first = onScreen(&t);
+    t.app.interpolate = true;
+    t.app.playing = true;
+    t.app.interp_t = 0.7;
+    for (0..2000) |_| {
+        t.app.updateNextFrame();
+        if (t.app.nextReady()) break;
+        try TestApp.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    t.app.followRotationLock();
+    t.setDistance(3.5); // moves atom 1
+    try expectEqual(1, t.app.doc.?.display.real.index);
+    try expect(!t.app.lock_rotation);
+    const now = onScreen(&t);
+    for ([_]usize{ 0, 2, 3, 4, 5 }) |i| try expect(cv.math.length(first[i] - now[i]) < 2e-3);
+}
+
+test "locking by hand refits from the current frame" {
+    var t = try lockedTest(3);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    t.setDistance(3.5);
+    try t.show(1);
+    t.app.setLockRotation(true);
+    const here = onScreen(&t);
+    try t.show(2);
+    t.app.followRotationLock();
+    try expectOnScreen(&t, here);
+}
+
+test "a frame with other atoms restarts the lock there" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    var buf: [3][512]u8 = undefined;
+    var other = std.mem.zeroes([512]u8);
+    const last = turnedFrame(&buf[2], 0.9);
+    @memcpy(other[0..last.len], last);
+    const text = try std.mem.concat(TestApp.gpa, u8, &.{ turnedFrame(&buf[0], 0), "2\n\nO 0 0 0\nO 0 0 5\n", turnedFrame(&buf[1], 0.4), other[0..last.len] });
+    defer TestApp.gpa.free(text);
+    try t.openText(text);
+    try t.show(0);
+    t.app.setLockRotation(true);
+    const view = t.app.camera;
+    try t.show(1);
+    t.app.followRotationLock();
+    try std.testing.expectEqualDeep(view, t.app.camera);
+    try t.show(2); // again
+    t.app.followRotationLock();
+    try std.testing.expectEqualDeep(view, t.app.camera);
+    const here = onScreen(&t);
+    try t.show(3);
+    t.app.followRotationLock();
+    try expectOnScreen(&t, here);
 }
 
 test "a drag grabs the atom that was drawn under the cursor" {
