@@ -1636,12 +1636,20 @@ pub fn revertFrame(app: *App) void {
     // The frame it is offered for, even if a blend is nearer to the next step.
     if (!app.session.isEdited(d.shown_index)) return;
     app.playing = false;
-    const reverted = app.session.revert(d.shown_index) catch |e| return app.setStatus("Revert failed: {t}", .{e});
-    if (!reverted) return;
+    app.revertShown() catch |e| return app.setStatus("Revert failed: {t}", .{e});
     app.showSessionChange(d.shown_index);
     // The frame asked for may be another one that can't be read.
     app.moveTo(d.shown_index);
     app.setStatus("Reverted frame {d} to the file (Ctrl+Z undoes)", .{d.shown_index + 1});
+}
+
+/// The shown frame, which is edited, to its file frame in the session.
+fn revertShown(app: *App) !void {
+    const index = app.doc.?.shown_index;
+    const renumbers = app.session.origins(index) != null;
+    var kept: ?cv.picks.Kept = if (renumbers and app.session.selection_steps) try app.picks.keep(app.gpa, null) else null;
+    errdefer if (kept) |*k| k.deinit(app.gpa);
+    if (!try app.session.revert(index, kept)) unreachable; // it is edited
 }
 
 pub fn saveDialog(app: *App) void {
@@ -1862,7 +1870,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
 
-    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. Right drag on the timeline: scrub one frame per pixel. F: fit. Double-click a bond: cut / restore it. Ctrl+Z: undo. Ctrl+Shift+Z or Ctrl+Y: redo.", .{});
+    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. Right drag on the timeline: scrub one frame per pixel. F: fit. Double-click a bond: cut / restore it. Ctrl+Z: undo (selecting and cutting too). Ctrl+Shift+Z or Ctrl+Y: redo.", .{});
 }
 
 /// Element key: a colour swatch and count per element present, in Hill
@@ -1964,6 +1972,8 @@ const TestApp = struct {
     /// Three H atoms in a row per frame, with the frame number as energy.
     fn init(frames: usize) !TestApp {
         var t: TestApp = .{ .app = .{ .io = io, .gpa = gpa, .window = @ptrFromInt(64), .renderer = undefined, .session = .init(gpa) } };
+        // Whatever the constant says; some tests switch it off.
+        t.app.session.selection_steps = true;
         errdefer t.deinit();
         try t.open(frames);
         return t;
@@ -2695,6 +2705,7 @@ test "a hundred geometry steps and a thousand in total" {
     try std.testing.expectApproxEqAbs(4, t.distance(), 1e-5);
     while (t.app.canUndo()) : (n += 1) t.app.undo();
     try expectEqual(cv.edit.max_total, n);
+    try expect(t.app.session.isEdited(0));
 }
 
 test "the oldest selection steps go before any geometry step" {
@@ -2708,6 +2719,90 @@ test "the oldest selection steps go before any geometry step" {
     while (t.app.canUndo()) : (n += 1) t.app.undo();
     try expectEqual(cv.edit.max_total, n);
     try expect(!t.app.session.isEdited(0));
+}
+
+test "undoing a revert restores the selection and cuts it dropped" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(1);
+    try t.pasteAtom();
+    try t.click(0);
+    t.app.cutBond(2, 3);
+    t.app.revertFrame();
+    try t.expectSelected(&.{0});
+    try t.expectCuts(&.{});
+    t.app.undo();
+    try t.expectSelected(&.{ 3, 0 });
+    try t.expectCuts(&.{.{ 2, 3 }});
+    t.app.redo();
+    try t.expectSelected(&.{0});
+    try t.expectCuts(&.{});
+}
+
+test "steps skipped on the way to a geometry step can be redone" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("3\n\nH 0 0 0\nH 3 0 0\nH 6 0 0\n" ++ "3\n\nO 0 0 0\nH 3 0 0\nH 6 0 0\n");
+    try t.show(0);
+    t.app.fitCamera();
+    t.setDistance(4);
+    t.app.clearSelection();
+    try t.click(2);
+    try t.show(1);
+    t.app.undo(); // past the click
+    try t.settle();
+    try expect(!t.app.session.isEdited(0));
+    try t.expectSelected(&.{});
+    t.app.redo();
+    try expect(t.app.session.isEdited(0));
+    t.app.redo();
+    try t.expectSelected(&.{2});
+}
+
+test "a gesture that can't be recorded changes nothing" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(1);
+    try t.click(2);
+    t.app.cutBond(0, 1);
+    var failing: std.testing.FailingAllocator = .init(TestApp.gpa, .{ .fail_index = 0 });
+    for ([_]bool{ false, true }) |record| {
+        const gpa = if (record) &t.app.session.gpa else &t.app.gpa;
+        gpa.* = failing.allocator();
+        t.app.deselect();
+        t.app.cutBond(0, 1);
+        t.app.restoreCuts();
+        gpa.* = TestApp.gpa;
+        try t.expectSelected(&.{2});
+        try t.expectCuts(&.{.{ 0, 1 }});
+    }
+    t.app.undo();
+    try t.expectCuts(&.{}); // the last one that was recorded
+}
+
+test "a delete or paste that fails changes nothing" {
+    for ([_]bool{ false, true }) |paste| for ([_]bool{ false, true }) |in_session| {
+        var fail_index: usize = 0;
+        while (true) : (fail_index += 1) {
+            var t: TestApp = try .init(1);
+            defer t.deinit();
+            try t.openRow(1);
+            try t.click(2);
+            t.app.cutBond(0, 1);
+            var frag = try t.app.doc.?.shown.?.subset(TestApp.gpa, &.{0});
+            defer frag.deinit(TestApp.gpa);
+            var failing: std.testing.FailingAllocator = .init(TestApp.gpa, .{ .fail_index = fail_index });
+            const gpa = if (in_session) &t.app.session.gpa else &t.app.gpa;
+            gpa.* = failing.allocator();
+            if (paste) t.app.appendFragment(frag) catch {} else t.app.deleteSelection();
+            gpa.* = TestApp.gpa;
+            if (t.app.session.isEdited(0)) break;
+            try expectEqual(3, t.app.doc.?.shown.?.len());
+            try t.expectSelected(&.{2});
+            try t.expectCuts(&.{.{ 0, 1 }});
+        }
+        try expect(fail_index > 0);
+    };
 }
 
 test "with selection steps off, only geometry is undone" {

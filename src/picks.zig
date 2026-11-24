@@ -141,20 +141,20 @@ pub const Picks = struct {
 
     // ---- geometry steps that renumber
 
-    /// What a geometry step that renumbers atoms restores, if it is about to
-    /// leave `after` selected.
-    pub fn keep(p: *const Picks, gpa: Allocator, after: []const u32) !Kept {
+    /// What a geometry step that renumbers atoms restores. It is about to leave
+    /// `after` selected, or, if null, what is still there of the selection.
+    pub fn keep(p: *const Picks, gpa: Allocator, after: ?[]const u32) !Kept {
         const before = try gpa.dupe(u32, p.selection.items);
         errdefer gpa.free(before);
-        const owned_after = try gpa.dupe(u32, after);
-        errdefer gpa.free(owned_after);
+        const owned_after = if (after) |a| try gpa.dupe(u32, a) else null;
+        errdefer if (owned_after) |a| gpa.free(a);
         return .{ .visit = p.visit, .before = before, .after = owned_after, .cuts = try missingKeys(gpa, p.cuts, .empty) };
     }
 
     /// The frame of `kept` is shown, just taken to that side of its step. Out
     /// of memory, what `follow` left stays.
     pub fn restore(p: *Picks, gpa: Allocator, kept: Kept, side: Side) void {
-        const selection = if (side == .before) kept.before else kept.after;
+        const selection: []const u32 = if (side == .before) kept.before else kept.after orelse return;
         if (p.selection.ensureTotalCapacity(gpa, selection.len)) |_| {
             p.selection.clearRetainingCapacity();
             p.selection.appendSliceAssumeCapacity(selection);
@@ -306,13 +306,14 @@ pub const Step = struct {
 pub const Kept = struct {
     visit: u64,
     before: []u32,
-    after: []u32,
+    /// Null = what `follow` makes of the selection.
+    after: ?[]u32,
     /// Cuts before it.
     cuts: []u64,
 
     pub fn deinit(k: *Kept, gpa: Allocator) void {
         gpa.free(k.before);
-        gpa.free(k.after);
+        if (k.after) |a| gpa.free(a);
         gpa.free(k.cuts);
     }
 };

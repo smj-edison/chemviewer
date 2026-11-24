@@ -330,8 +330,8 @@ edited.
 - **Cuts** end when the user leaves the frame; the selection carries over unless
   the numbering differs. Delete and its undo translate both. The session records
   each atom's origin (its number in the file, or an id of its own if pasted), so
-  any two numberings of a frame can be translated without the history storing
-  cuts. Frames have the same numbering if their elements and origins match.
+  any two numberings of a frame can be translated. Steps also restore what
+  translating can't (D25). Frames have the same numbering if their elements and origins match.
 - **Displayed geometry:** drawing, picking, lasso, labels and measured values
   use what is visible, blends included. Saving and copying use the real frame.
   Bonds always match the atoms.
@@ -348,8 +348,9 @@ jump to their frame. Selection steps apply where the user is, and steps that no
 longer apply are skipped. At most 100 geometry steps and 1,000 in total, oldest
 selection steps going first. One constant (`edit.selection_steps`) switches
 selection steps off. A selection step applies only in the numbering it was made
-in, and to cuts only until the frame is left. A delete or paste restores the
-selection, and the cuts if its frame hasn't been left since. Scripted picks
+in, and to cuts only until the frame is left. Undoing a delete, paste or
+renumbering revert restores the selection, and the cuts if its frame hasn't been
+left since. Scripted picks
 (`--select`, `--cut`) aren't steps.
 
 ### D26 — One rotation lock, for playback and diffs

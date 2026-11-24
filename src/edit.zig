@@ -207,17 +207,17 @@ pub const EditSession = struct {
     }
 
     /// Make frame `index` its file frame again, as a geometry step. False if
-    /// it isn't edited.
-    pub fn revert(s: *EditSession, index: usize) !bool {
+    /// it isn't edited. `kept` as for `Transaction.commitKeeping`.
+    pub fn revert(s: *EditSession, index: usize, kept: ?picks.Kept) !bool {
         const h = s.frames.getPtr(index) orelse return false;
         if (h.edited == null) return false;
         try s.reserve();
-        s.push(.{ .geometry = .{ .index = index, .other = h.edited } });
+        s.push(.{ .geometry = .{ .index = index, .other = h.edited, .kept = kept } });
         h.edited = null;
         return true;
     }
 
-    /// Room for the whole history, so that `push`, `undo` and `redo` can't fail.
+    /// Room for the whole history, so that `push` and moving steps can't fail.
     fn reserve(s: *EditSession) !void {
         try s.steps.ensureTotalCapacity(s.gpa, max_total);
         try s.undone.ensureTotalCapacity(s.gpa, max_total);
@@ -401,7 +401,7 @@ const TestSession = struct {
     }
 
     fn revert(t: *TestSession, index: usize) !void {
-        try testing.expect(try t.s.revert(index));
+        try testing.expect(try t.s.revert(index, null));
     }
 
     /// Commits an edit that appends an atom and deletes the ones in `remove`.
@@ -511,7 +511,7 @@ test "revert is one geometry step and leaves other frames alone" {
     try t.revert(0);
     try t.expectFileFrame(0);
     try t.expectEdited(1, 2);
-    try testing.expect(!try t.s.revert(0)); // nothing to revert
+    try testing.expect(!try t.s.revert(0, null)); // nothing to revert
     try testing.expectEqual(0, t.undo());
     try t.expectEdited(0, 3);
     try testing.expectEqual(0, t.undo());
@@ -568,7 +568,7 @@ test "a new step clears what could be redone; a dropped or empty edit doesn't" {
             defer tx.deinit();
             tx.atoms.positions[0][0] = 9;
         }
-        try testing.expect(!try t.s.revert(1)); // not edited
+        try testing.expect(!try t.s.revert(1, null)); // not edited
         try testing.expect(t.s.canRedo(&t.p));
         if (by_revert) try t.revert(0) else try t.moveTo(0, 5);
         try testing.expect(!t.s.canRedo(&t.p));
@@ -634,6 +634,7 @@ test "running out of memory in a selection step leaves history and picks as they
         fn run(a: Allocator) !void {
             var s: EditSession = .init(a);
             defer s.deinit();
+            s.selection_steps = true;
             var p: picks.Picks = .{};
             defer p.deinit(a);
             p.follow(a, 0, .{ .numbers = &.{ 1, 1, 1 } });
@@ -766,7 +767,7 @@ test "running out of memory in an edit or revert leaves the frame as it was" {
                 steps += 1;
                 x = to;
             }
-            _ = try s.revert(0);
+            _ = try s.revert(0, null);
         }
     }.run;
     try testing.checkAllAllocationFailures(test_gpa, run, .{});

@@ -36,6 +36,9 @@ The atoms the user has picked, in order. Unlike cuts it carries over between fra
 **Picks**:
 The selection and the cuts together, with the numbering they refer to.
 
+**Visit**:
+The time from showing a frame until another one is shown. Cuts end with it.
+
 **Origin**:
 Where an atom of a frame comes from: its number in the file, or an id of its own if it was pasted. It stays the same when other atoms are deleted.
 
