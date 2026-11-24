@@ -340,13 +340,17 @@ The modules don't depend on SDL, ImGui or Vulkan. Order: stream, edit session,
 displayed geometry.
 
 ### D25 — Selection is part of the undo history (provisional)
-*Decided 2026-11-24; only redo of geometry steps is implemented so far; to be
+*Decided and implemented 2026-11-24; to be
 revisited after trying it.* As
 in Blender, selecting can take real effort, so selection and cut changes are
 undo steps, one per gesture, with redo (Ctrl+Shift+Z, Ctrl+Y). Geometry steps
 jump to their frame. Selection steps apply where the user is, and steps that no
 longer apply are skipped. At most 100 geometry steps and 1,000 in total, oldest
-selection steps going first. One constant switches selection steps off.
+selection steps going first. One constant (`edit.selection_steps`) switches
+selection steps off. A selection step applies only in the numbering it was made
+in, and to cuts only until the frame is left. A delete or paste restores the
+selection, and the cuts if its frame hasn't been left since. Scripted picks
+(`--select`, `--cut`) aren't steps.
 
 ### D26 — One rotation lock, for playback and diffs
 *Decided 2026-11-24, not implemented yet; extends D21.* Lining frames up is only

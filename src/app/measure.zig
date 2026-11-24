@@ -75,7 +75,7 @@ pub fn bar(app: *App) void {
         c.igSameLine(0, fs);
         ui.textDisabled("Ctrl+C copies them as XYZ", .{});
         c.igSameLine(0, fs * 1.5);
-        if (c.igSmallButton("Clear")) app.clearSelection();
+        if (c.igSmallButton("Clear")) app.deselect();
         return;
     }
     var lb: [128]u8 = undefined;
@@ -120,7 +120,7 @@ pub fn bar(app: *App) void {
         },
     }
     c.igSameLine(0, fs * 1.5);
-    if (c.igSmallButton("Clear")) app.clearSelection();
+    if (c.igSmallButton("Clear")) app.deselect();
     if (submitted) |edit| app.applyEdit(edit);
 }
 

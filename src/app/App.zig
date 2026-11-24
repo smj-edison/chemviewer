@@ -184,7 +184,7 @@ pub fn status(app: *const App) []const u8 {
 pub fn closeDocument(app: *App) void {
     app.endDrag(false);
     app.session.clear();
-    app.picks.clear();
+    app.picks.clear(app.gpa);
     app.press = null;
     app.lasso_active = false;
     app.lasso_points.clearRetainingCapacity();
@@ -386,12 +386,11 @@ fn appendFragment(app: *App, frag: Frame) !void {
         offset = ca + right * cv.math.splat(ra + rb + 2.5) - cb;
     }
     const first: u32 = @intCast(f.len());
-    const total: u32 = @intCast(first + frag.len());
-    try app.picks.selection.ensureTotalCapacity(gpa, frag.len());
+    const pasted = try gpa.alloc(u32, frag.len());
+    defer gpa.free(pasted);
+    for (pasted, first..) |*atom, i| atom.* = @intCast(i);
     try edit.append(frag, offset);
-    if (!try app.commitEdit(&edit)) return app.setStatus("No atoms to paste", .{});
-    app.picks.selection.clearRetainingCapacity();
-    for (first..total) |i| app.picks.selection.appendAssumeCapacity(@intCast(i));
+    if (!try app.commitRenumbering(&edit, pasted)) return app.setStatus("No atoms to paste", .{});
     app.scene_dirty = true;
     // Re-frame if any pasted atom is off-screen.
     const sp = app.screenProjector();
@@ -926,7 +925,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             const n = d.frameCount();
             const held = ev.key.repeat;
             switch (ev.key.key) {
-                c.SDLK_ESCAPE => if (app.drag != null) app.endDrag(false) else app.clearSelection(),
+                c.SDLK_ESCAPE => if (app.drag != null) app.endDrag(false) else app.deselect(),
                 c.SDLK_DELETE, c.SDLK_BACKSPACE => app.deleteSelection(),
                 c.SDLK_N => app.show_atom_numbers = !app.show_atom_numbers,
                 c.SDLK_SPACE => app.togglePlay(),
@@ -988,6 +987,38 @@ pub fn clearSelection(app: *App) void {
     app.scene_dirty = true;
 }
 
+/// Clear the selection by hand.
+pub fn deselect(app: *App) void {
+    var before = app.beginGesture() orelse return;
+    defer app.endGesture(&before);
+    app.clearSelection();
+}
+
+/// Cut or restore a bond by hand.
+fn cutBond(app: *App, a: u32, b: u32) void {
+    var before = app.beginGesture() orelse return;
+    defer app.endGesture(&before);
+    app.toggleCutPair(a, b);
+}
+
+/// Everything the user does to the selection or cuts by hand is between
+/// `beginGesture` and `endGesture`, which makes one selection step of it.
+fn beginGesture(app: *App) ?cv.picks.Snapshot {
+    return app.picks.snapshot(app.gpa) catch |e| {
+        app.setStatus("Can't change the selection: {t}", .{e});
+        return null;
+    };
+}
+
+fn endGesture(app: *App, before: *cv.picks.Snapshot) void {
+    defer before.deinit(app.gpa);
+    app.session.recordSelection(&app.picks, before.*) catch |e| {
+        app.picks.restoreSnapshot(before);
+        app.scene_dirty = true;
+        app.setStatus("Can't change the selection: {t}", .{e});
+    };
+}
+
 fn isSelected(app: *const App, atom: u32) ?usize {
     return std.mem.indexOfScalar(u32, app.picks.selection.items, atom);
 }
@@ -1019,11 +1050,13 @@ pub fn toggleCutPair(app: *App, a: u32, b: u32) void {
 }
 
 pub fn restoreCuts(app: *App) void {
+    var before = app.beginGesture() orelse return;
+    defer app.endGesture(&before);
     app.picks.cuts.clearRetainingCapacity();
     app.scene_dirty = true;
 }
 
-pub fn selectAll(app: *App) void {
+fn selectAll(app: *App) void {
     const d = app.doc orelse return;
     const f = d.shown orelse return;
     app.picks.selection.clearRetainingCapacity();
@@ -1037,6 +1070,8 @@ pub fn selectAll(app: *App) void {
 pub fn expandSelection(app: *App) void {
     const d = app.doc orelse return;
     const f = d.shown orelse return;
+    var step = app.beginGesture() orelse return;
+    defer app.endGesture(&step);
     if (app.picks.selection.items.len == 0) return app.selectAll();
     const gpa = app.gpa;
     var graph = app.drawnGraph() catch return;
@@ -1065,6 +1100,8 @@ fn applyLasso(app: *App) void {
     const pts = app.lasso_points.items;
     defer app.lasso_points.clearRetainingCapacity();
     if (pts.len < 3) return;
+    var before = app.beginGesture() orelse return;
+    defer app.endGesture(&before);
     const pos = app.displayedPositions() orelse return;
     const sp = app.screenProjector();
     const gpa = app.gpa;
@@ -1194,10 +1231,14 @@ pub fn atomAt(app: *App, x: f32, y: f32) ?u32 {
 /// their only action is a double click, which cuts or restores them. A double
 /// click on an atom changes nothing beyond the first click.
 pub fn clickAt(app: *App, x: f32, y: f32, clicks: u8) void {
-    const h = app.hitAt(x, y) orelse return app.clearSelection();
+    const h = app.hitAt(x, y) orelse return app.deselect();
     switch (h.target) {
-        .atom => |atom| if (clicks < 2) app.toggleSelect(atom),
-        .bond => |pair| if (clicks == 2) app.toggleCutPair(pair[0], pair[1]),
+        .atom => |atom| if (clicks < 2) {
+            var before = app.beginGesture() orelse return;
+            defer app.endGesture(&before);
+            app.toggleSelect(atom);
+        },
+        .bond => |pair| if (clicks == 2) app.cutBond(pair[0], pair[1]),
     }
 }
 
@@ -1434,12 +1475,30 @@ fn beginEdit(app: *App) !cv.edit.Transaction {
 /// Commit an edit of the shown frame and show it. On error the frame is as it
 /// was.
 fn commitEdit(app: *App, edit: *cv.edit.Transaction) !bool {
+    return app.commitKeeping(edit, null);
+}
+
+/// `commitEdit` of an edit that renumbers atoms, and then selects `selection`.
+fn commitRenumbering(app: *App, edit: *cv.edit.Transaction, selection: []const u32) !bool {
+    try app.picks.selection.ensureTotalCapacity(app.gpa, selection.len);
+    var kept: ?cv.picks.Kept = if (app.session.selection_steps) try app.picks.keep(app.gpa, selection) else null;
+    errdefer if (kept) |*k| k.deinit(app.gpa);
+    if (!try app.commitKeeping(edit, kept)) {
+        if (kept) |*k| k.deinit(app.gpa);
+        return false;
+    }
+    app.picks.selection.clearRetainingCapacity();
+    app.picks.selection.appendSliceAssumeCapacity(selection);
+    return true;
+}
+
+fn commitKeeping(app: *App, edit: *cv.edit.Transaction, kept: ?cv.picks.Kept) !bool {
     const d = &(app.doc orelse return error.NoDocument);
     std.debug.assert(d.shown_index == edit.index);
     // Nothing may fail after the commit.
     var show = try edit.atoms.clone(app.gpa);
     errdefer show.deinit(app.gpa);
-    if (!try edit.commit()) {
+    if (!try edit.commitKeeping(kept)) {
         show.deinit(app.gpa);
         return false;
     }
@@ -1506,30 +1565,57 @@ fn deleteSelectionInner(app: *App) !void {
     @memset(remove, false);
     for (sel) |i| remove[i] = true;
     try edit.delete(remove);
-    if (!try app.commitEdit(&edit)) unreachable; // atoms were removed
+    if (!try app.commitRenumbering(&edit, &.{})) unreachable; // atoms were removed
     app.setStatus("Deleted {d} atom{s} (Ctrl+Z undoes)", .{ n, if (n == 1) "" else "s" });
 }
 
 pub fn undo(app: *App) void {
     app.endDrag(false);
-    const index = app.session.undo() orelse return;
-    app.jumpToChange(index);
-    app.setStatus("Undid the last change to frame {d}", .{index + 1});
+    const crossed = app.session.undo(&app.picks) catch |e| return app.setStatus("Undo failed: {t}", .{e});
+    switch (crossed orelse return) {
+        .selection => app.showPicks("Undid a change of selection or cuts"),
+        .geometry => |g| {
+            app.jumpToChange(g.index, g.kept, g.side);
+            app.setStatus("Undid the last change to frame {d}", .{g.index + 1});
+        },
+    }
 }
 
 pub fn redo(app: *App) void {
     app.endDrag(false);
-    const index = app.session.redo() orelse return;
-    app.jumpToChange(index);
-    app.setStatus("Redid the change to frame {d}", .{index + 1});
+    const crossed = app.session.redo(&app.picks) catch |e| return app.setStatus("Redo failed: {t}", .{e});
+    switch (crossed orelse return) {
+        .selection => app.showPicks("Redid a change of selection or cuts"),
+        .geometry => |g| {
+            app.jumpToChange(g.index, g.kept, g.side);
+            app.setStatus("Redid the change to frame {d}", .{g.index + 1});
+        },
+    }
 }
 
-/// Show what undo or redo did to frame `index`, going there.
-fn jumpToChange(app: *App, index: usize) void {
+fn showPicks(app: *App, comptime what: []const u8) void {
+    app.scene_dirty = true;
+    app.setStatus(what, .{});
+}
+
+/// Show what undo or redo did to frame `index`, going there, and the picks
+/// that go with it.
+fn jumpToChange(app: *App, index: usize, kept: ?cv.picks.Kept, side: cv.picks.Side) void {
     const d = &app.doc.?;
     app.playing = false;
     app.showSessionChange(index);
     if (d.current != index) app.setFrame(index) else app.setInterp(0);
+    app.pullFrame(); // the session has its atoms
+    if (d.shown == null or d.shown_index != index) return;
+    if (kept) |k| app.picks.restore(app.gpa, k, side);
+}
+
+pub fn canUndo(app: *const App) bool {
+    return app.session.canUndo(&app.picks);
+}
+
+pub fn canRedo(app: *const App) bool {
+    return app.session.canRedo(&app.picks);
 }
 
 pub const HistoryKey = enum { undo, redo };
@@ -1633,8 +1719,8 @@ fn menuBar(app: *App) void {
         c.igEndMenu();
     }
     if (c.igBeginMenu("Edit", true)) {
-        if (c.igMenuItem_Bool("Undo", "Ctrl+Z", false, app.session.canUndo())) app.undo();
-        if (c.igMenuItem_Bool("Redo", "Ctrl+Shift+Z", false, app.session.canRedo())) app.redo();
+        if (c.igMenuItem_Bool("Undo", "Ctrl+Z", false, app.canUndo())) app.undo();
+        if (c.igMenuItem_Bool("Redo", "Ctrl+Shift+Z", false, app.canRedo())) app.redo();
         const edited = if (app.doc) |d| app.session.isEdited(d.shown_index) else false;
         if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.picks.selection.items.len > 0)) app.deleteSelection();
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
@@ -1646,7 +1732,7 @@ fn menuBar(app: *App) void {
         if (c.igMenuItem_Bool("Paste XYZ as new structure", "Ctrl+Shift+V", false, true)) app.pasteXyz(true);
         c.igSeparator();
         if (c.igMenuItem_Bool("Select molecule / all", "Ctrl+A", false, app.doc != null)) app.expandSelection();
-        if (c.igMenuItem_Bool("Clear selection", "Esc", false, app.picks.selection.items.len > 0)) app.clearSelection();
+        if (c.igMenuItem_Bool("Clear selection", "Esc", false, app.picks.selection.items.len > 0)) app.deselect();
         c.igEndMenu();
     }
     if (c.igBeginMenu("View", true)) {
@@ -1951,6 +2037,39 @@ const TestApp = struct {
         for (want) |w| try expect(t.app.isCut(w[0], w[1]));
     }
 
+    /// `frames` frames of three H atoms, far enough apart to click on.
+    fn openRow(t: *TestApp, frames: usize) !void {
+        var text: Io.Writer.Allocating = .init(gpa);
+        defer text.deinit();
+        for (0..frames) |_| try text.writer.writeAll("3\n\nH 0 0 0\nH 3 0 0\nH 6 0 0\n");
+        try t.openText(text.written());
+        try t.show(0);
+        t.app.fitCamera();
+    }
+
+    fn click(t: *TestApp, atom: u32) !void {
+        const at = t.app.screenProjector().toScreen(t.app.doc.?.shown.?.positions[atom]).?;
+        const was = t.app.selected().len;
+        t.app.clickAt(at.x, at.y, 1);
+        try expect(t.app.selected().len != was);
+    }
+
+    /// A lasso around everything, or around nothing.
+    fn lassoAll(t: *TestApp, everything: bool) !void {
+        const x: f32 = if (everything) -10 else 100;
+        const corners = [_]lasso.Point{ .{ .x = x, .y = -10 }, .{ .x = x + 20, .y = -10 }, .{ .x = x + 20, .y = 10 }, .{ .x = x, .y = 10 } };
+        t.app.lasso_points.clearRetainingCapacity();
+        try t.app.lasso_points.appendSlice(gpa, &corners);
+        t.app.applyLasso();
+    }
+
+    fn esc(t: *TestApp) void {
+        var ev: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+        ev.type = c.SDL_EVENT_KEY_DOWN;
+        ev.key.key = c.SDLK_ESCAPE;
+        t.app.handleEvent(&ev, false, false);
+    }
+
     /// Starts an Alt-drag of atom 1, as if it had been grabbed.
     fn startDrag(t: *TestApp) !void {
         try t.app.startDrag(.translate, 1);
@@ -1969,7 +2088,7 @@ const TestApp = struct {
         // The release that follows does nothing.
         t.app.endDrag(true);
         try expect(!t.app.session.isEdited(0));
-        try expect(!t.app.session.canUndo());
+        try expect(!t.app.canUndo());
         const d = &t.app.doc.?;
         if (d.shown_index == 0) try expectEqual(Vec3{ 0, 0, 1 }, d.shown.?.positions[1]);
     }
@@ -2223,6 +2342,7 @@ test "a cut changes what a typed value moves" {
 test "delete translates cuts and its undo translates them and the selection back" {
     var t: TestApp = try .init(1);
     defer t.deinit();
+    t.app.session.selection_steps = false;
     try t.openText("5\n\nH 0 0 0\nH 0 0 1\nH 0 0 2\nH 0 0 3\nH 0 0 4\n");
     try t.show(0);
     t.app.toggleCutPair(0, 1);
@@ -2240,6 +2360,7 @@ test "delete translates cuts and its undo translates them and the selection back
 test "a selection on deleted atoms stays gone when that is undone" {
     var t: TestApp = try .init(1);
     defer t.deinit();
+    t.app.session.selection_steps = false;
     try t.show(0);
     try t.deleteAtom(1);
     try t.expectSelected(&.{});
@@ -2268,6 +2389,7 @@ test "revert translates cuts and selection, even past the undo limit" {
 test "undoing a paste drops cuts and selection on the pasted atoms only" {
     var t: TestApp = try .init(1);
     defer t.deinit();
+    t.app.session.selection_steps = false;
     try t.show(0);
     t.app.toggleCutPair(0, 1);
     try t.pasteAtom();
@@ -2318,6 +2440,7 @@ test "redo restores each kind of edit exactly, and the edited state" {
 test "redo jumps to the frame it changed and translates cuts and selection" {
     var t: TestApp = try .init(2);
     defer t.deinit();
+    t.app.session.selection_steps = false;
     try t.show(1);
     try t.deleteAtom(0);
     t.app.undo();
@@ -2362,10 +2485,10 @@ test "a cancelled drag keeps what can be redone, a completed one doesn't" {
     t.app.undo();
     try t.dragSome();
     t.app.endDrag(false);
-    try expect(t.app.session.canRedo());
+    try expect(t.app.canRedo());
     try t.dragSome();
     t.app.endDrag(true);
-    try expect(!t.app.session.canRedo());
+    try expect(!t.app.canRedo());
 }
 
 test "undo and redo keys" {
@@ -2373,6 +2496,241 @@ test "undo and redo keys" {
     try expectEqual(.redo, historyKey(c.SDLK_Z, c.SDL_KMOD_LCTRL | c.SDL_KMOD_RSHIFT));
     try expectEqual(.redo, historyKey(c.SDLK_Y, c.SDL_KMOD_RCTRL));
     try expectEqual(null, historyKey(c.SDLK_X, c.SDL_KMOD_LCTRL));
+}
+
+test "each click, lasso, Ctrl+A and clear is one step" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(1);
+    try t.click(2);
+    try t.click(0);
+    try t.click(2); // deselects it
+    try t.lassoAll(true);
+    t.esc();
+    t.app.expandSelection();
+    t.app.clickAt(100, 100, 1); // empty space
+    const states = [_][]const u32{ &.{}, &.{2}, &.{ 2, 0 }, &.{0}, &.{ 0, 1, 2 }, &.{}, &.{ 0, 1, 2 }, &.{} };
+    for (0..2) |_| {
+        var i = states.len;
+        while (i > 0) {
+            i -= 1;
+            try t.expectSelected(states[i]);
+            t.app.undo();
+        }
+        try t.expectSelected(&.{});
+        for (states) |state| {
+            try t.expectSelected(state);
+            t.app.redo();
+        }
+    }
+    try expect(!t.app.session.isEdited(0));
+    try t.expectCopyEdited(false);
+}
+
+test "cutting, restoring and restoring all cuts are one step each" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.show(0);
+    t.app.cutBond(0, 1);
+    t.app.cutBond(1, 2);
+    t.app.cutBond(0, 1); // restores it
+    t.app.cutBond(0, 1);
+    t.app.restoreCuts();
+    t.app.undo();
+    try t.expectCuts(&.{ .{ 0, 1 }, .{ 1, 2 } });
+    t.app.undo();
+    try t.expectCuts(&.{.{ 1, 2 }});
+    t.app.undo();
+    try t.expectCuts(&.{ .{ 0, 1 }, .{ 1, 2 } });
+    t.app.redo();
+    t.app.redo();
+    t.app.redo();
+    try t.expectCuts(&.{});
+    try expect(!t.app.session.isEdited(0));
+}
+
+test "gestures that change nothing, frame changes, playback and the camera aren't steps" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(2);
+    try t.click(1);
+    try t.lassoAll(false);
+    t.app.restoreCuts();
+    try t.show(1);
+    t.app.togglePlay();
+    t.app.togglePlay();
+    t.app.camera.orbit(10, 5);
+    t.app.fitCamera();
+    try t.show(0);
+    t.app.undo();
+    try t.expectSelected(&.{});
+    t.esc();
+    t.app.redo();
+    try t.expectSelected(&.{1});
+}
+
+test "paste and delete are one step that restores the selection and cuts" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(1);
+    try t.click(2);
+    try t.click(1);
+    t.app.cutBond(1, 2);
+    t.app.cutBond(0, 1);
+    t.app.deleteSelection();
+    try t.expectCuts(&.{});
+    t.app.undo();
+    try t.expectSelected(&.{ 2, 1 });
+    try t.expectCuts(&.{ .{ 1, 2 }, .{ 0, 1 } });
+    t.app.redo();
+    try t.expectSelected(&.{});
+    try t.expectCuts(&.{});
+    t.app.undo();
+
+    try t.pasteAtom();
+    try t.expectSelected(&.{3});
+    t.app.undo();
+    try t.expectSelected(&.{ 2, 1 });
+    try t.expectCuts(&.{ .{ 1, 2 }, .{ 0, 1 } });
+    t.app.redo();
+    try t.expectSelected(&.{3});
+    try t.expectCuts(&.{ .{ 1, 2 }, .{ 0, 1 } });
+}
+
+test "undoing a delete made before its frame was left restores the selection only" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(2);
+    try t.click(1);
+    t.app.cutBond(0, 1);
+    t.app.deleteSelection();
+    try t.show(1);
+    t.app.undo();
+    try t.settle();
+    try expectEqual(0, t.app.doc.?.shown_index);
+    try t.expectSelected(&.{1});
+    try t.expectCuts(&.{});
+}
+
+test "selection steps stay on the frame and don't pause playback, geometry steps jump" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(2);
+    t.setDistance(4);
+    t.app.clearSelection();
+    try t.click(2);
+    try t.show(1);
+    try t.click(1);
+    t.app.playing = true;
+    t.app.undo();
+    try t.expectSelected(&.{2});
+    t.app.undo();
+    try t.expectSelected(&.{});
+    try expectEqual(1, t.app.doc.?.current);
+    try expect(t.app.playing);
+    t.app.undo();
+    try t.settle();
+    try expectEqual(0, t.app.doc.?.shown_index);
+    try expect(!t.app.playing);
+}
+
+test "steps that no longer apply are skipped" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("2\n\nH 0 0 0\nH 3 0 0\n" ++ "2\n\nO 0 0 0\nH 3 0 0\n");
+    try t.show(0);
+    t.app.fitCamera();
+    try t.click(1);
+    t.app.cutBond(0, 1);
+    try t.show(1); // other numbering; the cut ends
+    try t.click(0);
+    t.app.undo();
+    try t.expectSelected(&.{});
+    t.app.undo(); // nothing applies here
+    try t.expectSelected(&.{});
+    try expect(!t.app.canUndo());
+    try t.show(0);
+    try t.expectCuts(&.{});
+    try expect(!t.app.canUndo()); // nothing selected any more, as before the click
+    // Nothing is lost: what applies can still be redone.
+    t.app.redo();
+    try t.expectCuts(&.{});
+    try t.click(1);
+    t.app.undo();
+    try t.expectSelected(&.{});
+}
+
+test "a step that was skipped gives way to one that has an effect" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(2);
+    try t.click(1);
+    t.app.cutBond(0, 1);
+    try t.show(1);
+    t.app.undo(); // past the cut
+    try t.expectSelected(&.{});
+    try expectEqual(1, t.app.doc.?.shown_index);
+    t.app.redo();
+    try t.expectSelected(&.{1});
+    try expect(!t.app.canRedo()); // the cut ended
+}
+
+test "a hundred geometry steps and a thousand in total" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(1);
+    // Enough to drop the oldest, kept apart from geometry steps.
+    for (0..cv.edit.max_total + 50) |_| try t.click(0);
+    for (0..cv.edit.max_steps + 1) |i| {
+        t.setDistance(4 + 0.01 * @as(f64, @floatFromInt(i)));
+        t.app.clearSelection();
+    }
+    var n: usize = 0;
+    while (t.app.session.isEdited(0)) : (n += 1) {
+        if (n == cv.edit.max_steps) break;
+        t.app.undo();
+    }
+    // The first geometry step is gone, so it stays edited; the rest are selection steps.
+    try expectEqual(cv.edit.max_steps, n);
+    try std.testing.expectApproxEqAbs(4, t.distance(), 1e-5);
+    while (t.app.canUndo()) : (n += 1) t.app.undo();
+    try expectEqual(cv.edit.max_total, n);
+}
+
+test "the oldest selection steps go before any geometry step" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(1);
+    t.setDistance(4);
+    t.app.clearSelection();
+    for (0..cv.edit.max_total + 5) |_| try t.click(0);
+    var n: usize = 0;
+    while (t.app.canUndo()) : (n += 1) t.app.undo();
+    try expectEqual(cv.edit.max_total, n);
+    try expect(!t.app.session.isEdited(0));
+}
+
+test "with selection steps off, only geometry is undone" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    t.app.session.selection_steps = false;
+    try t.openRow(1);
+    t.setDistance(4);
+    t.app.clearSelection();
+    try t.click(2);
+    t.app.cutBond(1, 2);
+    t.app.undo();
+    try t.expectSelected(&.{2});
+    try t.expectCuts(&.{.{ 1, 2 }});
+    try expect(!t.app.session.isEdited(0));
+    try t.click(0); // doesn't clear what can be redone
+    t.app.redo();
+    try expect(t.app.session.isEdited(0));
+    try expect(!t.app.canRedo());
+    t.app.deleteSelection();
+    t.app.undo();
+    try t.expectSelected(&.{});
+    try t.expectCuts(&.{});
 }
 
 test "asking for another frame aborts a drag" {
@@ -2478,7 +2836,7 @@ test "closing aborts a drag" {
     try t.dragSome();
     t.app.closeDocument();
     try expect(t.app.drag == null);
-    try expect(!t.app.session.canUndo());
+    try expect(!t.app.canUndo());
 }
 
 test "a completed drag is one geometry step, a cancelled one none" {

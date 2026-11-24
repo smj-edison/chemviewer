@@ -4,12 +4,20 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Frame = @import("core/structure.zig").Frame;
 const Vec3 = @import("core/math.zig").Vec3;
+const picks = @import("picks.zig");
 
 /// Geometry steps kept in the history; the oldest are dropped.
 pub const max_steps = 100;
+/// Steps of any kind kept; the oldest selection steps are dropped first.
+pub const max_total = 1000;
+
+/// Whether selecting and cutting are steps in the undo history (D25). False
+/// leaves only geometry steps.
+pub const selection_steps = true;
 
 pub const EditSession = struct {
     gpa: Allocator,
+    selection_steps: bool = selection_steps,
     /// Frames that have been edited, even if none of it is in effect now.
     frames: std.AutoHashMapUnmanaged(usize, Held) = .empty,
     /// Oldest first.
@@ -39,15 +47,38 @@ pub const EditSession = struct {
         }
     };
 
-    const Step = struct {
+    const Step = union(enum) {
+        geometry: GeometryStep,
+        selection: picks.Step,
+
+        fn deinit(s: *Step, gpa: Allocator) void {
+            switch (s.*) {
+                inline else => |*step| step.deinit(gpa),
+            }
+        }
+    };
+
+    const GeometryStep = struct {
         index: usize,
         /// The atoms on its other side (null = the file frame): from before
         /// it, or, once it is undone, from after it.
         other: ?Edited,
+        /// The picks to restore with it, if it renumbered atoms.
+        kept: ?picks.Kept = null,
 
-        fn deinit(s: *Step, gpa: Allocator) void {
+        fn deinit(s: *GeometryStep, gpa: Allocator) void {
             if (s.other) |*e| e.deinit(gpa);
+            if (s.kept) |*k| k.deinit(gpa);
         }
+    };
+
+    /// What undo or redo did.
+    pub const Crossed = union(enum) {
+        /// The atoms of frame `index` changed; they are `current`. Restore
+        /// `kept` (valid until the session changes) once it is shown.
+        geometry: struct { index: usize, kept: ?picks.Kept, side: picks.Side },
+        /// The picks changed.
+        selection,
     };
 
     pub fn init(gpa: Allocator) EditSession {
@@ -82,12 +113,26 @@ pub const EditSession = struct {
         return h.edited != null;
     }
 
-    pub fn canUndo(s: *const EditSession) bool {
-        return s.steps.items.len > 0;
+    /// Whether `undo` would have an effect.
+    pub fn canUndo(s: *const EditSession, p: *const picks.Picks) bool {
+        return lastEffective(s.steps.items, p, .before) != null;
     }
 
-    pub fn canRedo(s: *const EditSession) bool {
-        return s.undone.items.len > 0;
+    pub fn canRedo(s: *const EditSession, p: *const picks.Picks) bool {
+        return lastEffective(s.undone.items, p, .after) != null;
+    }
+
+    /// The last of `list` that isn't a selection step without effect here.
+    fn lastEffective(list: []const Step, p: *const picks.Picks, side: picks.Side) ?usize {
+        var i = list.len;
+        while (i > 0) {
+            i -= 1;
+            switch (list[i]) {
+                .geometry => return i,
+                .selection => |step| if (p.wouldChange(step, side)) return i,
+            }
+        }
+        return null;
     }
 
     /// The current atoms of frame `index`, or null if it was never edited and
@@ -122,23 +167,43 @@ pub const EditSession = struct {
         };
     }
 
-    /// Undo the last geometry step, on whichever frame it was. Returns that
-    /// frame's index; its atoms are `current`.
-    pub fn undo(s: *EditSession) ?usize {
-        return s.cross(&s.steps, &s.undone);
+    /// Undo the last step that has an effect: a geometry step, on whichever
+    /// frame it was, or a selection step that applies to `p`. Null if there is
+    /// none. On error nothing changed.
+    pub fn undo(s: *EditSession, p: *picks.Picks) !?Crossed {
+        return s.cross(&s.steps, &s.undone, p, .before);
     }
 
-    /// Redo the last geometry step that was undone; otherwise as `undo`.
-    pub fn redo(s: *EditSession) ?usize {
-        return s.cross(&s.undone, &s.steps);
+    /// Redo the last step that was undone and has an effect; otherwise as `undo`.
+    pub fn redo(s: *EditSession, p: *picks.Picks) !?Crossed {
+        return s.cross(&s.undone, &s.steps, p, .after);
     }
 
-    /// Swaps the last step of `from` with its frame's atoms, and moves it to `to`.
-    fn cross(s: *EditSession, from: *std.ArrayList(Step), to: *std.ArrayList(Step)) ?usize {
-        var step = from.pop() orelse return null;
-        std.mem.swap(?Edited, &step.other, &s.frames.getPtr(step.index).?.edited);
-        to.appendAssumeCapacity(step); // `reserve`
-        return step.index;
+    /// Goes to that side of the last effective step of `from`, and moves it to
+    /// `to`, with the ones skipped on the way.
+    fn cross(s: *EditSession, from: *std.ArrayList(Step), to: *std.ArrayList(Step), p: *picks.Picks, side: picks.Side) !?Crossed {
+        const at = lastEffective(from.items, p, side) orelse return null;
+        const crossed: Crossed = switch (from.items[at]) {
+            .selection => |step| blk: {
+                try p.apply(s.gpa, step, side);
+                break :blk .selection;
+            },
+            .geometry => |*step| blk: {
+                std.mem.swap(?Edited, &step.other, &s.frames.getPtr(step.index).?.edited);
+                break :blk .{ .geometry = .{ .index = step.index, .kept = step.kept, .side = side } };
+            },
+        };
+        while (from.items.len > at) to.appendAssumeCapacity(from.pop().?); // `reserve`
+        return crossed;
+    }
+
+    /// Make what changed in `p` since `before` was taken one selection step, if
+    /// anything did. On error the history is as it was.
+    pub fn recordSelection(s: *EditSession, p: *const picks.Picks, before: picks.Snapshot) !void {
+        if (!s.selection_steps) return;
+        try s.reserve();
+        const step = try p.stepSince(s.gpa, before) orelse return;
+        s.push(.{ .selection = step });
     }
 
     /// Make frame `index` its file frame again, as a geometry step. False if
@@ -147,26 +212,37 @@ pub const EditSession = struct {
         const h = s.frames.getPtr(index) orelse return false;
         if (h.edited == null) return false;
         try s.reserve();
-        s.push(.{ .index = index, .other = h.edited });
+        s.push(.{ .geometry = .{ .index = index, .other = h.edited } });
         h.edited = null;
         return true;
     }
 
     /// Room for the whole history, so that `push`, `undo` and `redo` can't fail.
     fn reserve(s: *EditSession) !void {
-        try s.steps.ensureTotalCapacity(s.gpa, max_steps);
-        try s.undone.ensureTotalCapacity(s.gpa, max_steps);
+        try s.steps.ensureTotalCapacity(s.gpa, max_total);
+        try s.undone.ensureTotalCapacity(s.gpa, max_total);
     }
 
     /// A new step; what was undone can't be redone any more.
     fn push(s: *EditSession, step: Step) void {
         for (s.undone.items) |*u| u.deinit(s.gpa);
         s.undone.clearRetainingCapacity();
-        if (s.steps.items.len >= max_steps) {
-            var old = s.steps.orderedRemove(0);
-            old.deinit(s.gpa);
-        }
+        if (step == .geometry) s.dropOldest(.geometry, max_steps);
+        if (s.steps.items.len >= max_total) s.dropOldest(.selection, 0);
         s.steps.appendAssumeCapacity(step);
+    }
+
+    /// Drop the oldest step of that kind if there are `limit` of them or more.
+    fn dropOldest(s: *EditSession, kind: std.meta.Tag(Step), limit: usize) void {
+        var count: usize = 0;
+        var oldest: ?usize = null;
+        for (s.steps.items, 0..) |step, i| if (step == kind) {
+            count += 1;
+            if (oldest == null) oldest = i;
+        };
+        if (count < limit) return;
+        var old = s.steps.orderedRemove(oldest orelse return);
+        old.deinit(s.gpa);
     }
 };
 
@@ -253,6 +329,12 @@ pub const Transaction = struct {
     /// Make it one geometry step. If nothing changed there is no step, and
     /// false is returned. On error the frame and the history are as they were.
     pub fn commit(t: *Transaction) !bool {
+        return t.commitKeeping(null);
+    }
+
+    /// `commit`, with the picks to restore on undo and redo, if it renumbers
+    /// atoms. Takes ownership of them if it returns true.
+    pub fn commitKeeping(t: *Transaction, kept: ?picks.Kept) !bool {
         if (!t.isChanged()) return false;
         const s = t.session;
         try s.reserve();
@@ -262,7 +344,7 @@ pub const Transaction = struct {
         } else if (t.file) |*f| f.deinit(s.gpa);
         // The file's energy doesn't describe the new geometry.
         t.atoms.energy = null;
-        s.push(.{ .index = t.index, .other = gop.value_ptr.edited });
+        s.push(.{ .geometry = .{ .index = t.index, .other = gop.value_ptr.edited, .kept = kept } });
         gop.value_ptr.edited = .{ .frame = t.atoms, .origins = t.origins };
         t.committed = true;
         return true;
@@ -286,6 +368,8 @@ fn testFrame() !Frame {
 const TestSession = struct {
     s: EditSession,
     file: Frame,
+    /// Never anything picked.
+    p: picks.Picks = .{},
 
     fn init() !TestSession {
         return .{ .s = .init(test_gpa), .file = try testFrame() };
@@ -304,7 +388,16 @@ const TestSession = struct {
     }
 
     fn undo(t: *TestSession) ?usize {
-        return t.s.undo();
+        return changed(t.s.undo(&t.p));
+    }
+
+    fn redo(t: *TestSession) ?usize {
+        return changed(t.s.redo(&t.p));
+    }
+
+    /// The frame that a geometry step changed.
+    fn changed(crossed: anyerror!?EditSession.Crossed) ?usize {
+        return ((crossed catch unreachable) orelse return null).geometry.index;
     }
 
     fn revert(t: *TestSession, index: usize) !void {
@@ -367,7 +460,7 @@ test "an edit that is dropped or changes nothing leaves no trace" {
         try testing.expect(!try tx.commit());
     }
     try t.expectFileFrame(0);
-    try testing.expect(!t.s.canUndo());
+    try testing.expect(!t.s.canUndo(&t.p));
 }
 
 test "undoing a frame's last geometry step makes it its file frame again" {
@@ -433,18 +526,18 @@ test "revert is one geometry step and leaves other frames alone" {
 test "redo puts back what was undone, across frames, until there is no more" {
     var t: TestSession = try .init();
     defer t.deinit();
-    try testing.expect(!t.s.canRedo());
+    try testing.expect(!t.s.canRedo(&t.p));
     try t.moveTo(4, 1);
     try t.moveTo(9, 2);
     try t.moveTo(4, 3);
     try t.revert(4);
     while (t.undo()) |_| {}
     for ([_]usize{ 4, 9, 4, 4 }) |index| {
-        try testing.expect(t.s.canRedo());
-        try testing.expectEqual(index, t.s.redo());
+        try testing.expect(t.s.canRedo(&t.p));
+        try testing.expectEqual(index, t.redo());
     }
-    try testing.expect(!t.s.canRedo());
-    try testing.expectEqual(null, t.s.redo());
+    try testing.expect(!t.s.canRedo(&t.p));
+    try testing.expectEqual(null, t.redo());
     try t.expectFileFrame(4); // reverted
     try t.expectEdited(9, 2);
     // And all of it can be undone again.
@@ -476,10 +569,10 @@ test "a new step clears what could be redone; a dropped or empty edit doesn't" {
             tx.atoms.positions[0][0] = 9;
         }
         try testing.expect(!try t.s.revert(1)); // not edited
-        try testing.expect(t.s.canRedo());
+        try testing.expect(t.s.canRedo(&t.p));
         if (by_revert) try t.revert(0) else try t.moveTo(0, 5);
-        try testing.expect(!t.s.canRedo());
-        try testing.expectEqual(null, t.s.redo());
+        try testing.expect(!t.s.canRedo(&t.p));
+        try testing.expectEqual(null, t.redo());
         try t.expectFileFrame(1);
     }
 }
@@ -491,7 +584,7 @@ test "a full history can be undone and redone completely" {
     var undone: usize = 0;
     while (t.undo()) |_| undone += 1;
     try testing.expectEqual(max_steps, undone);
-    while (t.s.redo()) |_| undone -= 1;
+    while (t.redo()) |_| undone -= 1;
     try testing.expectEqual(0, undone);
     try t.expectEdited(0, max_steps + 1);
 }
@@ -502,7 +595,7 @@ test "a new step after undoing some of a full history" {
     for (0..max_steps + 1) |i| try t.moveTo(0, @floatFromInt(i + 1));
     for (0..3) |_| _ = t.undo();
     try t.moveTo(0, 500);
-    try testing.expect(!t.s.canRedo());
+    try testing.expect(!t.s.canRedo(&t.p));
     _ = t.undo();
     try t.expectEdited(0, max_steps - 2);
     var left: usize = 0;
@@ -524,12 +617,46 @@ test "a failed edit keeps what can be redone" {
                 tx.atoms.positions[0][0] = @floatFromInt(i + 1);
                 _ = try tx.commit();
             }
-            _ = s.undo();
+            var p: picks.Picks = .{};
+            _ = try s.undo(&p);
             errdefer testing.expectEqual(1, s.undone.items.len) catch @panic("the undone step was lost");
             var tx = try s.begin(7, file); // a frame not edited before
             defer tx.deinit();
             tx.atoms.positions[0][0] = 5;
             _ = try tx.commit();
+        }
+    }.run;
+    try testing.checkAllAllocationFailures(test_gpa, run, .{});
+}
+
+test "running out of memory in a selection step leaves history and picks as they were" {
+    const run = struct {
+        fn run(a: Allocator) !void {
+            var s: EditSession = .init(a);
+            defer s.deinit();
+            var p: picks.Picks = .{};
+            defer p.deinit(a);
+            p.follow(a, 0, .{ .numbers = &.{ 1, 1, 1 } });
+            if (p.shared == null) return error.OutOfMemory; // `follow` gave up
+            for (0..2) |i| {
+                var before = try p.snapshot(a);
+                defer before.deinit(a);
+                try p.selection.append(a, @intCast(i));
+                errdefer p.restoreSnapshot(&before);
+                try p.cuts.put(a, picks.pairKey(@intCast(i), 2), {});
+                try s.recordSelection(&p, before);
+                try testing.expectEqual(i + 1, s.steps.items.len);
+            }
+            // Other picks, so that going back needs room.
+            p.selection.clearAndFree(a);
+            p.cuts.clearAndFree(a);
+            errdefer {
+                testing.expectEqual(2, s.steps.items.len + s.undone.items.len) catch @panic("a step was lost");
+            }
+            while (try s.undo(&p)) |_| {}
+            while (try s.redo(&p)) |_| {}
+            try testing.expectEqualSlices(u32, &.{ 0, 1 }, p.selection.items);
+            try testing.expectEqual(2, p.cuts.count());
         }
     }.run;
     try testing.checkAllAllocationFailures(test_gpa, run, .{});
@@ -541,7 +668,7 @@ test "redo restores the numbering" {
     try t.renumber(&.{ false, false });
     _ = t.undo();
     try t.expectOrigins(null);
-    try testing.expectEqual(0, t.s.redo());
+    try testing.expectEqual(0, t.redo());
     try t.expectOrigins(&.{ 0, EditSession.first_pasted });
 }
 
@@ -551,7 +678,7 @@ test "clear forgets what could be redone" {
     try t.moveTo(0, 1);
     _ = t.undo();
     t.s.clear();
-    try testing.expectEqual(null, t.s.redo());
+    try testing.expectEqual(null, t.redo());
 }
 
 test "origins tell which atoms are the file's and which were pasted" {
