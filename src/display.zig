@@ -1,4 +1,5 @@
-//! The displayed geometry: the atoms on screen and the bonds between them. The
+//! Atoms as shown and the bonds between them: the displayed geometry, and the
+//! reference of a diff. The
 //! bonds are found when they are asked for, so they always match the atoms.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -8,7 +9,7 @@ const bonds_mod = @import("core/bonds.zig");
 const Bond = bonds_mod.Bond;
 const Params = bonds_mod.Params;
 
-pub const DisplayedGeometry = struct {
+pub const BondedAtoms = struct {
     /// The shown frame's atoms, a copy of what the frame stream or the edit
     /// session has. Read it; change it only with `show`, `move` and `hide`.
     frame: ?Frame = null,
@@ -21,14 +22,14 @@ pub const DisplayedGeometry = struct {
     /// What `found` was found with (null = not found for these atoms).
     found_with: ?Params = null,
 
-    pub fn deinit(g: *DisplayedGeometry, gpa: Allocator) void {
+    pub fn deinit(g: *BondedAtoms, gpa: Allocator) void {
         if (g.frame) |*f| f.deinit(gpa);
         g.found.deinit(gpa);
         g.* = undefined;
     }
 
     /// Show frame `index` with these atoms (takes ownership).
-    pub fn show(g: *DisplayedGeometry, gpa: Allocator, index: usize, atoms: Frame) void {
+    pub fn show(g: *BondedAtoms, gpa: Allocator, index: usize, atoms: Frame) void {
         if (g.frame) |*f| f.deinit(gpa);
         g.frame = atoms;
         g.index = index;
@@ -36,26 +37,26 @@ pub const DisplayedGeometry = struct {
     }
 
     /// Move the shown atoms, as while dragging.
-    pub fn move(g: *DisplayedGeometry, positions: []const Vec3) void {
+    pub fn move(g: *BondedAtoms, positions: []const Vec3) void {
         @memcpy(g.frame.?.positions, positions);
         g.changed();
     }
 
     /// Show nothing, until the next `show`.
-    pub fn hide(g: *DisplayedGeometry, gpa: Allocator) void {
+    pub fn hide(g: *BondedAtoms, gpa: Allocator) void {
         if (g.frame) |*f| f.deinit(gpa);
         g.frame = null;
         g.changed();
     }
 
-    fn changed(g: *DisplayedGeometry) void {
+    fn changed(g: *BondedAtoms) void {
         g.changes += 1;
         g.found_with = null;
     }
 
     /// The bonds between the atoms, none if there are none. Searched for only
     /// if the atoms or `params` changed. Valid until the next call that does.
-    pub fn bonds(g: *DisplayedGeometry, gpa: Allocator, params: Params) ![]const Bond {
+    pub fn bonds(g: *BondedAtoms, gpa: Allocator, params: Params) ![]const Bond {
         const f = g.frame orelse return &.{};
         if (g.found_with) |with| if (std.meta.eql(with, params)) return g.found.items;
         g.found_with = null; // what is found is incomplete if this fails
@@ -79,12 +80,12 @@ fn testFrame(distance: f32) !Frame {
     return f;
 }
 
-fn expectBonds(g: *DisplayedGeometry, want: usize, params: Params) !void {
+fn expectBonds(g: *BondedAtoms, want: usize, params: Params) !void {
     try testing.expectEqual(want, (try g.bonds(test_gpa, params)).len);
 }
 
 test "bonds follow the atoms and the cut-off" {
-    var g: DisplayedGeometry = .{};
+    var g: BondedAtoms = .{};
     defer g.deinit(test_gpa);
     try expectBonds(&g, 0, .{});
     g.show(test_gpa, 3, try testFrame(0.74));
@@ -101,7 +102,7 @@ test "bonds follow the atoms and the cut-off" {
 }
 
 test "bonds aren't searched for again if nothing changed" {
-    var g: DisplayedGeometry = .{};
+    var g: BondedAtoms = .{};
     defer g.deinit(test_gpa);
     g.show(test_gpa, 0, try testFrame(0.74));
     try expectBonds(&g, 1, .{});
@@ -112,7 +113,7 @@ test "bonds aren't searched for again if nothing changed" {
 }
 
 test "a search that fails isn't taken for an answer" {
-    var g: DisplayedGeometry = .{};
+    var g: BondedAtoms = .{};
     defer g.deinit(test_gpa);
     g.show(test_gpa, 0, try testFrame(0.74));
     var fail_index: usize = 0;
@@ -128,12 +129,18 @@ test "a search that fails isn't taken for an answer" {
 }
 
 test "every change to the atoms is counted" {
-    var g: DisplayedGeometry = .{};
+    var g: BondedAtoms = .{};
     defer g.deinit(test_gpa);
     g.show(test_gpa, 0, try testFrame(1));
     const shown = g.changes;
     _ = try g.bonds(test_gpa, .{});
     try testing.expectEqual(shown, g.changes);
     g.move(&.{ .{ 0, 0, 0 }, .{ 5, 0, 0 } });
-    try testing.expect(g.changes != shown);
+    const moved = g.changes;
+    try testing.expect(moved != shown);
+    g.show(test_gpa, 0, try testFrame(1));
+    const again = g.changes;
+    try testing.expect(again != moved);
+    g.hide(test_gpa);
+    try testing.expect(g.changes != again);
 }

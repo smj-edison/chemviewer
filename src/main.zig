@@ -505,7 +505,7 @@ const Startup = struct {
             4 => app.applyEdit(.{ .dihedral = std.math.degreesToRadians(v) }),
             else => return error.SetNeedsTwoToFourSelectedAtoms,
         };
-        // Apply the edit (bonds, scene) before saving.
+        // Bring the scene in line with the edit.
         app.update();
         if (s.args.save) |path| app.saveFrame(path);
     }

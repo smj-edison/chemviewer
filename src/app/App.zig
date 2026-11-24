@@ -26,8 +26,8 @@ pub const Document = struct {
     stream: *cv.stream.FrameStream,
     /// Frame the user asked for (timeline position).
     current: usize = 0,
-    /// What is on screen (its frame may lag `current` while that loads).
-    display: cv.display.DisplayedGeometry = .{},
+    /// The displayed geometry: what is on screen (its frame may lag `current` while that loads).
+    display: cv.display.BondedAtoms = .{},
     /// What `App.update` last brought everything else in line with.
     followed: ?struct { changes: u64, bond_params: cv.bonds.Params } = null,
     /// Interpolated playback: the steps after the shown one and the ones either
@@ -47,7 +47,7 @@ pub const Document = struct {
 
 pub const Diff = struct {
     /// The reference, as it was when it was set.
-    reference: cv.display.DisplayedGeometry,
+    reference: cv.display.BondedAtoms,
     /// The displayed geometry (`changes`) the rest is about.
     followed: ?u64 = null,
     /// Current frame superposed onto the reference (null if incompatible).
@@ -706,10 +706,9 @@ fn rebuildScene(app: *App) !void {
     r.clear();
     const d = app.doc orelse return r.upload();
     const f = d.display.frame orelse return r.upload();
-    if (app.diff) |df| if (df.overlay and df.result != null) {
-        const ref = app.diff.?.reference.frame.?;
-        const ref_bonds = try app.diff.?.reference.bonds(app.gpa, app.bond_params);
-        _ = try r.addStructure(ref.positions, ref.numbers, ref_bonds, app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
+    if (app.diff) |*df| if (df.overlay and df.result != null) {
+        const ref = df.reference.frame.?;
+        _ = try r.addStructure(ref.positions, ref.numbers, app.bondsOf(&df.reference), app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
         const start = try r.addStructure(df.aligned.items, f.numbers, app.bonds(), app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.picks.cuts);
         r.highlight(start, app.selected());
         return r.upload();
@@ -727,7 +726,8 @@ pub fn setReference(app: *App) void {
     const f = d.display.frame orelse return;
     app.clearDiff();
     const ref = f.clone(app.gpa) catch return;
-    app.diff = .{ .reference = .{ .frame = ref, .index = d.display.index } };
+    app.diff = .{ .reference = .{} };
+    app.diff.?.reference.show(app.gpa, d.display.index, ref);
     app.show_diff = true;
     app.updateDiff();
     app.scene_dirty = true;
@@ -808,11 +808,14 @@ fn updateDiff(app: *App) void {
     const d = app.doc orelse return;
     const f = d.display.frame orelse return;
     if (df.followed == d.display.changes) return;
-    df.followed = d.display.changes;
+    df.followed = null; // try again if it runs out of memory
     const ref = df.reference.frame.?;
     df.result = null;
     df.incompatible = f.len() != ref.len() or !std.mem.eql(u8, f.numbers, ref.numbers);
-    if (df.incompatible) return;
+    if (df.incompatible) {
+        df.followed = d.display.changes;
+        return;
+    }
     const res = cv.align_.superpose(ref.positions, f.positions, null);
     df.aligned.resize(app.gpa, f.len()) catch return;
     df.deviations.resize(app.gpa, f.len()) catch return;
@@ -823,6 +826,7 @@ fn updateDiff(app: *App) void {
         if (dev.* > df.deviations.items[df.max_dev_atom]) df.max_dev_atom = i;
     }
     df.result = res;
+    df.followed = d.display.changes;
 }
 
 // ------------------------------------------------------------ input
@@ -1070,7 +1074,7 @@ pub fn expandSelection(app: *App) void {
     defer app.endGesture(&step);
     if (app.picks.selection.items.len == 0) return app.selectAll();
     const gpa = app.gpa;
-    var graph = app.drawnGraph() catch return;
+    var graph = app.drawnGraph() catch |e| return app.setStatus("Bond search failed: {t}", .{e});
     defer graph.deinit(gpa);
     const mask = gpa.alloc(bool, f.len()) catch return;
     defer gpa.free(mask);
@@ -1144,8 +1148,13 @@ pub fn drawLasso(app: *App) void {
 /// Bonds between the shown atoms. Out of memory, none, saying so.
 fn bonds(app: *App) []const cv.bonds.Bond {
     const d = &(app.doc orelse return &.{});
-    return d.display.bonds(app.gpa, app.bond_params) catch |e| {
+    return app.bondsOf(&d.display);
+}
+
+fn bondsOf(app: *App, atoms: *cv.display.BondedAtoms) []const cv.bonds.Bond {
+    return atoms.bonds(app.gpa, app.bond_params) catch |e| {
         app.setStatus("Bond search failed: {t}", .{e});
+        app.scene_dirty = true; // drawn without; try again
         return &.{};
     };
 }
@@ -1380,7 +1389,7 @@ fn endDrag(app: *App, commit: bool) void {
     var edit = app.drag_edit.?;
     defer edit.deinit();
     // Back as they were, unless committed below.
-    app.showDragged(edit.before());
+    if (dr.moved) app.showDragged(edit.before());
     app.drag = null;
     app.drag_edit = null;
     if (commit and dr.moved) {
@@ -2384,7 +2393,7 @@ test "a delete followed at once by a click, Ctrl+A or an edit uses the new bonds
     for ([_]Next{ .click, .ctrl_a, .set }) |next| {
         var t: TestApp = try .init(1);
         defer t.deinit();
-        try t.openText("4\n\nO 9 0 0\nH 0 0 0\nH 0.74 0 0\nH 1.48 0 0\n");
+        try t.openText("5\n\nO 9 0 0\nH 0 0 0\nH 0.74 0 0\nH 1.48 0 0\nO 0 9 0\n");
         try t.show(0);
         t.app.fitCamera();
         try t.expectBonded(2, 3, true);
@@ -2394,7 +2403,7 @@ test "a delete followed at once by a click, Ctrl+A or an edit uses the new bonds
             .ctrl_a => {
                 t.select(&.{0});
                 t.app.expandSelection();
-                try t.expectSelected(&.{ 0, 1, 2 });
+                try t.expectSelected(&.{ 0, 1, 2 }); // not the far one
             },
             .set => {
                 t.setDistance(1);
@@ -2428,8 +2437,54 @@ test "an edit fails, changing nothing, if its bonds can't be found" {
     t.app.applyEdit(.{ .distance = 2 });
     t.app.gpa = TestApp.gpa;
     try expect(!t.app.session.isEdited(0));
+    try expect(!t.app.canUndo());
+    try std.testing.expectApproxEqAbs(0.74, t.distance(), 1e-6);
+    try t.expectSelected(&.{ 0, 1 });
     t.app.applyEdit(.{ .distance = 2 });
     try expect(t.app.session.isEdited(0));
+}
+
+test "a drag that never moved, redraws and cuts don't search for bonds again" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("2\n\nH 0 0 0\nH 0.74 0 0\n");
+    try t.show(0);
+    t.app.setReference();
+    const d = &t.app.doc.?;
+    const ref = &t.app.diff.?.reference;
+    try expectEqual(1, t.app.bonds().len);
+    try expectEqual(1, (try ref.bonds(TestApp.gpa, t.app.bond_params)).len);
+    t.app.diff.?.overlay = false;
+    const changes = d.display.changes;
+    try t.startDrag();
+    t.app.endDrag(true);
+    try t.startDrag();
+    t.app.endDrag(false);
+    t.app.toggleCutPair(0, 1);
+    try expectEqual(changes, d.display.changes);
+    // A search would need memory.
+    var failing: std.testing.FailingAllocator = .init(TestApp.gpa, .{ .fail_index = 0 });
+    t.app.gpa = failing.allocator();
+    defer t.app.gpa = TestApp.gpa;
+    for (0..2) |_| try expectEqual(1, t.app.bonds().len);
+    for (0..2) |_| try expectEqual(1, (try ref.bonds(t.app.gpa, t.app.bond_params)).len);
+}
+
+test "a diff that ran out of memory is tried again" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(1);
+    t.app.setReference();
+    const df = &t.app.diff.?;
+    df.followed = null;
+    df.aligned.clearAndFree(TestApp.gpa);
+    var failing: std.testing.FailingAllocator = .init(TestApp.gpa, .{ .fail_index = 0 });
+    t.app.gpa = failing.allocator();
+    t.app.updateDiff();
+    t.app.gpa = TestApp.gpa;
+    try expect(df.result == null);
+    t.app.updateDiff();
+    try expect(df.result != null);
 }
 
 test "a cut changes what a typed value moves" {
