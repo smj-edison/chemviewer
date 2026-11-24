@@ -128,7 +128,7 @@ pub const EditSession = struct {
         return s.cross(&s.steps, &s.undone);
     }
 
-    /// Redo the last step that was undone; otherwise as `undo`.
+    /// Redo the last geometry step that was undone; otherwise as `undo`.
     pub fn redo(s: *EditSession) ?usize {
         return s.cross(&s.undone, &s.steps);
     }
@@ -494,6 +494,45 @@ test "a full history can be undone and redone completely" {
     while (t.s.redo()) |_| undone -= 1;
     try testing.expectEqual(0, undone);
     try t.expectEdited(0, max_steps + 1);
+}
+
+test "a new step after undoing some of a full history" {
+    var t: TestSession = try .init();
+    defer t.deinit();
+    for (0..max_steps + 1) |i| try t.moveTo(0, @floatFromInt(i + 1));
+    for (0..3) |_| _ = t.undo();
+    try t.moveTo(0, 500);
+    try testing.expect(!t.s.canRedo());
+    _ = t.undo();
+    try t.expectEdited(0, max_steps - 2);
+    var left: usize = 0;
+    while (t.undo()) |_| left += 1;
+    try testing.expectEqual(max_steps - 3, left);
+    try t.expectEdited(0, 1);
+}
+
+test "a failed edit keeps what can be redone" {
+    const run = struct {
+        fn run(a: Allocator) !void {
+            var file = try testFrame();
+            defer file.deinit(test_gpa);
+            var s: EditSession = .init(a);
+            defer s.deinit();
+            for (0..2) |i| {
+                var tx = try s.begin(0, file);
+                defer tx.deinit();
+                tx.atoms.positions[0][0] = @floatFromInt(i + 1);
+                _ = try tx.commit();
+            }
+            _ = s.undo();
+            errdefer testing.expectEqual(1, s.undone.items.len) catch @panic("the undone step was lost");
+            var tx = try s.begin(7, file); // a frame not edited before
+            defer tx.deinit();
+            tx.atoms.positions[0][0] = 5;
+            _ = try tx.commit();
+        }
+    }.run;
+    try testing.checkAllAllocationFailures(test_gpa, run, .{});
 }
 
 test "redo restores the numbering" {

@@ -1633,8 +1633,8 @@ fn menuBar(app: *App) void {
         c.igEndMenu();
     }
     if (c.igBeginMenu("Edit", true)) {
-        if (c.igMenuItem_Bool("Undo geometry edit", "Ctrl+Z", false, app.session.canUndo())) app.undo();
-        if (c.igMenuItem_Bool("Redo geometry edit", "Ctrl+Shift+Z", false, app.session.canRedo())) app.redo();
+        if (c.igMenuItem_Bool("Undo", "Ctrl+Z", false, app.session.canUndo())) app.undo();
+        if (c.igMenuItem_Bool("Redo", "Ctrl+Shift+Z", false, app.session.canRedo())) app.redo();
         const edited = if (app.doc) |d| app.session.isEdited(d.shown_index) else false;
         if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.picks.selection.items.len > 0)) app.deleteSelection();
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
@@ -2300,6 +2300,8 @@ test "redo restores each kind of edit exactly, and the edited state" {
         const d = &t.app.doc.?;
         var after = try d.shown.?.clone(TestApp.gpa);
         defer after.deinit(TestApp.gpa);
+        const origins: ?[]u32 = if (t.app.session.origins(0)) |o| try TestApp.gpa.dupe(u32, o) else null;
+        defer if (origins) |o| TestApp.gpa.free(o);
         for (0..2) |_| {
             t.app.undo();
             try t.expectCopyEdited(kind == .revert);
@@ -2308,6 +2310,7 @@ test "redo restores each kind of edit exactly, and the edited state" {
             try std.testing.expectEqualSlices(Vec3, after.positions, d.shown.?.positions);
             try std.testing.expectEqualSlices(u8, after.numbers, d.shown.?.numbers);
             try expectEqual(after.energy, d.shown.?.energy);
+            try std.testing.expectEqualDeep(@as(?[]const u32, origins), t.app.session.origins(0));
         }
     }
 }

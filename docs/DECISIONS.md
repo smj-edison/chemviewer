@@ -321,7 +321,7 @@ edited.
   screen), so stepping on from it works; playback that ends there returns to the shown
   frame. Holding the button or a key there isn't a retry.
 - **Edit session:** an edit is a transaction tied to its frame. A frame change,
-  undo, paste, revert, close or open aborts one in progress and restores the
+  undo, redo, paste, revert, close or open aborts one in progress and restores the
   atoms. Starting an edit pauses playback. A frame is edited only while an edit
   is in effect (or its first edit has left the history). Revert is undoable.
   Opening or closing a file resets everything, including drag and playback.
