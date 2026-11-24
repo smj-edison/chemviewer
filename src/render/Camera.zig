@@ -90,10 +90,16 @@ pub fn zoom(c: *Camera, wheel: f32) void {
     c.distance = std.math.clamp(c.distance, 0.5, 1e5);
 }
 
-/// Center on a bounding sphere and back off so it fills the view.
-pub fn fit(c: *Camera, center: Vec3, radius: f32) void {
+/// Center on a bounding sphere and back off so it fills the view, leaving the
+/// background pattern where it is in the world.
+pub fn reframe(c: *Camera, center: Vec3, radius: f32) void {
     c.target = center;
     c.distance = @max(radius, 1.0) / @sin(c.fovy / 2) * 1.12;
+}
+
+/// `reframe`, with the background pattern around it.
+pub fn fit(c: *Camera, center: Vec3, radius: f32) void {
+    c.reframe(center, radius);
     c.bg_anchor = center;
     c.bg_radius = @max(radius, 1.0);
     c.bg_rotation = .identity;

@@ -120,7 +120,8 @@ drag: ?drag_mod.Drag = null,
 drag_edit: ?cv.edit.Transaction = null,
 drag_button: u8 = 0,
 
-const LockFollowed = struct { changes: u64, blend: f32 };
+/// What was drawn: the displayed geometry, how far blended, and as in a diff overlay or not.
+const LockFollowed = struct { changes: u64, blend: f32, overlay: bool };
 const pairKey = cv.picks.pairKey;
 
 pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window, gpu: *Gpu) !App {
@@ -174,7 +175,7 @@ pub fn closeDocument(app: *App) void {
     d.display.deinit(app.gpa);
     app.gpa.free(d.path);
     app.doc = null;
-    app.dropRotationLock();
+    app.unlockRotation();
     app.scene_dirty = true;
 }
 
@@ -363,17 +364,13 @@ fn appendFragment(app: *App, frag: Frame) !void {
     try edit.append(frag, offset);
     if (!try app.commitRenumbering(&edit, pasted)) return app.setStatus("No atoms to paste", .{});
     app.scene_dirty = true;
-    // Re-frame if any pasted atom is off-screen.
+    // Re-frame if any pasted atom is off-screen. The background stays put in
+    // the world, so it doesn't turn if frames were followed before.
     const sp = app.screenProjector();
     for (f.positions[first..]) |p| {
-        const q = sp.toScreen(p) orelse {
-            app.fitCamera();
-            break;
-        };
-        if (q.x < 0 or q.y < 0 or q.x > sp.w or q.y > sp.h) {
-            app.fitCamera();
-            break;
-        }
+        if (sp.toScreen(p)) |q| if (q.x >= 0 and q.y >= 0 and q.x <= sp.w and q.y <= sp.h) continue;
+        if (app.boundingSphere()) |s| app.camera.reframe(s.center, s.radius);
+        break;
     }
     app.setStatus("Pasted {d} atom{s} as a fragment{s}", .{
         frag.len(), if (frag.len() == 1) "" else "s", if (offset[0] != 0 or offset[1] != 0 or offset[2] != 0) " (moved beside the structure)" else "",
@@ -603,8 +600,14 @@ fn blendTime(app: *const App) f32 {
 }
 
 pub fn fitCamera(app: *App) void {
-    const d = app.doc orelse return;
-    const f = d.display.real.frame orelse return;
+    const s = app.boundingSphere() orelse return;
+    app.camera.fit(s.center, s.radius);
+}
+
+/// Sphere around everything drawn of the shown frame; also sets `scene_radius`.
+fn boundingSphere(app: *App) ?struct { center: Vec3, radius: f32 } {
+    const d = app.doc orelse return null;
+    const f = d.display.real.frame orelse return null;
     var b = f.bounds();
     if (app.style.show_cell) if (f.cell) |cell| {
         for (0..8) |i| {
@@ -626,7 +629,7 @@ pub fn fitCamera(app: *App) void {
         radius = @max(radius, cv.math.length(b.max - b.min) * 0.5);
     };
     app.scene_radius = radius;
-    app.camera.fit(center, radius);
+    return .{ .center = center, .radius = radius };
 }
 
 fn rebuildScene(app: *App) !void {
@@ -698,7 +701,7 @@ fn followRotationLock(app: *App) void {
     if (!app.lock_rotation) return;
     const d = app.doc orelse return;
     const f = d.display.real.frame orelse return;
-    const now: LockFollowed = .{ .changes = d.display.real.changes, .blend = app.blendTime() };
+    const now: LockFollowed = .{ .changes = d.display.real.changes, .blend = app.blendTime(), .overlay = app.inOverlay() };
     if (app.rotation_lock != null and std.meta.eql(app.lock_followed, now)) return;
     const pos = app.drawnPositions() orelse return;
     const numbering = app.numberingOf(d.display.real.index, f);
@@ -1084,13 +1087,18 @@ fn drawnGraph(app: *App) !cv.geometry.Graph {
     return cv.geometry.Graph.init(app.gpa, f.len(), drawn.items, 0);
 }
 
+fn inOverlay(app: *const App) bool {
+    const df = app.diff orelse return false;
+    return df.overlay and df.result != null;
+}
+
 /// Where the drawn atoms are: between steps during a blend, or aligned onto the
 /// reference in a diff overlay. Everything the user sees or points at uses it;
 /// edits, saving and copying use `display.real`. Valid until something changes.
 pub fn drawnPositions(app: *App) ?[]const Vec3 {
     const d = &(app.doc orelse return null);
     if (d.display.real.frame == null) return null;
-    if (app.diff) |df| if (df.overlay and df.result != null) return df.aligned.items;
+    if (app.inOverlay()) return app.diff.?.aligned.items;
     const t = app.blendTime();
     return d.display.positions(app.gpa, t, .{
         .prev = if (d.display.prev) |s| app.numberedAsShown(s) else false,
@@ -1531,10 +1539,17 @@ fn showPicks(app: *App, comptime what: []const u8) void {
 fn jumpToChange(app: *App, index: usize, kept: ?cv.picks.Kept, side: cv.picks.Side) void {
     const d = &app.doc.?;
     app.playing = false;
-    app.unlockRotation();
+    if (d.display.real.index == index) {
+        // In place, as it was, before it changes and unlocks.
+        app.setInterp(0);
+        app.followRotationLock();
+        app.unlockRotation();
+    }
     app.showSessionChange(index);
     if (d.current != index) app.setFrame(index) else app.setInterp(0);
     app.pullFrame(); // the session has its atoms
+    app.followRotationLock(); // if it is another frame
+    app.unlockRotation();
     if (d.display.real.frame == null or d.display.real.index != index) return;
     if (kept) |k| app.picks.restore(app.gpa, k, side);
 }
@@ -1566,6 +1581,8 @@ pub fn revertFrame(app: *App) void {
     if (!app.session.isEdited(d.display.real.index)) return;
     app.playing = false;
     app.revertShown() catch |e| return app.setStatus("Revert failed: {t}", .{e});
+    app.setInterp(0);
+    app.followRotationLock();
     app.unlockRotation();
     app.showSessionChange(d.display.real.index);
     // The frame asked for may be another one that can't be read.
@@ -2052,6 +2069,11 @@ const TestApp = struct {
         t.app.interpolate = true;
         t.app.playing = true;
         t.app.interp_t = at;
+        try t.waitForNext();
+    }
+
+    /// Waits until the shown step can be blended with the next one.
+    fn waitForNext(t: *TestApp) !void {
         for (0..2000) |_| {
             t.app.updateNextFrame();
             if (t.app.nextReady()) return;
@@ -3376,11 +3398,7 @@ test "while locked, a blend stays still on screen" {
     const first = onScreen(&t);
     t.app.interpolate = true;
     t.app.playing = true;
-    for (0..2000) |_| {
-        t.app.updateNextFrame();
-        if (t.app.nextReady()) break;
-        try TestApp.io.sleep(.fromMilliseconds(1), .awake);
-    }
+    try t.waitForNext();
     for ([_]f32{ 0.3, 0.8, 0.5 }) |at| {
         t.app.interp_t = at;
         t.app.followRotationLock();
@@ -3424,8 +3442,10 @@ test "each geometry edit unlocks, without moving view or background" {
         }
         try expect(!t.app.lock_rotation);
         t.app.followRotationLock();
-        // Pasting may zoom out to show the fragment.
+        // Pasting may zoom out to show the fragment, but doesn't turn.
         if (kind != .paste) try std.testing.expectEqualDeep(view, t.app.camera);
+        try std.testing.expectEqualDeep(view.rotation, t.app.camera.rotation);
+        try std.testing.expectEqualDeep(view.bg_rotation, t.app.camera.bg_rotation);
         if (kind != .undo) t.app.undo() else t.app.redo();
         try expect(!t.app.lock_rotation);
         const after = t.app.camera;
@@ -3433,6 +3453,90 @@ test "each geometry edit unlocks, without moving view or background" {
         t.app.followRotationLock();
         try std.testing.expectEqualDeep(after, t.app.camera);
     }
+}
+
+test "undo, redo and revert during a blend or of another frame follow it before unlocking" {
+    const Kind = enum { undo, redo, revert, undo_elsewhere };
+    for (std.enums.values(Kind)) |kind| {
+        errdefer std.debug.print("{t}\n", .{kind});
+        var t = try lockedTest(3);
+        defer t.deinit();
+        const edited: usize = if (kind == .undo_elsewhere) 2 else 1;
+        try t.show(edited);
+        t.setDistance(3.5); // moves atom 1 only
+        if (kind == .redo) t.app.undo();
+        try t.show(0);
+        t.app.setLockRotation(true);
+        const first = onScreen(&t);
+        try t.show(1);
+        t.app.followRotationLock();
+        t.app.interpolate = true;
+        t.app.playing = true;
+        t.app.interp_t = 0.4;
+        try t.waitForNext();
+        t.app.followRotationLock();
+        switch (kind) {
+            .undo, .undo_elsewhere => t.app.undo(),
+            .redo => t.app.redo(),
+            .revert => t.app.revertFrame(),
+        }
+        try expect(!t.app.lock_rotation);
+        try expectEqual(edited, t.app.doc.?.display.real.index);
+        // Atom 1 pulls the fit a little.
+        const now = onScreen(&t);
+        for ([_]usize{ 0, 2, 3, 4 }) |i| try expect(cv.math.length(first[i] - now[i]) < 0.3);
+        try expect(cv.math.length(first[5] - now[5]) < 2e-3);
+    }
+}
+
+test "pasting out of sight re-frames without turning the background" {
+    var t = try lockedTest(3);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    try t.show(2);
+    t.app.followRotationLock();
+    const before = t.app.camera;
+    var frag = try t.app.doc.?.display.real.frame.?.subset(TestApp.gpa, &.{0});
+    defer frag.deinit(TestApp.gpa);
+    frag.positions[0] = .{ 500, 500, 0 };
+    try t.app.appendFragment(frag);
+    try expect(t.app.camera.distance > before.distance);
+    try std.testing.expectEqualDeep(before.bg_rotation, t.app.camera.bg_rotation);
+    try std.testing.expectEqualDeep(before.bg_offset, t.app.camera.bg_offset);
+}
+
+test "the lock is off for a file that is opened" {
+    var t = try lockedTest(2);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    try t.open(2);
+    try expect(!t.app.lock_rotation);
+}
+
+test "while locked, switching a diff overlay is followed" {
+    var t = try lockedTest(3);
+    defer t.deinit();
+    t.app.setReference();
+    try t.show(2);
+    t.app.diff.?.overlay = false;
+    t.app.setLockRotation(true);
+    const first = onScreen(&t);
+    t.app.diff.?.overlay = true;
+    t.app.followRotationLock();
+    try expectOnScreen(&t, first);
+}
+
+test "a long way round brings back the same view" {
+    var t = try lockedTest(8);
+    defer t.deinit();
+    t.app.setLockRotation(true);
+    const first = onScreen(&t);
+    for (0..1000) |_| for (0..8) |i| {
+        t.app.moveTo(i);
+        try t.settle();
+        t.app.followRotationLock();
+    };
+    for (first, onScreen(&t)) |a, b| try expect(cv.math.length(a - b) < 0.02);
 }
 
 test "an edit that changes nothing, a click and a selection step keep the lock" {
@@ -3456,11 +3560,7 @@ test "an edit that lands on the next step follows it there before unlocking" {
     t.app.interpolate = true;
     t.app.playing = true;
     t.app.interp_t = 0.7;
-    for (0..2000) |_| {
-        t.app.updateNextFrame();
-        if (t.app.nextReady()) break;
-        try TestApp.io.sleep(.fromMilliseconds(1), .awake);
-    }
+    try t.waitForNext();
     t.app.followRotationLock();
     t.setDistance(3.5); // moves atom 1
     try expectEqual(1, t.app.doc.?.display.real.index);
