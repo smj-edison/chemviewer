@@ -13,6 +13,25 @@
   </mime-type>
   <mime-type type="application/x-ase-trajectory">
     <comment>ASE trajectory</comment>
+    <magic priority="60">
+      <match type="string" offset="0" value="- of UlmASE-Trajectory"/>
+    </magic>
     <glob pattern="*.traj"/>
+  </mime-type>
+  <!-- Recognised by content only. Globs for these would catch every .log and
+       .out; as the system has a *.log glob, .log files stay text/x-log. -->
+  <mime-type type="chemical/x-gaussian-log">
+    <comment>Gaussian output</comment>
+    <sub-class-of type="text/plain"/>
+    <magic priority="60">
+      <match type="string" offset="0:256" value="Entering Gaussian System"/>
+    </magic>
+  </mime-type>
+  <mime-type type="chemical/x-orca-output">
+    <comment>ORCA output</comment>
+    <sub-class-of type="text/plain"/>
+    <magic priority="60">
+      <match type="string" offset="0:1024" value="* O   R   C   A *"/>
+    </magic>
   </mime-type>
 </mime-info>

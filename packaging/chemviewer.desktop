@@ -8,5 +8,5 @@ Icon=chemviewer
 Terminal=false
 Categories=Science;Chemistry;
 Keywords=molecule;trajectory;xyz;gaussian;orca;ase;
-MimeType=chemical/x-xyz;chemical/x-gaussian-input;application/x-ase-trajectory;
+MimeType=chemical/x-xyz;chemical/x-gaussian-input;application/x-ase-trajectory;chemical/x-gaussian-log;chemical/x-orca-output;
 StartupWMClass=chemviewer
