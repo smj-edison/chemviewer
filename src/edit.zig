@@ -14,6 +14,8 @@ pub const EditSession = struct {
     frames: std.AutoHashMapUnmanaged(usize, Held) = .empty,
     /// Oldest first.
     steps: std.ArrayList(Step) = .empty,
+    /// Steps that can be redone; the next one is last.
+    undone: std.ArrayList(Step) = .empty,
     /// Origin of the next pasted atom; above any atom number in a file.
     next_pasted: u32 = first_pasted,
 
@@ -39,11 +41,12 @@ pub const EditSession = struct {
 
     const Step = struct {
         index: usize,
-        /// The atoms before it (null = the file frame).
-        before: ?Edited,
+        /// The atoms on its other side (null = the file frame): from before
+        /// it, or, once it is undone, from after it.
+        other: ?Edited,
 
         fn deinit(s: *Step, gpa: Allocator) void {
-            if (s.before) |*e| e.deinit(gpa);
+            if (s.other) |*e| e.deinit(gpa);
         }
     };
 
@@ -55,6 +58,7 @@ pub const EditSession = struct {
         s.clear();
         s.frames.deinit(s.gpa);
         s.steps.deinit(s.gpa);
+        s.undone.deinit(s.gpa);
         s.* = undefined;
     }
 
@@ -67,8 +71,10 @@ pub const EditSession = struct {
         }
         s.next_pasted = first_pasted;
         s.frames.clearRetainingCapacity();
-        for (s.steps.items) |*step| step.deinit(s.gpa);
-        s.steps.clearRetainingCapacity();
+        for ([_]*std.ArrayList(Step){ &s.steps, &s.undone }) |list| {
+            for (list.items) |*step| step.deinit(s.gpa);
+            list.clearRetainingCapacity();
+        }
     }
 
     pub fn isEdited(s: *const EditSession, index: usize) bool {
@@ -78,6 +84,10 @@ pub const EditSession = struct {
 
     pub fn canUndo(s: *const EditSession) bool {
         return s.steps.items.len > 0;
+    }
+
+    pub fn canRedo(s: *const EditSession) bool {
+        return s.undone.items.len > 0;
     }
 
     /// The current atoms of frame `index`, or null if it was never edited and
@@ -115,10 +125,19 @@ pub const EditSession = struct {
     /// Undo the last geometry step, on whichever frame it was. Returns that
     /// frame's index; its atoms are `current`.
     pub fn undo(s: *EditSession) ?usize {
-        const step = s.steps.pop() orelse return null;
-        const h = s.frames.getPtr(step.index).?;
-        if (h.edited) |*e| e.deinit(s.gpa);
-        h.edited = step.before;
+        return s.cross(&s.steps, &s.undone);
+    }
+
+    /// Redo the last step that was undone; otherwise as `undo`.
+    pub fn redo(s: *EditSession) ?usize {
+        return s.cross(&s.undone, &s.steps);
+    }
+
+    /// Swaps the last step of `from` with its frame's atoms, and moves it to `to`.
+    fn cross(s: *EditSession, from: *std.ArrayList(Step), to: *std.ArrayList(Step)) ?usize {
+        var step = from.pop() orelse return null;
+        std.mem.swap(?Edited, &step.other, &s.frames.getPtr(step.index).?.edited);
+        to.appendAssumeCapacity(step); // `reserve`
         return step.index;
     }
 
@@ -127,14 +146,22 @@ pub const EditSession = struct {
     pub fn revert(s: *EditSession, index: usize) !bool {
         const h = s.frames.getPtr(index) orelse return false;
         if (h.edited == null) return false;
-        try s.steps.ensureUnusedCapacity(s.gpa, 1);
-        s.push(.{ .index = index, .before = h.edited });
+        try s.reserve();
+        s.push(.{ .index = index, .other = h.edited });
         h.edited = null;
         return true;
     }
 
-    /// Room for the step must have been reserved.
+    /// Room for the whole history, so that `push`, `undo` and `redo` can't fail.
+    fn reserve(s: *EditSession) !void {
+        try s.steps.ensureTotalCapacity(s.gpa, max_steps);
+        try s.undone.ensureTotalCapacity(s.gpa, max_steps);
+    }
+
+    /// A new step; what was undone can't be redone any more.
     fn push(s: *EditSession, step: Step) void {
+        for (s.undone.items) |*u| u.deinit(s.gpa);
+        s.undone.clearRetainingCapacity();
         if (s.steps.items.len >= max_steps) {
             var old = s.steps.orderedRemove(0);
             old.deinit(s.gpa);
@@ -228,14 +255,14 @@ pub const Transaction = struct {
     pub fn commit(t: *Transaction) !bool {
         if (!t.isChanged()) return false;
         const s = t.session;
-        try s.steps.ensureUnusedCapacity(s.gpa, 1);
+        try s.reserve();
         const gop = try s.frames.getOrPut(s.gpa, t.index);
         if (!gop.found_existing) {
             gop.value_ptr.* = .{ .file = t.file.? };
         } else if (t.file) |*f| f.deinit(s.gpa);
         // The file's energy doesn't describe the new geometry.
         t.atoms.energy = null;
-        s.push(.{ .index = t.index, .before = gop.value_ptr.edited });
+        s.push(.{ .index = t.index, .other = gop.value_ptr.edited });
         gop.value_ptr.edited = .{ .frame = t.atoms, .origins = t.origins };
         t.committed = true;
         return true;
@@ -401,6 +428,91 @@ test "revert is one geometry step and leaves other frames alone" {
     try testing.expectEqual(0, t.undo());
     try t.expectFileFrame(0);
     try testing.expectEqual(null, t.undo());
+}
+
+test "redo puts back what was undone, across frames, until there is no more" {
+    var t: TestSession = try .init();
+    defer t.deinit();
+    try testing.expect(!t.s.canRedo());
+    try t.moveTo(4, 1);
+    try t.moveTo(9, 2);
+    try t.moveTo(4, 3);
+    try t.revert(4);
+    while (t.undo()) |_| {}
+    for ([_]usize{ 4, 9, 4, 4 }) |index| {
+        try testing.expect(t.s.canRedo());
+        try testing.expectEqual(index, t.s.redo());
+    }
+    try testing.expect(!t.s.canRedo());
+    try testing.expectEqual(null, t.s.redo());
+    try t.expectFileFrame(4); // reverted
+    try t.expectEdited(9, 2);
+    // And all of it can be undone again.
+    try testing.expectEqual(4, t.undo());
+    try t.expectEdited(4, 3);
+    try testing.expectEqual(4, t.undo());
+    try t.expectEdited(4, 1);
+    try testing.expectEqual(9, t.undo());
+    try testing.expectEqual(4, t.undo());
+    try t.expectFileFrame(4);
+    try t.expectFileFrame(9);
+}
+
+test "a new step clears what could be redone; a dropped or empty edit doesn't" {
+    for ([_]bool{ false, true }) |by_revert| {
+        var t: TestSession = try .init();
+        defer t.deinit();
+        try t.moveTo(0, 1);
+        try t.moveTo(1, 2);
+        _ = t.undo();
+        {
+            var tx = try t.s.begin(1, t.file);
+            defer tx.deinit();
+            try testing.expect(!try tx.commit());
+        }
+        {
+            var tx = try t.s.begin(1, t.file);
+            defer tx.deinit();
+            tx.atoms.positions[0][0] = 9;
+        }
+        try testing.expect(!try t.s.revert(1)); // not edited
+        try testing.expect(t.s.canRedo());
+        if (by_revert) try t.revert(0) else try t.moveTo(0, 5);
+        try testing.expect(!t.s.canRedo());
+        try testing.expectEqual(null, t.s.redo());
+        try t.expectFileFrame(1);
+    }
+}
+
+test "a full history can be undone and redone completely" {
+    var t: TestSession = try .init();
+    defer t.deinit();
+    for (0..max_steps + 1) |i| try t.moveTo(0, @floatFromInt(i + 1));
+    var undone: usize = 0;
+    while (t.undo()) |_| undone += 1;
+    try testing.expectEqual(max_steps, undone);
+    while (t.s.redo()) |_| undone -= 1;
+    try testing.expectEqual(0, undone);
+    try t.expectEdited(0, max_steps + 1);
+}
+
+test "redo restores the numbering" {
+    var t: TestSession = try .init();
+    defer t.deinit();
+    try t.renumber(&.{ false, false });
+    _ = t.undo();
+    try t.expectOrigins(null);
+    try testing.expectEqual(0, t.s.redo());
+    try t.expectOrigins(&.{ 0, EditSession.first_pasted });
+}
+
+test "clear forgets what could be redone" {
+    var t: TestSession = try .init();
+    defer t.deinit();
+    try t.moveTo(0, 1);
+    _ = t.undo();
+    t.s.clear();
+    try testing.expectEqual(null, t.s.redo());
 }
 
 test "origins tell which atoms are the file's and which were pasted" {

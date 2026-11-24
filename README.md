@@ -157,6 +157,7 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | N | show / hide atom numbers |
 | Delete / Backspace | delete the selected atoms |
 | Ctrl+Z | undo geometry edit (including deletes, pastes and reverts) |
+| Ctrl+Shift+Z / Ctrl+Y | redo what was undone |
 | Ctrl+S | save current frame (with edits) as XYZ |
 | Ctrl+O | open file (or drop a file on the window) |
 

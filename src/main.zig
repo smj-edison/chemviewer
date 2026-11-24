@@ -378,12 +378,14 @@ fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
             c.SDLK_A => if (!widget_active) return app.expandSelection(),
             c.SDLK_O => return app.openDialog(),
             c.SDLK_S => return app.saveDialog(),
-            c.SDLK_Z => return app.undo(),
             c.SDLK_Q => {
                 app.quit_requested = true;
                 return;
             },
-            else => {},
+            else => |key| if (App.historyKey(key, ev.key.mod)) |h| switch (h) {
+                .undo => return app.undo(),
+                .redo => return app.redo(),
+            },
         }
     }
     app.handleEvent(ev, c.cvImGuiWantCaptureMouse(), typing);

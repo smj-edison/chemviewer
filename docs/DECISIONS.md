@@ -340,7 +340,8 @@ The modules don't depend on SDL, ImGui or Vulkan. Order: stream, edit session,
 displayed geometry.
 
 ### D25 — Selection is part of the undo history (provisional)
-*Decided 2026-11-24, not implemented yet; to be revisited after trying it.* As
+*Decided 2026-11-24; only redo of geometry steps is implemented so far; to be
+revisited after trying it.* As
 in Blender, selecting can take real effort, so selection and cut changes are
 undo steps, one per gesture, with redo (Ctrl+Shift+Z, Ctrl+Y). Geometry steps
 jump to their frame. Selection steps apply where the user is, and steps that no

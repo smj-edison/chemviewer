@@ -1472,7 +1472,7 @@ fn followPicks(app: *App) void {
     app.picks.follow(app.gpa, d.shown_index, app.numberingOf(d.shown_index, d.shown.?));
 }
 
-/// Show a change made to frame `index` by undo or revert.
+/// Show a change made to frame `index` by undo, redo or revert.
 fn showSessionChange(app: *App, index: usize) void {
     const d = &app.doc.?;
     if (app.takeFrame(index)) |f| {
@@ -1511,13 +1511,36 @@ fn deleteSelectionInner(app: *App) !void {
 }
 
 pub fn undo(app: *App) void {
-    const d = &(app.doc orelse return);
     app.endDrag(false);
     const index = app.session.undo() orelse return;
+    app.jumpToChange(index);
+    app.setStatus("Undid the last change to frame {d}", .{index + 1});
+}
+
+pub fn redo(app: *App) void {
+    app.endDrag(false);
+    const index = app.session.redo() orelse return;
+    app.jumpToChange(index);
+    app.setStatus("Redid the change to frame {d}", .{index + 1});
+}
+
+/// Show what undo or redo did to frame `index`, going there.
+fn jumpToChange(app: *App, index: usize) void {
+    const d = &app.doc.?;
     app.playing = false;
     app.showSessionChange(index);
     if (d.current != index) app.setFrame(index) else app.setInterp(0);
-    app.setStatus("Undid the last change to frame {d}", .{index + 1});
+}
+
+pub const HistoryKey = enum { undo, redo };
+
+/// Which of undo and redo a key pressed with Ctrl means.
+pub fn historyKey(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?HistoryKey {
+    return switch (key) {
+        c.SDLK_Z => if ((mod & c.SDL_KMOD_SHIFT) != 0) .redo else .undo,
+        c.SDLK_Y => .redo,
+        else => null,
+    };
 }
 
 /// Make the shown frame its file frame again (one geometry step).
@@ -1611,6 +1634,7 @@ fn menuBar(app: *App) void {
     }
     if (c.igBeginMenu("Edit", true)) {
         if (c.igMenuItem_Bool("Undo geometry edit", "Ctrl+Z", false, app.session.canUndo())) app.undo();
+        if (c.igMenuItem_Bool("Redo geometry edit", "Ctrl+Shift+Z", false, app.session.canRedo())) app.redo();
         const edited = if (app.doc) |d| app.session.isEdited(d.shown_index) else false;
         if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.picks.selection.items.len > 0)) app.deleteSelection();
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
@@ -1752,7 +1776,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
 
-    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. Right drag on the timeline: scrub one frame per pixel. F: fit. Double-click a bond: cut / restore it.", .{});
+    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. Right drag on the timeline: scrub one frame per pixel. F: fit. Double-click a bond: cut / restore it. Ctrl+Z: undo. Ctrl+Shift+Z or Ctrl+Y: redo.", .{});
 }
 
 /// Element key: a colour swatch and count per element present, in Hill
@@ -2253,6 +2277,99 @@ test "undoing a paste drops cuts and selection on the pasted atoms only" {
     t.app.undo();
     try t.expectCuts(&.{.{ 0, 1 }});
     try t.expectSelected(&.{1});
+}
+
+test "redo restores each kind of edit exactly, and the edited state" {
+    const Kind = enum { set, drag, paste, delete, revert };
+    for ([_]Kind{ .set, .drag, .paste, .delete, .revert }) |kind| {
+        errdefer std.debug.print("{t}\n", .{kind});
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.show(0);
+        if (kind == .revert) t.setDistance(1.9);
+        switch (kind) {
+            .set => t.setDistance(1.5),
+            .drag => {
+                try t.dragSome();
+                t.app.endDrag(true);
+            },
+            .paste => try t.pasteAtom(),
+            .delete => try t.deleteAtom(1),
+            .revert => t.app.revertFrame(),
+        }
+        const d = &t.app.doc.?;
+        var after = try d.shown.?.clone(TestApp.gpa);
+        defer after.deinit(TestApp.gpa);
+        for (0..2) |_| {
+            t.app.undo();
+            try t.expectCopyEdited(kind == .revert);
+            t.app.redo();
+            try t.expectCopyEdited(kind != .revert);
+            try std.testing.expectEqualSlices(Vec3, after.positions, d.shown.?.positions);
+            try std.testing.expectEqualSlices(u8, after.numbers, d.shown.?.numbers);
+            try expectEqual(after.energy, d.shown.?.energy);
+        }
+    }
+}
+
+test "redo jumps to the frame it changed and translates cuts and selection" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(1);
+    try t.deleteAtom(0);
+    t.app.undo();
+    t.app.toggleCutPair(1, 2);
+    t.select(&.{ 0, 2 });
+    t.app.redo();
+    try t.expectCuts(&.{.{ 0, 1 }});
+    try t.expectSelected(&.{1});
+
+    t.app.undo();
+    try t.show(0);
+    t.app.redo();
+    try t.settle();
+    try expectEqual(1, t.app.doc.?.shown_index);
+    try expectEqual(2, t.app.doc.?.shown.?.len());
+}
+
+test "redo aborts a drag and pauses playback" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    try t.dragSome();
+    t.app.redo(); // nothing to redo
+    try t.expectAborted();
+    t.setDistance(1.5);
+    t.app.undo();
+    try t.dragSome();
+    t.app.playing = true;
+    t.app.interp_t = 0.2;
+    t.app.redo();
+    try expect(t.app.drag == null);
+    try expect(!t.app.playing);
+    try expectEqual(0, t.app.interp_t);
+    try std.testing.expectApproxEqAbs(1.5, t.distance(), 1e-5);
+}
+
+test "a cancelled drag keeps what can be redone, a completed one doesn't" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.show(0);
+    t.setDistance(1.5);
+    t.app.undo();
+    try t.dragSome();
+    t.app.endDrag(false);
+    try expect(t.app.session.canRedo());
+    try t.dragSome();
+    t.app.endDrag(true);
+    try expect(!t.app.session.canRedo());
+}
+
+test "undo and redo keys" {
+    try expectEqual(.undo, historyKey(c.SDLK_Z, c.SDL_KMOD_LCTRL));
+    try expectEqual(.redo, historyKey(c.SDLK_Z, c.SDL_KMOD_LCTRL | c.SDL_KMOD_RSHIFT));
+    try expectEqual(.redo, historyKey(c.SDLK_Y, c.SDL_KMOD_RCTRL));
+    try expectEqual(null, historyKey(c.SDLK_X, c.SDL_KMOD_LCTRL));
 }
 
 test "asking for another frame aborts a drag" {
