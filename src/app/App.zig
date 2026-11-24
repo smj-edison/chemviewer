@@ -37,20 +37,6 @@ pub const Document = struct {
     }
 };
 
-pub const Diff = struct {
-    /// The reference, as it was when it was set.
-    reference: cv.display.BondedAtoms,
-    /// The displayed geometry (`changes`) the rest is about.
-    followed: ?u64 = null,
-    /// Current frame superposed onto the reference (null if incompatible).
-    result: ?cv.align_.Result = null,
-    aligned: std.ArrayList(Vec3) = .empty,
-    deviations: std.ArrayList(f32) = .empty,
-    max_dev_atom: usize = 0,
-    incompatible: bool = false,
-    overlay: bool = true,
-};
-
 io: Io,
 gpa: Allocator,
 window: *c.SDL_Window,
@@ -59,7 +45,7 @@ camera: Camera = .{},
 style: Renderer.Style = .{},
 bond_params: cv.bonds.Params = .{},
 doc: ?Document = null,
-diff: ?Diff = null,
+diff: ?cv.diff.Diff = null,
 
 playing: bool = false,
 fps: f32 = 15,
@@ -120,8 +106,8 @@ drag: ?drag_mod.Drag = null,
 drag_edit: ?cv.edit.Transaction = null,
 drag_button: u8 = 0,
 
-/// What was drawn: the displayed geometry, how far blended, and as in a diff overlay or not.
-const LockFollowed = struct { changes: u64, blend: f32, overlay: bool };
+/// What was drawn: the displayed geometry, how far blended.
+const LockFollowed = struct { changes: u64, blend: f32 };
 const pairKey = cv.picks.pairKey;
 
 pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window, gpu: *Gpu) !App {
@@ -483,8 +469,8 @@ pub fn update(app: *App) void {
         app.scene_dirty = true;
     }
     if (app.scene_dirty) {
-        app.scene_dirty = false;
         app.followRotationLock();
+        app.scene_dirty = false;
         app.rebuildScene() catch |e| app.setStatus("Scene build failed: {t}", .{e});
     }
 }
@@ -638,9 +624,8 @@ fn rebuildScene(app: *App) !void {
     const d = app.doc orelse return r.upload();
     const f = d.display.real.frame orelse return r.upload();
     if (app.diff) |*df| if (df.overlay and df.result != null) {
-        const ref = df.reference.frame.?;
-        _ = try r.addStructure(ref.positions, ref.numbers, app.bondsOf(&df.reference), app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
-        const start = try r.addStructure(df.aligned.items, f.numbers, app.bonds(), app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.picks.cuts);
+        _ = try r.addStructure(df.placed.items, df.numbering().numbers, app.bondsOf(&df.reference), app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
+        const start = try r.addStructure(app.drawnPositions().?, f.numbers, app.bonds(), app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.picks.cuts);
         r.highlight(start, app.selected());
         return r.upload();
     };
@@ -655,21 +640,32 @@ fn rebuildScene(app: *App) !void {
 pub fn setReference(app: *App) void {
     const d = app.doc orelse return;
     const f = d.display.real.frame orelse return;
+    const index = d.display.real.index;
     app.clearDiff();
-    const ref = f.clone(app.gpa) catch return;
-    app.diff = .{ .reference = .{} };
-    app.diff.?.reference.show(app.gpa, d.display.real.index, ref);
+    app.diff = cv.diff.Diff.init(app.gpa, index, f, app.session.origins(index), app.lock_rotation) catch |e|
+        return app.setStatus("Can't set the reference: {t}", .{e});
     app.show_diff = true;
+    app.setLockRotation(true);
     app.updateDiff();
     app.scene_dirty = true;
 }
 
 pub fn clearDiff(app: *App) void {
     var df = app.diff orelse return;
-    df.reference.deinit(app.gpa);
-    df.aligned.deinit(app.gpa);
-    df.deviations.deinit(app.gpa);
     app.diff = null;
+    // Without the diff, the lock starts again at the current frame.
+    app.dropRotationLock();
+    app.lock_rotation = df.was_locked;
+    df.deinit(app.gpa);
+    app.scene_dirty = true;
+}
+
+/// Show the reference and the current frame at their file positions.
+pub fn resetPlacement(app: *App) void {
+    const df = &(app.diff orelse return);
+    app.unlockRotation();
+    df.place(.identity);
+    app.updateDiff();
     app.scene_dirty = true;
 }
 
@@ -696,18 +692,34 @@ fn unlockRotation(app: *App) void {
 /// Starts the lock at what is drawn, or, if that changed, turns the camera by
 /// its motion. Blends are followed too, so the view turns evenly between steps
 /// instead of correcting at each one. Atoms that don't match the anchor's
-/// restart the lock there.
+/// restart the lock there. While diffing the anchor is the reference: its
+/// placement moves with the camera, so on screen it stays still, and other
+/// atoms leave both as they are.
 fn followRotationLock(app: *App) void {
     if (!app.lock_rotation) return;
     const d = app.doc orelse return;
     const f = d.display.real.frame orelse return;
-    const now: LockFollowed = .{ .changes = d.display.real.changes, .blend = app.blendTime(), .overlay = app.inOverlay() };
+    const now: LockFollowed = .{ .changes = d.display.real.changes, .blend = app.blendTime() };
     if (app.rotation_lock != null and std.meta.eql(app.lock_followed, now)) return;
     const pos = app.drawnPositions() orelse return;
     const numbering = app.numberingOf(d.display.real.index, f);
+    if (app.diff) |*df| if (app.rotation_lock == null) {
+        // On from where the reference is now.
+        app.rotation_lock = cv.lock.RotationLock.init(app.gpa, df.reference.frame.?.positions, df.numbering()) catch return;
+        app.rotation_lock.?.current = df.placement.inverse();
+    };
     if (app.rotation_lock) |*l| {
         if (l.follow(pos, numbering)) |m| {
             app.camera.followRigid(m.rot, m.from, m.to);
+            app.lock_followed = now;
+            if (app.diff) |*df| {
+                df.place(l.current.inverse());
+                app.updateDiff();
+                app.scene_dirty = true;
+            }
+            return;
+        }
+        if (app.diff != null) {
             app.lock_followed = now;
             return;
         }
@@ -721,26 +733,7 @@ fn updateDiff(app: *App) void {
     const df = &(app.diff orelse return);
     const d = app.doc orelse return;
     const f = d.display.real.frame orelse return;
-    if (df.followed == d.display.real.changes) return;
-    df.followed = null; // try again if it runs out of memory
-    const ref = df.reference.frame.?;
-    df.result = null;
-    df.incompatible = f.len() != ref.len() or !std.mem.eql(u8, f.numbers, ref.numbers);
-    if (df.incompatible) {
-        df.followed = d.display.real.changes;
-        return;
-    }
-    const res = cv.align_.superpose(ref.positions, f.positions, null);
-    df.aligned.resize(app.gpa, f.len()) catch return;
-    df.deviations.resize(app.gpa, f.len()) catch return;
-    df.max_dev_atom = 0;
-    for (f.positions, df.aligned.items, df.deviations.items, ref.positions, 0..) |p, *a, *dev, rp, i| {
-        a.* = res.transform.apply(p);
-        dev.* = cv.math.length(a.* - rp);
-        if (dev.* > df.deviations.items[df.max_dev_atom]) df.max_dev_atom = i;
-    }
-    df.result = res;
-    df.followed = d.display.real.changes;
+    df.update(app.gpa, f.positions, app.numberingOf(d.display.real.index, f), d.display.real.changes);
 }
 
 // ------------------------------------------------------------ input
@@ -1087,18 +1080,11 @@ fn drawnGraph(app: *App) !cv.geometry.Graph {
     return cv.geometry.Graph.init(app.gpa, f.len(), drawn.items, 0);
 }
 
-fn inOverlay(app: *const App) bool {
-    const df = app.diff orelse return false;
-    return df.overlay and df.result != null;
-}
-
-/// Where the drawn atoms are: between steps during a blend, or aligned onto the
-/// reference in a diff overlay. Everything the user sees or points at uses it;
+/// Where the drawn atoms are: between steps during a blend. Everything the user sees or points at uses it;
 /// edits, saving and copying use `display.real`. Valid until something changes.
 pub fn drawnPositions(app: *App) ?[]const Vec3 {
     const d = &(app.doc orelse return null);
     if (d.display.real.frame == null) return null;
-    if (app.inOverlay()) return app.diff.?.aligned.items;
     const t = app.blendTime();
     return d.display.positions(app.gpa, t, .{
         .prev = if (d.display.prev) |s| app.numberedAsShown(s) else false,
@@ -1234,7 +1220,6 @@ fn beginDrag(app: *App, kind: drag_mod.Kind, x: f32, y: f32) void {
 }
 
 fn beginDragInner(app: *App, kind: drag_mod.Kind, x: f32, y: f32) !void {
-    if (app.diff) |df| if (df.overlay and df.result != null) return error.TurnOffDiffOverlayFirst;
     const h = app.hitAt(x, y) orelse return;
     const handle = switch (h.target) {
         .atom => |a| a,
@@ -1877,10 +1862,10 @@ fn diffPanel(app: *App) void {
     defer c.igEnd();
     if (!c.igBegin("Diff", &app.show_diff, 0)) return;
 
-    const d = app.doc orelse {
+    if (app.doc == null) {
         ui.textDisabled("Open a file first.", .{});
         return;
-    };
+    }
     ui.textWrapped("Superimpose the current frame onto a reference frame (same atoms, same order).", .{});
     if (c.igButton("Use current frame as reference", ui.v2(-1, 0))) app.setReference();
     const df = &(app.diff orelse return);
@@ -1892,16 +1877,17 @@ fn diffPanel(app: *App) void {
     }
     if (c.igSmallButton("Jump to reference")) app.setFrame(df.reference.index);
     if (c.igCheckbox("Overlay (reference red, current green)", &df.overlay)) app.scene_dirty = true;
-    if (df.incompatible) {
+    if (c.igSmallButton("Reset")) app.resetPlacement();
+    ui.tooltip("Show both frames at their file positions, and switch Lock rotation off. Lock rotation lines them up again.");
+    const res = df.result orelse {
         ui.textWrapped("Current frame has different atoms than the reference. Matching without a known correspondence is planned (Phase 3).", .{});
         return;
-    }
-    const res = df.result orelse return;
+    };
     c.igSeparator();
     ui.text("RMSD  {d:.4} Å", .{res.rmsd});
     if (df.deviations.items.len > 0) {
-        const i = df.max_dev_atom;
-        const z = d.display.real.frame.?.numbers[i];
+        const i = res.worst;
+        const z = df.numbering().numbers[i];
         ui.text("Max   {d:.4} Å  ({s}{d})", .{ df.deviations.items[i], cv.elements.symbol(z), i + 1 });
     }
 }
@@ -2416,23 +2402,6 @@ test "a drag that never moved, redraws and cuts don't search for bonds again" {
     defer t.app.gpa = TestApp.gpa;
     for (0..2) |_| try expectEqual(1, t.app.bonds().len);
     for (0..2) |_| try expectEqual(1, (try ref.bonds(t.app.gpa, t.app.bond_params)).len);
-}
-
-test "a diff that ran out of memory is tried again" {
-    var t: TestApp = try .init(1);
-    defer t.deinit();
-    try t.openRow(1);
-    t.app.setReference();
-    const df = &t.app.diff.?;
-    df.followed = null;
-    df.aligned.clearAndFree(TestApp.gpa);
-    var failing: std.testing.FailingAllocator = .init(TestApp.gpa, .{ .fail_index = 0 });
-    t.app.gpa = failing.allocator();
-    t.app.updateDiff();
-    t.app.gpa = TestApp.gpa;
-    try expect(df.result == null);
-    t.app.updateDiff();
-    try expect(df.result != null);
 }
 
 test "a cut changes what a typed value moves" {
@@ -3524,6 +3493,171 @@ test "while locked, switching a diff overlay is followed" {
     t.app.diff.?.overlay = true;
     t.app.followRotationLock();
     try expectOnScreen(&t, first);
+}
+
+test "in a diff overlay the current structure is drawn at its own coordinates" {
+    var t = try lockedTest(3);
+    defer t.deinit();
+    t.app.setReference();
+    try t.show(2);
+    t.app.followRotationLock();
+    for (t.app.doc.?.display.real.frame.?.positions, t.app.drawnPositions().?) |p, q| try expectEqual(p, q);
+}
+
+test "starting a diff locks, and ending it restores the lock" {
+    for ([_]bool{ false, true }) |before| {
+        var t = try lockedTest(3);
+        defer t.deinit();
+        t.app.setLockRotation(before);
+        t.app.setReference();
+        try expect(t.app.lock_rotation);
+        t.app.setReference(); // again
+        t.app.clearDiff();
+        try expectEqual(before, t.app.lock_rotation);
+    }
+}
+
+/// The reference as drawn and a point of the background, in view space.
+fn referenceOnScreen(t: *TestApp) [6]Vec3 {
+    var out = onScreen(t);
+    t.app.updateDiff();
+    for (out[0..5], t.app.diff.?.placed.items) |*o, p| o.* = t.app.camera.view().transformPoint(p);
+    return out;
+}
+
+fn expectReference(t: *TestApp, want: [6]Vec3) !void {
+    for (want, referenceOnScreen(t)) |a, b| try expect(cv.math.length(a - b) < 2e-3);
+}
+
+test "while locked, a diff's reference and background stay still on screen, and the frames line up" {
+    var t = try lockedTest(6);
+    defer t.deinit();
+    try t.show(2);
+    t.app.setReference();
+    const first = referenceOnScreen(&t);
+    for ([_]usize{ 1, 5, 0, 2, 4 }) |i| {
+        try t.show(i);
+        t.app.followRotationLock();
+        try expectReference(&t, first);
+        try expect(t.app.diff.?.result.?.rmsd < 1e-4);
+        try expectOnScreen(&t, first); // turned frames are the same shape
+    }
+    // Neither's atoms were moved to do it.
+    var file = try t.app.doc.?.source.loadFrame(TestApp.io, TestApp.gpa, 2);
+    defer file.deinit(TestApp.gpa);
+    try std.testing.expectEqualSlices(Vec3, file.positions, t.app.diff.?.reference.frame.?.positions);
+    var current = try t.app.doc.?.source.loadFrame(TestApp.io, TestApp.gpa, 4);
+    defer current.deinit(TestApp.gpa);
+    try std.testing.expectEqualSlices(Vec3, current.positions, t.app.doc.?.display.real.frame.?.positions);
+}
+
+test "an edit in a diff unlocks, with the reference in place and deviations live" {
+    var t = try lockedTest(3);
+    defer t.deinit();
+    t.app.setReference();
+    try t.show(2);
+    t.app.followRotationLock();
+    const before = referenceOnScreen(&t);
+    try t.app.startDrag(.translate, 4);
+    t.app.dragMotion(0, 0, 0.1, 0);
+    t.app.updateDiff();
+    const df = &t.app.diff.?;
+    try expectEqual(4, df.result.?.worst);
+    const halfway = df.deviations.items[4];
+    try expect(halfway > 0.01);
+    t.app.dragMotion(0, 0, 0.1, 0);
+    t.app.updateDiff();
+    try std.testing.expectApproxEqAbs(2 * halfway, df.deviations.items[4], 1e-2);
+    t.app.endDrag(true);
+    t.app.followRotationLock();
+    try expectReference(&t, before);
+    for (df.deviations.items[0..4]) |dev| try expect(dev < 1e-3);
+
+    // Unlocked, another frame keeps the placement, and nothing turns.
+    const view = t.app.camera;
+    const placement = df.placement;
+    try t.show(1);
+    t.app.followRotationLock();
+    try std.testing.expectEqualDeep(view, t.app.camera);
+    try std.testing.expectEqualDeep(placement, t.app.diff.?.placement);
+    try expect(t.app.diff.?.result.?.rmsd > 0.1);
+
+    // Locking refits, without moving the reference on screen.
+    t.app.setLockRotation(true);
+    try expect(t.app.diff.?.result.?.rmsd < 1e-4);
+    try expectReference(&t, before);
+}
+
+test "resetting a diff shows both frames at their file positions" {
+    var t = try lockedTest(3);
+    defer t.deinit();
+    t.app.setReference();
+    try t.show(2);
+    t.app.followRotationLock();
+    const view = t.app.camera;
+    t.app.resetPlacement();
+    try expect(!t.app.lock_rotation);
+    try std.testing.expectEqualDeep(view, t.app.camera);
+    const df = &t.app.diff.?;
+    try std.testing.expectEqualSlices(Vec3, df.reference.frame.?.positions, df.placed.items);
+    try expect(df.result.?.rmsd > 0.1);
+    // And lines up again.
+    const reset = referenceOnScreen(&t);
+    t.app.setLockRotation(true);
+    try expect(t.app.diff.?.result.?.rmsd < 1e-4);
+    try expectReference(&t, reset);
+}
+
+test "a frame with other atoms leaves a diff's placement and view as they are" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    var buf: [2][512]u8 = undefined;
+    const text = try std.mem.concat(TestApp.gpa, u8, &.{ turnedFrame(&buf[0], 0), "2\n\nO 0 0 0\nO 0 0 5\n", turnedFrame(&buf[1], 0.4) });
+    defer TestApp.gpa.free(text);
+    try t.openText(text);
+    try t.show(0);
+    t.app.setReference();
+    const first = referenceOnScreen(&t);
+    const view = t.app.camera;
+    try t.show(1);
+    t.app.followRotationLock();
+    try expect(t.app.diff.?.result == null);
+    try std.testing.expectEqualDeep(view, t.app.camera);
+    try t.show(2);
+    t.app.followRotationLock();
+    try expectReference(&t, first);
+}
+
+test "ending a diff that was unlocked by an edit moves nothing" {
+    for ([_]bool{ false, true }) |before| {
+        var t = try lockedTest(3);
+        defer t.deinit();
+        t.app.setLockRotation(before);
+        t.app.setReference();
+        try t.show(2);
+        t.app.followRotationLock();
+        t.setDistance(3.5);
+        const view = t.app.camera;
+        t.app.clearDiff();
+        t.app.followRotationLock();
+        try std.testing.expectEqualDeep(view, t.app.camera);
+        try expectEqual(before, t.app.lock_rotation);
+    }
+}
+
+test "Alt-drag works in a diff overlay" {
+    var t = try lockedTest(3);
+    defer t.deinit();
+    t.app.setReference();
+    try t.show(1);
+    t.app.followRotationLock();
+    const at = t.app.screenProjector().toScreen(t.app.drawnPositions().?[4]).?;
+    t.app.beginDrag(.translate, at.x, at.y);
+    try expectEqual(4, (t.app.drag orelse return error.TestUnexpectedResult).handle);
+    t.app.dragMotion(0, 0, 0.1, 0);
+    try expect(!t.app.lock_rotation);
+    t.app.endDrag(true);
+    try expect(t.app.session.isEdited(1));
 }
 
 test "a long way round brings back the same view" {

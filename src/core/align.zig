@@ -19,6 +19,15 @@ pub const Transform = struct {
         .to_center = @splat(0),
     };
 
+    /// Undoes `t`.
+    pub fn inverse(t: Transform) Transform {
+        var rot: [3][3]f64 = undefined;
+        for (0..3) |i| for (0..3) |j| {
+            rot[i][j] = t.rot[j][i];
+        };
+        return .{ .rot = rot, .from_center = t.to_center, .to_center = t.from_center };
+    }
+
     pub fn apply(t: Transform, p: Vec3) Vec3 {
         const q: Vec3d = @as(Vec3d, @floatCast(p)) - t.from_center;
         const r: Vec3d = .{
@@ -169,6 +178,7 @@ test "recovers a known rigid transform" {
     for (ref, mob) |p, m| {
         const d = math.length(r.transform.apply(m) - p);
         try std.testing.expect(d < 1e-4);
+        try std.testing.expect(math.length(r.transform.inverse().apply(p) - m) < 1e-4);
     }
 }
 

@@ -310,7 +310,7 @@ the same weights.
 
 ### D24 — One owner for each fact about a frame
 *Decided 2026-11-24. Implemented so far: the frame stream,
-the edit session, cuts and selection, and the displayed geometry (a diff overlay still aligns the current frame, until D26).* Terms are in GLOSSARY.md. Data flows
+the edit session, cuts and selection, and the displayed geometry.* Terms are in GLOSSARY.md. Data flows
 one way: the frame stream owns file frames, the edit session owns the current
 atoms of every frame, and the displayed geometry is derived from both and never
 edited.
@@ -354,7 +354,7 @@ left since. Scripted picks
 (`--select`, `--cut`) aren't steps.
 
 ### D26 — One rotation lock, for playback and diffs
-*Decided 2026-11-24; implemented so far for playback, not for diffs; extends D21.* Lining frames up is only
+*Decided and implemented 2026-11-24; extends D21.* Lining frames up is only
 ever a change of view. The checkbox stays where it is, above the energy plot.
 While diffing, its anchor is the reference. Starting a diff turns it on and
 ending the diff restores its previous state; otherwise it is off by default. A

@@ -19,6 +19,7 @@ pub const formats = struct {
 };
 pub const source = @import("source.zig");
 pub const stream = @import("stream.zig");
+pub const diff = @import("diff.zig");
 pub const display = @import("display.zig");
 pub const edit = @import("edit.zig");
 pub const lock = @import("lock.zig");
