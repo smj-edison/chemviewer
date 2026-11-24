@@ -16,7 +16,8 @@ ImGui (via cimgui) doing the heavy lifting.
   Large trajectories are streamed from disk with background prefetch.
   **Lock rotation** (next to Loop) turns the view with each frame so a
   tumbling structure keeps its orientation: every frame is superposed onto
-  the frame shown when the lock was switched on. Editing switches it off.
+  the frame shown when the lock was switched on, or onto the reference of a
+  diff. Editing switches it off.
 - **Diffing.** Line up a reference frame with the current one (Horn/Kabsch),
   with a red/green overlay, RMSD and max deviation. Alt+drag works in the
   overlay: Lock rotation switches off, the reference stays put, and the numbers

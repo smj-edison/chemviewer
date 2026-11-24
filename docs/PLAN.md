@@ -21,7 +21,7 @@ that are settled are recorded in [DECISIONS.md](DECISIONS.md).
 
 ## Non-goals (for now)
 
-- Editing structures, building molecules, or running calculations.
+- Building molecules from scratch, or running calculations. (Light editing is in: D14.)
 - Volumetric data (cube files, orbitals). This might come later.
 - Reading anything except geometry (and energy, where it's easy) from QM outputs.
 
@@ -45,7 +45,9 @@ src/
     elements.zig      element table: symbols, colours, display radii, Pyykkö covalent radii (1/2/3)
     structure.zig     Frame (positions, atomic numbers, optional cell, energy, comment)
     bonds.zig         spatial-hash neighbour search + continuous bond character
-    align.zig         optimal superposition (Horn quaternion), RMSD, per-atom deviation
+    align.zig         optimal superposition (Horn quaternion), RMSD
+    geometry.zig      internal coordinates and the groups that move with them
+    color.zig         perceptual colour and the bond palettes
   formats/
     text.zig          line iteration / float parsing shared by the text parsers
     xyz.zig           multi-frame XYZ (+ extended-XYZ Lattice/energy), Indexed random access
@@ -54,11 +56,19 @@ src/
     traj.zig          ASE .traj (ULM) reader, random access, no full load
   source.zig          format detection + Source union: "N frames, give me frame i"
   stream.zig          FrameStream: background loader, LRU cache, energy scan (io.concurrent)
+  playback.zig        where the playhead goes as time passes
+  edit.zig            edit session: current atoms of every frame, undo and redo (D24)
+  picks.zig           selection and cuts, and the numbering they refer to
+  display.zig         displayed geometry: atoms and bonds on screen, blends
+  lock.zig            rotation lock (D26)
+  diff.zig            the current frame compared with a reference, and its placement
   testdata/           small ASE-generated fixtures for the traj tests
   main.zig            GUI entry point: SDL + Vulkan + ImGui setup, main loop, --screenshot
   app/
     App.zig           application state, document lifecycle, inspector + diff panels, input
     timeline.zig      bottom timeline (transport, frame number, energy envelope plot)
+    measure.zig       measurement bar, selection badges, atom labels
+    drag.zig, lasso.zig, occlusion.zig   Alt-drag and lasso geometry, label occlusion
     ui.zig            cimgui helpers (formatted text, gradient legend)
   render/
     Gpu.zig           Vulkan instance/device, swapchain, MSAA targets, frame loop, readback

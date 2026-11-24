@@ -66,9 +66,9 @@ interpolate: bool = false,
 interp_t: f32 = 0,
 /// What the scene was last built from (null = build it again).
 scene_key: ?SceneKey = null,
-/// Documents and diffs so far, to tell them apart.
-documents: u64 = 0,
-diffs: u64 = 0,
+/// Counted to tell documents and diffs apart.
+documents_opened: u64 = 0,
+diffs_started: u64 = 0,
 scene_radius: f32 = 10,
 show_inspector: bool = true,
 show_diff: bool = false,
@@ -109,7 +109,7 @@ drag_edit: ?cv.edit.Transaction = null,
 drag_button: u8 = 0,
 
 /// What was drawn: the displayed geometry, how far blended.
-const LockFollowed = struct { changes: u64, blend: f32 };
+const LockFollowed = struct { changes: u64, blend: f32, held: u64 };
 const pairKey = cv.picks.pairKey;
 
 pub fn init(io: Io, gpa: Allocator, window: *c.SDL_Window, gpu: *Gpu) !App {
@@ -196,7 +196,7 @@ fn install(app: *App, opened: cv.source.Opened, path: []const u8) !void {
     const owned_path = try gpa.dupe(u8, path);
 
     app.closeDocument();
-    app.documents += 1;
+    app.documents_opened += 1;
     app.doc = .{ .path = owned_path, .format = opened.format, .source = src, .stream = stream };
     app.setStatus("Opened {s} ({s}, {d} frame{s})", .{
         std.fs.path.basename(path),             opened.format.label(), src.frameCount(),
@@ -421,7 +421,7 @@ pub fn moveTo(app: *App, index: usize) void {
     const to = @min(index, d.frameCount() - 1);
     if (to != d.current and to != d.display.real.index) app.endDrag(false);
     d.current = to;
-    app.setInterp(0);
+    app.interp_t = 0;
     // Ask the loader right away (the UI sets frames mid-frame, after update()).
     d.stream.request(d.current);
 }
@@ -470,22 +470,26 @@ const SceneKey = struct {
     picks: u64,
     style: Renderer.Style,
     bond_params: cv.bonds.Params,
-    diff: ?struct { number: u64, overlay: bool, comparable: bool, placement: cv.align_.Transform } = null,
+    /// A diff overlay, and the placement of its reference.
+    overlay: ?struct { diff: u64, placement: [15]u64 } = null,
 };
 
 fn sceneKey(app: *const App) SceneKey {
     var key: SceneKey = .{ .picks = app.picks.hash(), .style = app.style, .bond_params = app.bond_params };
+    // Only matter when drawing it.
+    const any: Renderer.Style = .{};
+    key.style.outline_px = any.outline_px;
+    key.style.flat_pop = any.flat_pop;
+    key.style.background_pattern = any.background_pattern;
+    key.style.background_blur = any.background_blur;
+    key.style.backdrop = any.backdrop;
     const d = app.doc orelse return key;
-    key.document = app.documents;
+    key.document = app.documents_opened;
     key.changes = d.display.real.changes;
     key.blend = app.blendTime();
-    if (key.blend > 0) key.held = d.display.held;
-    if (app.diff) |df| key.diff = .{
-        .number = app.diffs,
-        .overlay = df.overlay,
-        .comparable = df.result != null,
-        .placement = df.placement,
-    };
+    if (key.blend > 0) key.held = d.display.held_changes;
+    if (app.drawnReference() != null)
+        key.overlay = .{ .diff = app.diffs_started, .placement = app.diff.?.placement.bits() };
     return key;
 }
 
@@ -562,11 +566,7 @@ fn advancePlayback(app: *App) void {
     d.current = head.current;
     app.playing = head.playing;
     app.last_advance = head.last;
-    app.setInterp(head.t);
-}
-
-fn setInterp(app: *App, t: f32) void {
-    app.interp_t = t;
+    app.interp_t = head.t;
 }
 
 /// The step after the shown one is loaded and can be blended with it.
@@ -689,7 +689,7 @@ pub fn setReference(app: *App) void {
         return app.setStatus("Can't set the reference: {t}", .{e});
     if (app.diff) |*old| old.deinit(app.gpa);
     app.diff = new;
-    app.diffs += 1;
+    app.diffs_started += 1;
     app.show_diff = true;
     app.setLockRotation(true);
     app.updateDiff();
@@ -747,7 +747,8 @@ fn followRotationLock(app: *App) void {
     if (!app.lock_rotation) return;
     const d = app.doc orelse return;
     const f = d.display.real.frame orelse return;
-    const now: LockFollowed = .{ .changes = d.display.real.changes, .blend = app.blendTime() };
+    const t = app.blendTime();
+    const now: LockFollowed = .{ .changes = d.display.real.changes, .blend = t, .held = if (t > 0) d.display.held_changes else 0 };
     if (app.rotation_lock != null and std.meta.eql(app.lock_followed, now)) return;
     const pos = app.drawnPositions() orelse return;
     const numbering = app.numberingOf(d.display.real.index, f);
@@ -1524,7 +1525,7 @@ pub fn undo(app: *App) void {
     app.endDrag(false);
     const crossed = app.session.undo(&app.picks) catch |e| return app.setStatus("Undo failed: {t}", .{e});
     switch (crossed orelse return) {
-        .selection => app.showPicks("Undid a change of selection or cuts"),
+        .selection => app.setStatus("Undid a change of selection or cuts", .{}),
         .geometry => |g| {
             app.jumpToChange(g.index, g.kept, g.side);
             app.setStatus("Undid the last change to frame {d}", .{g.index + 1});
@@ -1536,16 +1537,12 @@ pub fn redo(app: *App) void {
     app.endDrag(false);
     const crossed = app.session.redo(&app.picks) catch |e| return app.setStatus("Redo failed: {t}", .{e});
     switch (crossed orelse return) {
-        .selection => app.showPicks("Redid a change of selection or cuts"),
+        .selection => app.setStatus("Redid a change of selection or cuts", .{}),
         .geometry => |g| {
             app.jumpToChange(g.index, g.kept, g.side);
             app.setStatus("Redid the change to frame {d}", .{g.index + 1});
         },
     }
-}
-
-fn showPicks(app: *App, comptime what: []const u8) void {
-    app.setStatus(what, .{});
 }
 
 /// Show what undo or redo did to frame `index`, going there, and the picks
@@ -1555,12 +1552,12 @@ fn jumpToChange(app: *App, index: usize, kept: ?cv.picks.Kept, side: cv.picks.Si
     app.playing = false;
     if (d.display.real.index == index) {
         // In place, as it was, before it changes and unlocks.
-        app.setInterp(0);
+        app.interp_t = 0;
         app.followRotationLock();
         app.unlockRotation();
     }
     app.showSessionChange(index);
-    if (d.current != index) app.setFrame(index) else app.setInterp(0);
+    if (d.current != index) app.setFrame(index) else app.interp_t = 0;
     app.pullFrame(); // the session has its atoms
     app.followRotationLock(); // if it is another frame
     app.unlockRotation();
@@ -1595,7 +1592,7 @@ pub fn revertFrame(app: *App) void {
     if (!app.session.isEdited(d.display.real.index)) return;
     app.playing = false;
     app.revertShown() catch |e| return app.setStatus("Revert failed: {t}", .{e});
-    app.setInterp(0);
+    app.interp_t = 0;
     app.followRotationLock();
     app.unlockRotation();
     app.showSessionChange(d.display.real.index);
@@ -1895,7 +1892,7 @@ fn diffPanel(app: *App) void {
         ui.textDisabled("Open a file first.", .{});
         return;
     }
-    ui.textWrapped("Superimpose the current frame onto a reference frame (same atoms, same order).", .{});
+    ui.textWrapped("Line up a reference frame with the current one (same atoms, same order).", .{});
     if (c.igButton("Use current frame as reference", ui.v2(-1, 0))) app.setReference();
     const df = &(app.diff orelse return);
     ui.text("Reference: frame {d}", .{df.reference.index + 1});
@@ -1908,7 +1905,6 @@ fn diffPanel(app: *App) void {
     _ = c.igCheckbox("Overlay (reference red, current green)", &df.overlay);
     if (c.igSmallButton("Reset")) app.resetPlacement();
     ui.tooltip("Show both frames at their file positions, and switch Lock rotation off. Lock rotation lines them up again.");
-    app.updateDiff(); // again, if it ran out of memory
     const res = df.result orelse {
         if (df.followed == null) ui.textWrapped("Out of memory.", .{}) else ui.textWrapped("Current frame has different atoms than the reference, or numbered differently. Matching without a known correspondence is planned (Phase 3).", .{});
         return;
@@ -3781,6 +3777,69 @@ test "whatever changes what is drawn makes a new scene, and nothing else does" {
         key = t.app.sceneKey();
         try std.testing.expectEqualDeep(now, key);
     }
+}
+
+test "what is only drawn differently doesn't make a new scene" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    t.app.setReference();
+    t.app.diff.?.overlay = false;
+    const key = t.app.sceneKey();
+    const s = &t.app.style;
+    s.background_blur = 2;
+    s.background_pattern = false;
+    s.backdrop = .cells;
+    s.outline_px = 3;
+    s.flat_pop = true;
+    t.app.diff.?.place(.{ .rot = cv.align_.Transform.identity.rot, .from_center = @splat(0), .to_center = @splat(1) });
+    try expect(std.meta.eql(key, t.app.sceneKey()));
+}
+
+test "a scene with a coordinate that isn't a number is built once" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("3\n\nH 0 0 0\nH nan 0 0\nH 0 4 0\n" ++ "3\n\nH 0 0 0\nH nan 0 0\nH 0 5 0\n");
+    try t.show(0);
+    t.app.setReference();
+    try t.show(1);
+    t.app.followRotationLock();
+    try expect(std.meta.eql(t.app.sceneKey(), t.app.sceneKey()));
+}
+
+test "a scene drawn without bonds, for want of memory, is built again" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("2\n\nH 0 0 0\nH 0.74 0 0\n");
+    try t.show(0);
+    t.app.scene_key = t.app.sceneKey();
+    var failing: std.testing.FailingAllocator = .init(TestApp.gpa, .{ .fail_index = 0 });
+    t.app.gpa = failing.allocator();
+    try expectEqual(0, t.app.bonds().len);
+    t.app.gpa = TestApp.gpa;
+    try expect(t.app.scene_key == null);
+}
+
+test "while locked, a blend that gets another shape is followed" {
+    var t = try lockedTest(4);
+    defer t.deinit();
+    try t.show(1);
+    t.app.setLockRotation(true);
+    t.app.interpolate = true;
+    t.app.playing = true;
+    t.app.interp_t = 0.4;
+    try t.waitForNext();
+    const d = &t.app.doc.?;
+    d.display.keep(TestApp.gpa, .prev, null);
+    d.display.keep(TestApp.gpa, .next2, null);
+    t.app.followRotationLock();
+    const before = t.app.camera;
+    // One atom's curve changes a lot with a neighbour on it.
+    var prev = try d.source.loadFrame(TestApp.io, TestApp.gpa, 0);
+    prev.positions[1] += Vec3{ 0, 1.5, 0 };
+    d.display.keep(TestApp.gpa, .prev, .{ .index = 0, .atoms = prev });
+    t.app.followRotationLock();
+    try expect(!std.meta.eql(before, t.app.camera));
 }
 
 test "Alt-drag works in a diff overlay" {

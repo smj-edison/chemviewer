@@ -78,7 +78,7 @@ pub const DisplayedGeometry = struct {
     prev: ?Step = null,
     next2: ?Step = null,
     /// Counts changes to those, as `real.changes` does to the real atoms.
-    held: u64 = 0,
+    held_changes: u64 = 0,
 
     blended: std.ArrayList(Vec3) = .empty,
     /// What `blended` is for (null = nothing).
@@ -111,7 +111,7 @@ pub const DisplayedGeometry = struct {
     pub fn keep(g: *DisplayedGeometry, gpa: Allocator, which: Slot, step: ?Step) void {
         const s = g.slot(which);
         if (s.* == null and step == null) return;
-        g.held += 1;
+        g.held_changes += 1;
         if (s.*) |*old| old.atoms.deinit(gpa);
         s.* = step;
         g.blended_for = null;
@@ -126,7 +126,7 @@ pub const DisplayedGeometry = struct {
     pub fn takeNext(g: *DisplayedGeometry) ?Step {
         const next = g.next orelse return null;
         g.next = null;
-        g.held += 1;
+        g.held_changes += 1;
         g.blended_for = null;
         return next;
     }
@@ -285,6 +285,23 @@ test "a blend follows its time, its steps and the real atoms" {
     g.forget(test_gpa, 2);
     try testing.expectEqual(0.5, blendedX(&g, 0.5));
     try testing.expect(g.takeNext() == null);
+}
+
+test "changes to the steps held are counted" {
+    var g = try testBlend(.{ 0, 1, 2, 3 });
+    defer g.deinit(test_gpa);
+    var last = g.held_changes;
+    g.keep(test_gpa, .prev, null);
+    try testing.expect(g.held_changes != last);
+    last = g.held_changes;
+    g.keep(test_gpa, .prev, null); // nothing there already
+    try testing.expectEqual(last, g.held_changes);
+    g.keep(test_gpa, .prev, try testStep(0, 0));
+    try testing.expect(g.held_changes != last);
+    last = g.held_changes;
+    var next = g.takeNext().?;
+    next.atoms.deinit(test_gpa);
+    try testing.expect(g.held_changes != last);
 }
 
 test "out of memory, a blend is at the real atoms" {

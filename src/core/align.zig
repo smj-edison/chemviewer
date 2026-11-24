@@ -18,6 +18,13 @@ pub const Transform = struct {
         .to_center = @splat(0),
     };
 
+    /// To tell transforms apart, also ones that aren't numbers.
+    pub fn bits(t: Transform) [15]u64 {
+        const from: [3]f64 = t.from_center;
+        const to: [3]f64 = t.to_center;
+        return @bitCast([5][3]f64{ t.rot[0], t.rot[1], t.rot[2], from, to });
+    }
+
     /// Undoes `t`.
     pub fn inverse(t: Transform) Transform {
         var rot: [3][3]f64 = undefined;

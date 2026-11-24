@@ -356,6 +356,20 @@ test "another frame with the same numbering keeps the selection, not the cuts" {
     try expectPicks(p, &.{ 3, 1 }, &.{});
 }
 
+test "the hash tells selections and cuts apart, whatever order cuts were made in" {
+    var a = try testPicks();
+    defer a.deinit(test_gpa);
+    var b: Picks = .{};
+    defer b.deinit(test_gpa);
+    try b.selection.appendSlice(test_gpa, &.{ 3, 1 });
+    try b.cuts.put(test_gpa, pairKey(1, 0), {});
+    try testing.expect(a.hash() != b.hash());
+    try b.cuts.put(test_gpa, pairKey(3, 1), {});
+    try testing.expectEqual(a.hash(), b.hash());
+    std.mem.reverse(u32, b.selection.items);
+    try testing.expect(a.hash() != b.hash());
+}
+
 test "another frame with other elements or origins keeps neither" {
     const others = [_]Numbering{
         .{ .numbers = &.{ 1, 1, 1, 6 } },
