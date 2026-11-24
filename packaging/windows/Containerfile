@@ -1,0 +1,6 @@
+# The same environment as the Windows job in .github/workflows/package.yml.
+FROM docker.io/library/ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git xz-utils glslc nsis
+RUN curl -fsSLo /tmp/zig.tar.xz https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz \
+ && echo "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a  /tmp/zig.tar.xz" | sha256sum -c \
+ && mkdir /opt/zig && tar xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 && ln -s /opt/zig/zig /usr/local/bin/zig

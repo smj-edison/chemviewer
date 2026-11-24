@@ -16,31 +16,25 @@ jobs:
       matrix:
         include:
           # Windows is cross-compiled; macOS needs Apple's SDK.
-          # No -Dcpu on macOS: SDL's build then takes it for a cross build.
           - name: windows
+            system: windows
             os: ubuntu-24.04
             setup: sudo apt-get update && sudo apt-get install -y glslc nsis
-            args: -Dtarget=x86_64-windows-gnu -Dcpu=baseline
           - name: macos-arm64
+            system: macos
             os: macos-15
             setup: brew install shaderc
-            args: -Dsystem-sdl=false
           - name: macos-intel
+            system: macos
             os: macos-15-intel
             setup: brew install shaderc
-            args: -Dsystem-sdl=false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with: { version: 0.17.1 }
       - run: ${{ matrix.setup }}
-      - name: Build
-        run: |
-          for kind in portable installer; do
-            zig build ${{ matrix.args }} -Dcpu=baseline -Doptimize=ReleaseSafe \
-              -Dpackage=$kind -Dversion="${VERSION#v}" --prefix dist
-          done
+      - run: packaging/build-packages.sh ${{ matrix.system }} "${VERSION#v}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
