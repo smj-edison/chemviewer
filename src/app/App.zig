@@ -213,6 +213,7 @@ pub fn closeDocument(app: *App) void {
 }
 
 pub fn openFile(app: *App, path: []const u8) void {
+    app.endDrag(false);
     app.openFileInner(path) catch |e| {
         app.setStatus("Could not open {s}: {t}", .{ std.fs.path.basename(path), e });
     };
@@ -373,10 +374,10 @@ fn pasteXyzInner(app: *App, as_new: bool) !void {
 /// existing atoms, it is moved beside the structure (to the right on screen).
 /// The new atoms become the selection.
 fn appendFragment(app: *App, frag: Frame) !void {
-    app.endDrag(false);
     const gpa = app.gpa;
-    const d = &(app.doc orelse return);
-    const f = &(d.shown orelse return);
+    var edit = try app.beginEdit();
+    defer edit.deinit();
+    const f = &app.doc.?.shown.?;
     var offset: Vec3 = @splat(0);
     if (f.len() > 0 and frag.len() > 0 and f.len() * frag.len() <= 50_000_000 and f.minDistance(frag) < 1.0) {
         const ca = f.centroid();
@@ -391,8 +392,6 @@ fn appendFragment(app: *App, frag: Frame) !void {
     const first: u32 = @intCast(f.len());
     const total: u32 = @intCast(first + frag.len());
     try app.selection.ensureTotalCapacity(gpa, frag.len());
-    var edit = try app.session.begin(d.shown_index, f.*);
-    defer edit.deinit();
     edit.replace(try f.concat(gpa, frag, offset));
     _ = try app.commitEdit(&edit, null);
     app.selection.clearRetainingCapacity();
@@ -468,7 +467,9 @@ fn keyFrame(app: *App, index: usize, held: bool) void {
 /// Go to a frame without retrying it.
 pub fn moveTo(app: *App, index: usize) void {
     const d = &(app.doc orelse return);
-    d.current = @min(index, d.frameCount() - 1);
+    const to = @min(index, d.frameCount() - 1);
+    if (to != d.current) app.endDrag(false);
+    d.current = to;
     app.setInterp(0);
     // Ask the loader right away (the UI sets frames mid-frame, after update()).
     d.stream.request(d.current);
@@ -533,11 +534,17 @@ pub fn update(app: *App) void {
 fn pullFrame(app: *App) void {
     const d = &(app.doc orelse return);
     if (d.shown != null and d.shown_index == d.current) return;
-    const frame = app.takeFrame(d.current) orelse return;
+    app.showFrame(d.current, app.takeFrame(d.current) orelse return);
+}
+
+/// Puts another frame on screen (takes ownership of its atoms).
+fn showFrame(app: *App, index: usize, frame: Frame) void {
+    const d = &app.doc.?;
+    app.endDrag(false);
     if (d.shown) |*old| old.deinit(app.gpa);
     d.shown = frame;
+    d.shown_index = index;
     app.dropInvalidSelection();
-    d.shown_index = d.current;
     app.bonds_dirty = true;
 }
 
@@ -938,6 +945,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
 pub fn togglePlay(app: *App) void {
     const d = app.doc orelse return;
     if (d.frameCount() < 2) return;
+    app.endDrag(false);
     app.playing = !app.playing;
     app.last_advance = Io.Timestamp.now(app.io, .awake);
     // Pausing an interpolated playback stops on the nearest real step.
@@ -1125,7 +1133,8 @@ pub fn drawnGraph(app: *const App) !cv.geometry.Graph {
     return cv.geometry.Graph.init(app.gpa, f.len(), drawn.items, 0);
 }
 
-/// Positions as drawn (aligned onto the reference in diff overlay mode).
+/// Positions as drawn (aligned onto the reference in diff overlay mode),
+/// except for blending, which picking adds.
 pub fn displayedPositions(app: *const App) ?[]const Vec3 {
     const d = app.doc orelse return null;
     const f = d.shown orelse return null;
@@ -1143,10 +1152,11 @@ fn windowSize(app: *const App) [2]f32 {
 const Hit = struct { t: f32, target: union(enum) { atom: u32, bond: [2]u32 } };
 
 /// The nearest atom or drawn bond under window point (x, y), if any.
-fn hitAt(app: *const App, x: f32, y: f32) ?Hit {
-    const pos = app.displayedPositions() orelse return null;
-    const d = app.doc.?;
-    const f = d.shown.?;
+fn hitAt(app: *App, x: f32, y: f32) ?Hit {
+    const d = app.doc orelse return null;
+    const f = d.shown orelse return null;
+    // Blending is off while diffing.
+    const pos = if (app.nextReady()) app.displayPositions(f) else app.displayedPositions() orelse return null;
     const ws = app.windowSize();
     const r = app.camera.ray(2 * x / ws[0] - 1, 1 - 2 * y / ws[1], ws[0] / ws[1]);
     var best: ?Hit = null;
@@ -1182,7 +1192,7 @@ fn hitAt(app: *const App, x: f32, y: f32) ?Hit {
 }
 
 /// The atom under window point (x, y), if any.
-pub fn atomAt(app: *const App, x: f32, y: f32) ?u32 {
+pub fn atomAt(app: *App, x: f32, y: f32) ?u32 {
     const h = app.hitAt(x, y) orelse return null;
     return switch (h.target) {
         .atom => |a| a,
@@ -1257,8 +1267,9 @@ fn beginDragInner(app: *App, kind: drag_mod.Kind, x: f32, y: f32) !void {
 
 fn startDrag(app: *App, kind: drag_mod.Kind, handle: u32) !void {
     const gpa = app.gpa;
-    const d = &(app.doc orelse return);
-    const f = &(d.shown orelse return);
+    var edit = try app.beginEdit();
+    errdefer edit.deinit();
+    const f = edit.atoms;
     var graph = try app.drawnGraph();
     defer graph.deinit(gpa);
     const choice = try drag_mod.chooseGroup(gpa, graph, app.selected(), handle);
@@ -1277,7 +1288,7 @@ fn startDrag(app: *App, kind: drag_mod.Kind, handle: u32) !void {
     const v0 = f.positions[handle] - center;
     const axes = app.cameraAxes();
 
-    app.drag_edit = try app.session.begin(d.shown_index, f.*);
+    app.drag_edit = edit;
     app.drag = .{
         .kind = kind,
         .pivot = pivot,
@@ -1292,7 +1303,7 @@ fn startDrag(app: *App, kind: drag_mod.Kind, handle: u32) !void {
 
 fn dragMotion(app: *App, x: f32, y: f32, dx: f32, dy: f32) void {
     const dr = &(app.drag orelse return);
-    const f = app.draggedFrame() orelse return;
+    const edit = &app.drag_edit.?;
     const axes = app.cameraAxes();
     const ws = app.windowSize();
     switch (dr.kind) {
@@ -1316,16 +1327,17 @@ fn dragMotion(app: *App, x: f32, y: f32, dx: f32, dy: f32) void {
         },
     }
     dr.moved = true;
-    dr.apply(f.positions, axes[2]);
-    app.bonds_dirty = true;
+    dr.apply(edit.atoms.positions, axes[2]);
+    app.showDragged(edit.atoms.positions);
 }
 
-/// The shown frame, if it is the one the drag started on.
-fn draggedFrame(app: *App) ?*Frame {
-    const edit = app.drag_edit orelse return null;
-    const d = &(app.doc orelse return null);
-    const f = &(d.shown orelse return null);
-    return if (d.shown_index == edit.index and f.len() == edit.atoms.len()) f else null;
+/// Show the dragged frame with these positions. Whatever puts another frame on
+/// screen, or changes this one, ends the drag first.
+fn showDragged(app: *App, positions: []const Vec3) void {
+    const d = &app.doc.?;
+    std.debug.assert(d.shown_index == app.drag_edit.?.index);
+    @memcpy(d.shown.?.positions, positions);
+    app.bonds_dirty = true;
 }
 
 /// Finish (commit = true: keep as one geometry step) or cancel the drag.
@@ -1334,20 +1346,17 @@ fn endDrag(app: *App, commit: bool) void {
     defer dr.deinit(app.gpa);
     var edit = app.drag_edit.?;
     defer edit.deinit();
-    const f = app.draggedFrame();
+    // Back as they were, unless committed below.
+    for (dr.group, dr.start) |i, p| app.doc.?.shown.?.positions[i] = p;
+    app.bonds_dirty = true;
     app.drag = null;
     app.drag_edit = null;
-    // Another frame is shown now: nothing of the drag is left on screen.
-    const frame = f orelse return;
     if (commit and dr.moved) {
-        @memcpy(edit.atoms.positions, frame.positions);
         if (app.commitEdit(&edit, null)) |changed| {
             if (changed) app.setStatus("Moved {d} atom{s} (Ctrl+Z undoes)", .{ dr.group.len, if (dr.group.len == 1) "" else "s" });
             return;
         } else |e| app.setStatus("Move failed: {t}", .{e});
     }
-    for (dr.group, dr.start) |i, p| frame.positions[i] = p;
-    app.bonds_dirty = true;
 }
 
 /// Shown in the measurement bar while dragging.
@@ -1383,16 +1392,12 @@ pub fn applyEdit(app: *App, edit: Edit) void {
 }
 
 fn applyEditInner(app: *App, edit: Edit) !void {
-    app.endDrag(false);
-    const d = &(app.doc orelse return);
-    const f = &(d.shown orelse return);
-    const sel = app.selected();
     const gpa = app.gpa;
+    var tx = try app.beginEdit();
+    defer tx.deinit();
+    const sel = app.selected();
     var graph = try app.drawnGraph();
     defer graph.deinit(gpa);
-
-    var tx = try app.session.begin(d.shown_index, f.*);
-    defer tx.deinit();
     const p = tx.atoms.positions;
     switch (edit) {
         .distance => |v| if (sel.len == 2) try cv.geometry.setDistance(gpa, p, graph, sel[0], sel[1], v, app.edit_mode),
@@ -1400,6 +1405,41 @@ fn applyEditInner(app: *App, edit: Edit) !void {
         .dihedral => |v| if (sel.len == 4) try cv.geometry.setDihedral(gpa, p, graph, sel[0], sel[1], sel[2], sel[3], v, app.edit_mode),
     }
     _ = try app.commitEdit(&tx, null);
+}
+
+/// Get ready to change the shown frame: abort a drag, and pause playback on
+/// the nearest real step. With interpolation that may be the step after.
+fn stopForEdit(app: *App) void {
+    const d = &(app.doc orelse return);
+    const dragged = app.drag != null;
+    app.endDrag(false);
+    const was_playing = app.playing;
+    app.playing = false;
+    if (was_playing) {
+        if (app.interp_t >= 0.5 and app.nextReady()) {
+            const next = d.next.?;
+            d.next = null;
+            app.moveTo(d.next_index);
+            app.showFrame(d.next_index, next);
+        } else if (d.shown != null) {
+            // Not one that is still loading.
+            app.moveTo(d.shown_index);
+        }
+    }
+    // An edit needs the bonds of the atoms it starts from.
+    if (dragged or was_playing) if (d.shown) |f| {
+        cv.bonds.findInto(app.gpa, &d.bonds, f.positions, f.numbers, app.bond_params) catch {
+            d.bonds.clearRetainingCapacity(); // `update` searches again
+        };
+        app.bonds_dirty = true;
+    };
+}
+
+/// Every edit of the shown frame starts here.
+fn beginEdit(app: *App) !cv.edit.Transaction {
+    app.stopForEdit();
+    const d = &(app.doc orelse return error.NoDocument);
+    return app.session.begin(d.shown_index, d.shown orelse return error.NoDocument);
 }
 
 /// Commit an edit of the shown frame and show it. `cuts_before`: see
@@ -1460,12 +1500,12 @@ pub fn deleteSelection(app: *App) void {
 }
 
 fn deleteSelectionInner(app: *App) !void {
-    if (app.drag != null) return;
     const gpa = app.gpa;
-    const d = &(app.doc orelse return);
-    const f = &(d.shown orelse return);
+    if (app.selected().len == 0) return app.setStatus("Select atoms to delete", .{});
+    var edit = try app.beginEdit();
+    defer edit.deinit();
+    const f = edit.atoms;
     const sel = app.selected();
-    if (sel.len == 0) return app.setStatus("Select atoms to delete", .{});
     if (sel.len >= f.len()) return app.setStatus("Can't delete every atom", .{});
 
     const remove = try gpa.alloc(bool, f.len());
@@ -1494,8 +1534,6 @@ fn deleteSelectionInner(app: *App) !void {
     }
 
     const n = sel.len;
-    var edit = try app.session.begin(d.shown_index, f.*);
-    defer edit.deinit();
     edit.replace(try f.without(gpa, remove));
     if (!try app.commitEdit(&edit, app.cut_bonds)) unreachable; // atoms were removed
     // The history now owns the old cuts.
@@ -1508,7 +1546,9 @@ fn deleteSelectionInner(app: *App) !void {
 pub fn undo(app: *App) void {
     const d = &(app.doc orelse return);
     app.endDrag(false);
-    const change = app.session.undo() orelse return;
+    if (!app.session.canUndo()) return;
+    app.stopForEdit();
+    const change = app.session.undo().?;
     app.applyChange(change);
     if (d.current != change.index) app.setFrame(change.index);
     app.setStatus("Undid the last change to frame {d}", .{change.index + 1});
@@ -1517,7 +1557,7 @@ pub fn undo(app: *App) void {
 /// Make the shown frame its file frame again (one geometry step).
 pub fn revertFrame(app: *App) void {
     const d = &(app.doc orelse return);
-    app.endDrag(false);
+    app.stopForEdit();
     const change = app.session.revert(d.shown_index, app.cut_bonds) catch |e| return app.setStatus("Revert failed: {t}", .{e});
     app.applyChange(change orelse return);
     // The frame asked for may be another one that can't be read.
@@ -1857,7 +1897,11 @@ const TestApp = struct {
         var text: Io.Writer.Allocating = .init(gpa);
         defer text.deinit();
         for (0..frames) |i| try text.writer.print("3\nenergy={d}\nH 0 0 0\nH 0 0 1\nH 0 0 2\n", .{i});
-        var opened = try cv.source.openBytes(gpa, text.written());
+        try t.openText(text.written());
+    }
+
+    fn openText(t: *TestApp, text: []const u8) !void {
+        var opened = try cv.source.openBytes(gpa, text);
         errdefer opened.source.deinit(io, gpa);
         try t.app.install(opened, "test.xyz");
     }
@@ -1889,6 +1933,40 @@ const TestApp = struct {
     /// Starts an Alt-drag of atom 1, as if it had been grabbed.
     fn startDrag(t: *TestApp) !void {
         try t.app.startDrag(.translate, 1);
+    }
+
+    /// A drag of atom 1 on the shown frame that has moved it.
+    fn dragSome(t: *TestApp) !void {
+        try t.startDrag();
+        t.app.dragMotion(0, 0, 0.1, 0);
+        try expect(t.app.doc.?.shown.?.positions[1][0] != 0);
+    }
+
+    /// No drag is going on, and it left nothing behind in frame 0.
+    fn expectAborted(t: *TestApp) !void {
+        try expect(t.app.drag == null);
+        // The release that follows does nothing.
+        t.app.endDrag(true);
+        try expect(!t.app.session.isEdited(0));
+        try expect(!t.app.session.canUndo());
+        const d = &t.app.doc.?;
+        if (d.shown_index == 0) try expectEqual(Vec3{ 0, 0, 1 }, d.shown.?.positions[1]);
+    }
+
+    /// Two steps apart in y, playing with interpolation at `at` between them.
+    fn playBlend(t: *TestApp, at: f32) !void {
+        try t.openText("2\n\nH 0 0 0\nH 10 0 0\n" ++ "2\n\nH 0 2 0\nH 10 2 0\n");
+        try t.show(0);
+        t.app.fitCamera();
+        t.app.interpolate = true;
+        t.app.playing = true;
+        t.app.interp_t = at;
+        for (0..2000) |_| {
+            t.app.updateNextFrame();
+            if (t.app.nextReady()) return;
+            try io.sleep(.fromMilliseconds(1), .awake);
+        }
+        return error.TestTimeout;
     }
 
     fn distance(t: *TestApp) f64 {
@@ -1951,10 +2029,10 @@ test "closing or opening a file resets everything about the old one" {
         try t.show(0);
         t.setDistance(1.5);
         t.app.toggleCutPair(0, 1);
-        t.app.playing = true;
-        t.app.interp_t = 0.5;
         t.app.lasso_active = true;
         try t.startDrag();
+        t.app.playing = true;
+        t.app.interp_t = 0.5;
         if (reopen) try t.open(2) else t.app.closeDocument();
         try expectEqual(0, t.app.selection.items.len);
         try expectEqual(0, t.app.cut_bonds.count());
@@ -1968,4 +2046,207 @@ test "closing or opening a file resets everything about the old one" {
         try expectEqual(1, t.distance());
         try t.expectCopyEdited(false);
     }
+}
+
+test "asking for another frame aborts a drag" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    try t.dragSome();
+    t.app.setFrame(0); // already there
+    try expect(t.app.drag != null);
+    t.app.setFrame(1);
+    try t.expectAborted();
+    try t.settle();
+    try expectEqual(1, t.distance());
+}
+
+test "a frame with fewer atoms arriving aborts a drag" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("3\n\nH 0 0 0\nH 0 0 1\nH 0 0 2\n" ++ "1\n\nH 5 5 5\n");
+    try t.show(0);
+    t.app.setFrame(1); // asked for, but frame 0 is still shown
+    try t.dragSome();
+    try t.settle();
+    try t.expectAborted();
+    t.app.dragMotion(0, 0, 0.1, 0);
+    try expectEqual(1, t.app.doc.?.shown.?.len());
+    try expectEqual(Vec3{ 5, 5, 5 }, t.app.doc.?.shown.?.positions[0]);
+}
+
+test "starting playback aborts a drag" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    try t.dragSome();
+    t.app.togglePlay();
+    try t.expectAborted();
+    try expect(t.app.playing);
+}
+
+test "opening a file that can't be read aborts a drag" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    try t.dragSome();
+    t.app.openFile("no/such/file.xyz");
+    try t.expectAborted();
+}
+
+test "undo and revert abort a drag, then go ahead" {
+    for ([_]bool{ false, true }) |revert| {
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.show(0);
+        t.setDistance(1.5);
+        try t.startDrag();
+        t.app.dragMotion(0, 0, 0.1, 0);
+        if (revert) t.app.revertFrame() else t.app.undo();
+        try expect(t.app.drag == null);
+        try expect(!t.app.session.isEdited(0));
+        try expectEqual(1, t.distance());
+        if (revert) t.app.undo();
+        if (revert) t.app.undo();
+        try t.expectAborted();
+    }
+}
+
+test "undo with nothing to undo aborts a drag" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.show(0);
+    try t.dragSome();
+    t.app.undo();
+    try t.expectAborted();
+}
+
+test "paste and delete abort a drag, then go ahead on the atoms as they were" {
+    for ([_]bool{ false, true }) |delete| {
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.show(0);
+        t.app.toggleSelect(2);
+        try t.dragSome();
+        if (delete) {
+            t.app.deleteSelection();
+        } else {
+            var frag = try t.app.doc.?.shown.?.subset(TestApp.gpa, &.{0});
+            defer frag.deinit(TestApp.gpa);
+            try t.app.appendFragment(frag);
+        }
+        try expect(t.app.drag == null);
+        const f = t.app.doc.?.shown.?;
+        try expectEqual(@as(usize, if (delete) 2 else 4), f.len());
+        try expectEqual(Vec3{ 0, 0, 1 }, f.positions[1]);
+        t.app.undo();
+        try t.expectAborted();
+    }
+}
+
+test "closing aborts a drag" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.show(0);
+    try t.dragSome();
+    t.app.closeDocument();
+    try expect(t.app.drag == null);
+    try expect(!t.app.session.canUndo());
+}
+
+test "a completed drag is one geometry step, a cancelled one none" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.show(0);
+    try t.dragSome();
+    t.app.dragMotion(0, 0, 0.1, 0);
+    t.app.endDrag(false);
+    try t.expectAborted();
+    try t.dragSome();
+    t.app.dragMotion(0, 0, 0.1, 0);
+    t.app.endDrag(true);
+    try t.expectCopyEdited(true);
+    try expectEqual(null, t.app.doc.?.shown.?.energy);
+    t.app.undo();
+    try t.expectAborted();
+}
+
+test "an edit during interpolated playback pauses it and applies to the nearest step" {
+    const Kind = enum { drag, set, paste, delete };
+    for ([_]Kind{ .drag, .set, .paste, .delete }) |kind| for ([_]f32{ 0.3, 0.7 }) |at| {
+        errdefer std.debug.print("{t} at {d}\n", .{ kind, at });
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.playBlend(at);
+        t.app.selection.clearRetainingCapacity();
+        switch (kind) {
+            .drag => {
+                try t.startDrag();
+                t.app.dragMotion(0, 0, 0.1, 0);
+                t.app.endDrag(true);
+            },
+            .set => t.setDistance(5),
+            .paste => {
+                var frag = try t.app.doc.?.shown.?.subset(TestApp.gpa, &.{0});
+                defer frag.deinit(TestApp.gpa);
+                try t.app.appendFragment(frag);
+            },
+            .delete => {
+                t.app.toggleSelect(1);
+                t.app.deleteSelection();
+            },
+        }
+        const want: usize = if (at < 0.5) 0 else 1;
+        const d = &t.app.doc.?;
+        try expect(!t.app.playing);
+        try expectEqual(0, t.app.interp_t);
+        try expectEqual(want, d.current);
+        try expectEqual(want, d.shown_index);
+        try expect(t.app.session.isEdited(want));
+        try expect(!t.app.session.isEdited(1 - want));
+        // Atom 0 is where that step has it (none of these move it).
+        const y: f32 = if (want == 0) 0 else 2;
+        try expectEqual(Vec3{ 0, y, 0 }, d.shown.?.positions[0]);
+    };
+}
+
+test "an edit while playback waits for the next frame applies to the one on screen" {
+    var t: TestApp = try .init(3);
+    defer t.deinit();
+    try t.show(0);
+    t.app.playing = true;
+    t.app.doc.?.current = 1; // not loaded yet
+    t.setDistance(1.5);
+    try expect(!t.app.playing);
+    try expectEqual(0, t.app.doc.?.current);
+    try expect(t.app.session.isEdited(0));
+}
+
+test "undo and revert during playback pause it" {
+    for ([_]bool{ false, true }) |revert| {
+        var t: TestApp = try .init(2);
+        defer t.deinit();
+        try t.show(1);
+        t.setDistance(1.5);
+        t.app.playing = true;
+        t.app.interp_t = 0.2;
+        if (revert) t.app.revertFrame() else t.app.undo();
+        try expect(!t.app.playing);
+        try expectEqual(0, t.app.interp_t);
+        try expectEqual(1, t.app.doc.?.current);
+        try expect(!t.app.session.isEdited(1));
+    }
+}
+
+test "a drag grabs the atom that was drawn under the cursor" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.playBlend(0.7);
+    const p = t.app.displayPositions(t.app.doc.?.shown.?)[1];
+    try expect(p[1] > 1 and p[1] < 1.9);
+    const at = t.app.screenProjector().toScreen(p).?;
+    t.app.beginDrag(.translate, at.x, at.y);
+    try expectEqual(1, t.app.doc.?.shown_index);
+    const hint = t.app.drag orelse return error.TestUnexpectedResult;
+    try expectEqual(1, hint.handle);
 }

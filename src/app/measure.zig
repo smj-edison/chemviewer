@@ -81,6 +81,8 @@ pub fn bar(app: *App) void {
     var lb: [128]u8 = undefined;
     const labels = joinedLabels(&lb, f.numbers, sel);
     const p = f.positions;
+    // Applied last: an edit replaces the frame and may change the selection.
+    var submitted: ?App.Edit = null;
     switch (sel.len) {
         1 => {
             const v = p[sel[0]];
@@ -90,7 +92,7 @@ pub fn bar(app: *App) void {
             ui.text("Distance {s}", .{labels});
             c.igSameLine(0, -1);
             const dist = geom.distance(p, sel[0], sel[1]);
-            if (valueField("##dist", dist, "%.5f", fs * 7)) |v| app.applyEdit(.{ .distance = v });
+            if (valueField("##dist", dist, "%.5f", fs * 7)) |v| submitted = .{ .distance = v };
             c.igSameLine(0, 4);
             ui.text("Å", .{});
             if (app.bondCharacter(sel[0], sel[1])) |ch| {
@@ -104,7 +106,7 @@ pub fn bar(app: *App) void {
             ui.text("Angle {s}", .{labels});
             c.igSameLine(0, -1);
             const ang = geom.angle(p, sel[0], sel[1], sel[2]);
-            angleFields(app, "ang", ang, .angle);
+            if (angleFields("ang", ang)) |v| submitted = .{ .angle = v };
             var l2: [16]u8 = undefined;
             modeSelector(app, atomLabel(&l2, f.numbers, sel[2]));
         },
@@ -112,36 +114,30 @@ pub fn bar(app: *App) void {
             ui.text("Dihedral {s}", .{labels});
             c.igSameLine(0, -1);
             const dih = geom.dihedral(p, sel[0], sel[1], sel[2], sel[3]);
-            angleFields(app, "dih", dih, .dihedral);
+            if (angleFields("dih", dih)) |v| submitted = .{ .dihedral = v };
             var l2: [16]u8 = undefined;
             modeSelector(app, atomLabel(&l2, f.numbers, sel[2]));
         },
     }
     c.igSameLine(0, fs * 1.5);
     if (c.igSmallButton("Clear")) app.clearSelection();
+    if (submitted) |edit| app.applyEdit(edit);
 }
 
-const AngleKind = enum { angle, dihedral };
-
-/// Degree and radian fields for the same angle; either can be edited.
-fn angleFields(app: *App, comptime id: []const u8, rad: f64, kind: AngleKind) void {
+/// Degree and radian fields for the same angle; either can be edited. Returns
+/// the new value in radians if submitted.
+fn angleFields(comptime id: []const u8, rad: f64) ?f64 {
     const fs = c.igGetFontSize();
     const deg = std.math.radiansToDegrees(rad);
-    const submit = struct {
-        fn f(a: *App, k: AngleKind, r: f64) void {
-            a.applyEdit(switch (k) {
-                .angle => .{ .angle = r },
-                .dihedral => .{ .dihedral = r },
-            });
-        }
-    }.f;
-    if (valueField("##" ++ id ++ "deg", deg, "%.3f", fs * 6.5)) |v| submit(app, kind, std.math.degreesToRadians(v));
+    var submitted: ?f64 = null;
+    if (valueField("##" ++ id ++ "deg", deg, "%.3f", fs * 6.5)) |v| submitted = std.math.degreesToRadians(v);
     c.igSameLine(0, 4);
     ui.text("°", .{});
     c.igSameLine(0, fs);
-    if (valueField("##" ++ id ++ "rad", rad, "%.6f", fs * 6.5)) |v| submit(app, kind, v);
+    if (valueField("##" ++ id ++ "rad", rad, "%.6f", fs * 6.5)) |v| submitted = v;
     c.igSameLine(0, 4);
     ui.text("rad", .{});
+    return submitted;
 }
 
 /// Selection numbers next to atoms and lines joining them, drawn over the
