@@ -317,7 +317,8 @@ edited.
   energy scan continue past a bad frame; playback skips it. It is named once and
   retried only when the user goes back to it.
   The timeline position stays at the bad frame (the last good one stays on
-  screen), so stepping on from it works. Holding the button there isn't a retry.
+  screen), so stepping on from it works; playback that ends there returns to the shown
+  frame. Holding the button or a key there isn't a retry.
 - **Edit session:** an edit is a transaction tied to its frame. A frame change,
   undo, paste, revert, close or open aborts one in progress and restores the
   atoms. Starting an edit pauses playback. A frame is edited only while an edit

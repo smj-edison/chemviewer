@@ -22,8 +22,6 @@ pub const Input = struct {
     interpolate: bool,
     /// Frame on screen (null = none yet).
     shown: ?usize,
-    /// Interpolated: the step to blend towards is loaded.
-    next_ready: bool,
 };
 
 /// Call once per UI frame while playing.
@@ -74,19 +72,12 @@ fn advanceInterpolated(p: *Playhead, stream: *FrameStream, in: Input) void {
     const inc = dt * in.fps;
     const pos = if (inc >= 1) 1 else p.t + inc;
     if (pos < 1) {
-        // Blend only once the next step is here; otherwise hold.
-        if (in.next_ready or p.t > 0) {
-            p.t = pos;
-            return;
-        }
-        const next = stream.nextPlayable(p.current, false) orelse {
-            // The last step: nothing to blend towards, it just lasts its time.
-            p.t = pos;
-            return;
-        };
-        // Past a long run of failed frames the next one may be beyond what is
-        // prefetched, so holding would never end: go there instead.
-        if (next > p.current + 1) p.current = next;
+        // Blend only once the next step is here; otherwise hold. Past failed
+        // frames the next one may be beyond what is prefetched, so waiting
+        // could never end; a step then just lasts its time, like the last one.
+        const next = stream.nextPlayable(p.current, false);
+        const hold = p.t == 0 and next == p.current + 1 and stream.state(p.current + 1) == .pending;
+        if (!hold) p.t = pos;
         return;
     }
     // Carry the leftover fraction so the step rate matches the fps. Blending
@@ -121,14 +112,12 @@ fn play(n: usize, bad: []const usize, max: usize, loop: bool, interpolate: bool,
     var shown: ?usize = null;
     for (0..3000) |_| {
         now = now.addDuration(.fromMilliseconds(40));
-        const next = t.stream.nextPlayable(out.head.current, false);
         advance(&out.head, &t.stream, .{
             .now = now,
             .fps = fps,
             .loop = loop,
             .interpolate = interpolate,
             .shown = shown,
-            .next_ready = shown == out.head.current and next != null and t.stream.state(next.?) == .ready,
         });
         const cur = out.head.current;
         t.stream.request(cur);
@@ -177,5 +166,21 @@ test "playback stops when no frame can be read" {
         defer p.shown.deinit(std.testing.allocator);
         try std.testing.expectEqual(0, p.shown.items.len);
         try std.testing.expect(!p.head.playing);
+    }
+}
+
+test "an interpolated step before a failed frame lasts its time" {
+    var t: TestTrajectory = undefined;
+    try t.init(8, &.{2}, .{});
+    defer t.deinit();
+    t.stream.request(1);
+    for ([_]usize{ 1, 2, 3 }) |i| _ = try t.settle(i);
+    // Just started: the app has not picked up the frame to blend towards yet.
+    var head: Playhead = .{ .current = 1, .last = .zero };
+    var now: Io.Timestamp = .zero;
+    for ([_]usize{ 1, 1, 3 }) |want| {
+        now = now.addDuration(.fromMilliseconds(40));
+        advance(&head, &t.stream, .{ .now = now, .fps = 10, .loop = false, .interpolate = true, .shown = 1 });
+        try std.testing.expectEqual(want, head.current);
     }
 }

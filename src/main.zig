@@ -400,6 +400,19 @@ const Startup = struct {
 
     const Action = enum { none, exit, screenshot };
 
+    /// Whether anything here acts on a particular frame and then reports back.
+    fn isScripted(s: *const Startup) bool {
+        const a = s.args;
+        return a.screenshot != null or a.profile != null or a.save != null or a.set_value != null or
+            a.add != null or a.select_len > 0 or a.cuts_len > 0 or a.diff_ref != null;
+    }
+
+    /// The frame asked for is on screen, not a stand-in for one that can't be read.
+    fn isShown(app: *const App) bool {
+        const d = app.doc orelse return true;
+        return d.shown != null and d.shown_index == d.current;
+    }
+
     /// Called once per frame before it is submitted.
     fn step(s: *Startup, app: *App, io: Io, w: c_int, h: c_int) !Action {
         if (s.phase == .done) return .none;
@@ -416,6 +429,7 @@ const Startup = struct {
                 if (s.args.diff_ref == null and !s.args.lock_rotation) {
                     s.phase = .target;
                 } else if (app.isSettled()) {
+                    if (!isShown(app) and s.isScripted()) return error.FrameNotReadable;
                     if (s.args.diff_ref != null) app.setReference();
                     if (s.args.lock_rotation) app.setLockRotation(true);
                     app.setFrame(s.args.frame orelse 0);
@@ -423,6 +437,12 @@ const Startup = struct {
                 }
             },
             .target => if (app.isSettled()) {
+                if (!isShown(app)) {
+                    if (app.playing) return .none; // about to skip it
+                    if (s.isScripted()) return error.FrameNotReadable;
+                    s.phase = .done; // the user has been told
+                    return .none;
+                }
                 try s.script(app);
                 s.phase = .settle;
             },
@@ -472,7 +492,7 @@ const Startup = struct {
         for (s.args.cuts[0..s.args.cuts_len]) |pair| app.toggleCutPair(pair[0], pair[1]);
         app.clearSelection();
         const sel = s.args.select[0..s.args.select_len];
-        const n = (app.doc.?.shown orelse return error.FrameNotReadable).len();
+        const n = app.doc.?.shown.?.len();
         for (sel) |i| {
             if (i >= n) return error.SelectedAtomOutOfRange;
             app.toggleSelect(i);

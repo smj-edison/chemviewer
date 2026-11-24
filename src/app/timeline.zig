@@ -95,9 +95,13 @@ fn energyPlot(app: *App, d: *App.Document) void {
     _ = c.igInvisibleButton("##energy", ui.v2(w, h), 0);
     const hovered = c.igIsItemHovered(0);
     if (c.igIsItemActive() and n > 0) {
-        // Holding the button still isn't asking for the frame again.
+        // Holding the button still isn't asking for the frame again (playback
+        // may have moved on from it meanwhile).
         const i = frameAt(c.igGetMousePos().x, n, p0.x, w);
-        if (c.igIsItemActivated() or i != d.current) app.setFrame(i) else app.moveTo(i);
+        if (app.plot_drag == i) app.moveTo(i) else app.setFrame(i);
+        app.plot_drag = i;
+    } else {
+        app.plot_drag = null;
     }
     if (hovered and c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Right, false)) app.beginFineScrub();
 

@@ -92,6 +92,8 @@ loop_playback: bool = true,
 /// Right-drag scrubbing on the timeline (null = not scrubbing): pixels moved
 /// that don't add up to a whole frame yet.
 fine_scrub: ?f32 = null,
+/// Frame last scrubbed to by the current drag on the energy plot.
+plot_drag: ?usize = null,
 /// Keep the structure's orientation steady across frames (see RotationLock).
 lock_rotation: bool = false,
 rotation_lock: ?RotationLock = null,
@@ -452,6 +454,13 @@ pub fn setFrame(app: *App, index: usize) void {
     app.moveTo(index);
 }
 
+/// `setFrame` from a key; held down at either end, it isn't asking again.
+fn keyFrame(app: *App, index: usize, held: bool) void {
+    const d = app.doc orelse return;
+    if (held and @min(index, d.frameCount() - 1) == d.current) return;
+    app.setFrame(index);
+}
+
 /// Go to a frame without retrying it.
 pub fn moveTo(app: *App, index: usize) void {
     const d = &(app.doc orelse return);
@@ -507,7 +516,7 @@ pub fn update(app: *App) void {
             app.bonds_dirty = true;
         }
     }
-    while (d.stream.takeFailure()) |f| app.setStatus("Could not read frame {d}: {t}", .{ f.index + 1, f.err });
+    app.reportFailures(d);
     app.updateNextFrame();
     if (app.bonds_dirty) {
         app.bonds_dirty = false;
@@ -533,6 +542,23 @@ pub fn update(app: *App) void {
     }
 }
 
+/// Names the frames that newly couldn't be read, in one message since the
+/// status line only shows the latest.
+fn reportFailures(app: *App, d: *Document) void {
+    const first = d.stream.takeFailure() orelse return;
+    var buf: [128]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var more: usize = 0;
+    while (d.stream.takeFailure()) |f| {
+        if (w.buffered().len + 24 > buf.len) {
+            more += 1;
+        } else w.print(", {d}", .{f.index + 1}) catch {};
+    }
+    const list = w.buffered();
+    if (more > 0) return app.setStatus("Could not read frames {d}{s} and {d} more: {t}", .{ first.index + 1, list, more, first.err });
+    app.setStatus("Could not read frame{s} {d}{s}: {t}", .{ if (list.len > 0) "s" else "", first.index + 1, list, first.err });
+}
+
 fn advancePlayback(app: *App) void {
     const d = &(app.doc orelse return);
     if (!app.playing) return;
@@ -543,7 +569,6 @@ fn advancePlayback(app: *App) void {
         .loop = app.loop_playback,
         .interpolate = app.interpolate,
         .shown = if (d.shown != null) d.shown_index else null,
-        .next_ready = app.nextReady(),
     });
     d.current = head.current;
     app.playing = head.playing;
@@ -893,17 +918,18 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             if (want_keyboard) return;
             const d = &(app.doc orelse return);
             const n = d.frameCount();
+            const held = ev.key.repeat;
             switch (ev.key.key) {
                 c.SDLK_ESCAPE => if (app.drag != null) app.endDrag(false) else app.clearSelection(),
                 c.SDLK_DELETE, c.SDLK_BACKSPACE => app.deleteSelection(),
                 c.SDLK_N => app.show_atom_numbers = !app.show_atom_numbers,
                 c.SDLK_SPACE => app.togglePlay(),
-                c.SDLK_RIGHT, c.SDLK_PERIOD => app.setFrame(d.current + 1),
-                c.SDLK_LEFT, c.SDLK_COMMA => app.setFrame(d.current -| 1),
-                c.SDLK_PAGEDOWN => app.setFrame(d.current + @max(1, n / 20)),
-                c.SDLK_PAGEUP => app.setFrame(d.current -| @max(1, n / 20)),
-                c.SDLK_HOME => app.setFrame(0),
-                c.SDLK_END => app.setFrame(n - 1),
+                c.SDLK_RIGHT, c.SDLK_PERIOD => app.keyFrame(d.current + 1, held),
+                c.SDLK_LEFT, c.SDLK_COMMA => app.keyFrame(d.current -| 1, held),
+                c.SDLK_PAGEDOWN => app.keyFrame(d.current + @max(1, n / 20), held),
+                c.SDLK_PAGEUP => app.keyFrame(d.current -| @max(1, n / 20), held),
+                c.SDLK_HOME => app.keyFrame(0, held),
+                c.SDLK_END => app.keyFrame(n - 1, held),
                 c.SDLK_F => app.fitCamera(),
                 else => {},
             }
