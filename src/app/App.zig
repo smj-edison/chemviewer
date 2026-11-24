@@ -26,10 +26,11 @@ pub const Document = struct {
     stream: *cv.stream.FrameStream,
     /// Frame the user asked for (timeline position).
     current: usize = 0,
-    /// Frame currently displayed (may lag `current` while it loads).
-    shown: ?Frame = null,
-    shown_index: usize = 0,
-    /// Interpolated playback: the steps after `shown` and the ones either
+    /// What is on screen (its frame may lag `current` while that loads).
+    display: cv.display.DisplayedGeometry = .{},
+    /// What `App.update` last brought everything else in line with.
+    followed: ?struct { changes: u64, bond_params: cv.bonds.Params } = null,
+    /// Interpolated playback: the steps after the shown one and the ones either
     /// side of that segment, for a smooth curve (null until loaded).
     next: ?Frame = null,
     next_index: usize = 0,
@@ -37,7 +38,6 @@ pub const Document = struct {
     prev_index: usize = 0,
     next2: ?Frame = null,
     next2_index: usize = 0,
-    bonds: std.ArrayList(cv.bonds.Bond) = .empty,
     needs_fit: bool = true,
 
     pub fn frameCount(d: *const Document) usize {
@@ -46,9 +46,10 @@ pub const Document = struct {
 };
 
 pub const Diff = struct {
-    reference: Frame,
-    ref_index: usize,
-    ref_bonds: std.ArrayList(cv.bonds.Bond) = .empty,
+    /// The reference, as it was when it was set.
+    reference: cv.display.DisplayedGeometry,
+    /// The displayed geometry (`changes`) the rest is about.
+    followed: ?u64 = null,
     /// Current frame superposed onto the reference (null if incompatible).
     result: ?cv.align_.Result = null,
     aligned: std.ArrayList(Vec3) = .empty,
@@ -107,7 +108,6 @@ interp_t: f32 = 0,
 interp_positions: std.ArrayList(Vec3) = .empty,
 
 scene_dirty: bool = true,
-bonds_dirty: bool = false,
 scene_radius: f32 = 10,
 show_inspector: bool = true,
 show_diff: bool = false,
@@ -198,9 +198,8 @@ pub fn closeDocument(app: *App) void {
     app.gpa.destroy(d.stream);
     d.source.deinit(app.io, app.gpa);
     app.gpa.destroy(d.source);
-    if (d.shown) |*f| f.deinit(app.gpa);
     for ([_]*?Frame{ &d.next, &d.prev, &d.next2 }) |slot| if (slot.*) |*f| f.deinit(app.gpa);
-    d.bonds.deinit(app.gpa);
+    d.display.deinit(app.gpa);
     app.gpa.free(d.path);
     app.doc = null;
     app.dropRotationLock();
@@ -257,7 +256,7 @@ pub fn copyXyz(app: *App) void {
 
 fn copyXyzInner(app: *App) !void {
     const d = app.doc orelse return;
-    const f = d.shown orelse return;
+    const f = d.display.frame orelse return;
     const text = try app.copyText();
     defer app.gpa.free(text);
     try setClipboardText(text);
@@ -269,21 +268,21 @@ fn copyXyzInner(app: *App) !void {
 fn copyText(app: *App) ![]u8 {
     const gpa = app.gpa;
     const d = app.doc orelse return error.NoDocument;
-    const f = d.shown orelse return error.NoDocument;
+    const f = d.display.frame orelse return error.NoDocument;
     const sel = app.selected();
     const whole = sel.len == 0 or sel.len == f.len();
 
     var comment: std.Io.Writer.Allocating = .init(gpa);
     defer comment.deinit();
     const cw = &comment.writer;
-    try cw.print("chemviewer source=\"{s}\" frame={d}/{d}", .{ std.fs.path.basename(d.path), d.shown_index + 1, d.frameCount() });
+    try cw.print("chemviewer source=\"{s}\" frame={d}/{d}", .{ std.fs.path.basename(d.path), d.display.index + 1, d.frameCount() });
     if (!whole) {
         try cw.writeAll(" atoms=\"");
         try cv.formats.xyz.writeAtomRanges(cw, sel);
         try cw.writeAll("\"");
         if (f.energy) |e| try cw.print(" frame_energy={d}", .{e});
     }
-    if (app.session.isEdited(d.shown_index)) try cw.writeAll(" edited=T");
+    if (app.session.isEdited(d.display.index)) try cw.writeAll(" edited=T");
 
     var out = if (whole) try f.clone(gpa) else try f.subset(gpa, sel);
     defer out.deinit(gpa);
@@ -355,7 +354,7 @@ fn pasteXyzInner(app: *App, as_new: bool) !void {
     const text = std.mem.span(raw);
     var opened = try cv.source.openBytes(app.gpa, text);
     errdefer opened.source.deinit(app.io, app.gpa);
-    const has_frame = if (app.doc) |d| d.shown != null else false;
+    const has_frame = if (app.doc) |d| d.display.frame != null else false;
     if (!as_new and has_frame) {
         defer opened.source.deinit(app.io, app.gpa);
         return app.appendFragment(opened.source.memory[0]);
@@ -373,7 +372,7 @@ fn appendFragment(app: *App, frag: Frame) !void {
     const gpa = app.gpa;
     var edit = try app.beginEdit();
     defer edit.deinit();
-    const f = &app.doc.?.shown.?;
+    const f = &app.doc.?.display.frame.?;
     var offset: Vec3 = @splat(0);
     if (f.len() > 0 and frag.len() > 0 and f.len() * frag.len() <= 50_000_000 and f.minDistance(frag) < 1.0) {
         const ca = f.centroid();
@@ -464,7 +463,7 @@ fn keyFrame(app: *App, index: usize, held: bool) void {
 pub fn moveTo(app: *App, index: usize) void {
     const d = &(app.doc orelse return);
     const to = @min(index, d.frameCount() - 1);
-    if (to != d.current and to != d.shown_index) app.endDrag(false);
+    if (to != d.current and to != d.display.index) app.endDrag(false);
     d.current = to;
     app.setInterp(0);
     // Ask the loader right away (the UI sets frames mid-frame, after update()).
@@ -475,7 +474,7 @@ pub fn moveTo(app: *App, index: usize) void {
 /// read (the last good frame then stays on screen).
 pub fn isSettled(app: *const App) bool {
     const d = app.doc orelse return true;
-    if (d.shown != null and d.shown_index == d.current) return true;
+    if (d.display.frame != null and d.display.index == d.current) return true;
     return d.stream.state(d.current) == .failed;
 }
 
@@ -502,22 +501,17 @@ pub fn update(app: *App) void {
     app.pullFrame();
     app.reportFailures(d);
     app.updateNextFrame();
-    if (app.bonds_dirty) {
-        app.bonds_dirty = false;
-        if (d.shown) |f| {
-            cv.bonds.findInto(app.gpa, &d.bonds, f.positions, f.numbers, app.bond_params) catch |e| {
-                app.setStatus("Bond search failed: {t}", .{e});
-            };
-            if (app.diff) |*df| {
-                cv.bonds.findInto(app.gpa, &df.ref_bonds, df.reference.positions, df.reference.numbers, app.bond_params) catch {};
-            }
-            app.updateDiff();
-            if (d.needs_fit) {
-                d.needs_fit = false;
-                app.fitCamera();
-            }
-            app.scene_dirty = true;
+    const now = .{ .changes = d.display.changes, .bond_params = app.bond_params };
+    if (d.display.frame != null and (d.followed == null or
+        d.followed.?.changes != now.changes or !std.meta.eql(d.followed.?.bond_params, now.bond_params)))
+    {
+        d.followed = .{ .changes = now.changes, .bond_params = now.bond_params };
+        app.updateDiff();
+        if (d.needs_fit) {
+            d.needs_fit = false;
+            app.fitCamera();
         }
+        app.scene_dirty = true;
     }
     if (app.scene_dirty) {
         app.scene_dirty = false;
@@ -529,7 +523,7 @@ pub fn update(app: *App) void {
 /// Shows the requested frame if it's ready.
 fn pullFrame(app: *App) void {
     const d = &(app.doc orelse return);
-    if (d.shown != null and d.shown_index == d.current) return;
+    if (d.display.frame != null and d.display.index == d.current) return;
     app.showFrame(d.current, app.takeFrame(d.current) orelse return);
 }
 
@@ -537,11 +531,8 @@ fn pullFrame(app: *App) void {
 fn showFrame(app: *App, index: usize, frame: Frame) void {
     const d = &app.doc.?;
     app.endDrag(false);
-    if (d.shown) |*old| old.deinit(app.gpa);
-    d.shown = frame;
-    d.shown_index = index;
-    app.followPicks();
-    app.bonds_dirty = true;
+    d.display.show(app.gpa, index, frame);
+    app.followDisplay();
 }
 
 /// An owned copy of the current atoms of a frame, or null if it isn't ready.
@@ -578,7 +569,7 @@ fn advancePlayback(app: *App) void {
         .fps = app.fps,
         .loop = app.loop_playback,
         .interpolate = app.interpolate,
-        .shown = if (d.shown != null) d.shown_index else null,
+        .shown = if (d.display.frame != null) d.display.index else null,
     });
     d.current = head.current;
     app.playing = head.playing;
@@ -594,10 +585,10 @@ fn setInterp(app: *App, t: f32) void {
 /// The step after the shown one is loaded and can be blended with it.
 fn nextReady(app: *const App) bool {
     const d = app.doc orelse return false;
-    const s = d.shown orelse return false;
+    const s = d.display.frame orelse return false;
     const nx = d.next orelse return false;
-    return d.shown_index == d.current and d.next_index > d.current and app.diff == null and
-        app.numberingOf(d.shown_index, s).eql(app.numberingOf(d.next_index, nx));
+    return d.display.index == d.current and d.next_index > d.current and app.diff == null and
+        app.numberingOf(d.display.index, s).eql(app.numberingOf(d.next_index, nx));
 }
 
 /// How the atoms of frame `index`, currently `frame`, are numbered.
@@ -685,7 +676,7 @@ fn slope(a: Vec3, b: Vec3) Vec3 {
 
 pub fn fitCamera(app: *App) void {
     const d = app.doc orelse return;
-    const f = d.shown orelse return;
+    const f = d.display.frame orelse return;
     var b = f.bounds();
     if (app.style.show_cell) if (f.cell) |cell| {
         for (0..8) |i| {
@@ -714,14 +705,16 @@ fn rebuildScene(app: *App) !void {
     const r = &app.renderer;
     r.clear();
     const d = app.doc orelse return r.upload();
-    const f = d.shown orelse return r.upload();
+    const f = d.display.frame orelse return r.upload();
     if (app.diff) |df| if (df.overlay and df.result != null) {
-        _ = try r.addStructure(df.reference.positions, df.reference.numbers, df.ref_bonds.items, app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
-        const start = try r.addStructure(df.aligned.items, f.numbers, d.bonds.items, app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.picks.cuts);
+        const ref = app.diff.?.reference.frame.?;
+        const ref_bonds = try app.diff.?.reference.bonds(app.gpa, app.bond_params);
+        _ = try r.addStructure(ref.positions, ref.numbers, ref_bonds, app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
+        const start = try r.addStructure(df.aligned.items, f.numbers, app.bonds(), app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.picks.cuts);
         r.highlight(start, app.selected());
         return r.upload();
     };
-    const start = try r.addStructure(app.displayPositions(f), f.numbers, d.bonds.items, app.style, null, &app.picks.cuts);
+    const start = try r.addStructure(app.displayPositions(f), f.numbers, app.bonds(), app.style, null, &app.picks.cuts);
     r.highlight(start, app.selected());
     if (app.style.show_cell) if (f.cell) |cell| try r.addCell(cell, app.style.theme.cellLine());
     try r.upload();
@@ -731,18 +724,18 @@ fn rebuildScene(app: *App) !void {
 
 pub fn setReference(app: *App) void {
     const d = app.doc orelse return;
-    const f = d.shown orelse return;
+    const f = d.display.frame orelse return;
     app.clearDiff();
     const ref = f.clone(app.gpa) catch return;
-    app.diff = .{ .reference = ref, .ref_index = d.shown_index };
+    app.diff = .{ .reference = .{ .frame = ref, .index = d.display.index } };
     app.show_diff = true;
-    app.bonds_dirty = true;
+    app.updateDiff();
+    app.scene_dirty = true;
 }
 
 pub fn clearDiff(app: *App) void {
     var df = app.diff orelse return;
     df.reference.deinit(app.gpa);
-    df.ref_bonds.deinit(app.gpa);
     df.aligned.deinit(app.gpa);
     df.deviations.deinit(app.gpa);
     app.diff = null;
@@ -771,12 +764,12 @@ fn dropRotationLock(app: *App) void {
 fn followRotationLock(app: *App) void {
     if (!app.lock_rotation) return;
     const d = app.doc orelse return;
-    const f = d.shown orelse return;
+    const f = d.display.frame orelse return;
     // What is drawn: blended between steps, or the plain step (aligned, when diffing).
     const blend = if (app.nextReady()) app.interp_t else 0;
     const pos = if (blend > 0) app.displayPositions(f) else app.displayedPositions() orelse return;
     if (app.rotation_lock) |*l| {
-        if (l.index == d.shown_index and l.blend == blend) return;
+        if (l.index == d.display.index and l.blend == blend) return;
         if (l.anchor.len == pos.len and std.mem.eql(u8, l.numbers, f.numbers)) {
             const next = cv.align_.superpose(l.anchor, pos, null).transform;
             // Frame-to-frame motion M = current⁻¹ ∘ next, with T(p) = R (p - from) + to:
@@ -796,7 +789,7 @@ fn followRotationLock(app: *App) void {
             };
             app.camera.followRigid(rot, @floatCast(next.from_center), @floatCast(to));
             l.current = next;
-            l.index = d.shown_index;
+            l.index = d.display.index;
             l.blend = blend;
             return;
         }
@@ -807,21 +800,24 @@ fn followRotationLock(app: *App) void {
         app.gpa.free(anchor);
         return;
     };
-    app.rotation_lock = .{ .anchor = anchor, .numbers = numbers, .index = d.shown_index, .blend = blend };
+    app.rotation_lock = .{ .anchor = anchor, .numbers = numbers, .index = d.display.index, .blend = blend };
 }
 
 fn updateDiff(app: *App) void {
     const df = &(app.diff orelse return);
     const d = app.doc orelse return;
-    const f = d.shown orelse return;
+    const f = d.display.frame orelse return;
+    if (df.followed == d.display.changes) return;
+    df.followed = d.display.changes;
+    const ref = df.reference.frame.?;
     df.result = null;
-    df.incompatible = f.len() != df.reference.len() or !std.mem.eql(u8, f.numbers, df.reference.numbers);
+    df.incompatible = f.len() != ref.len() or !std.mem.eql(u8, f.numbers, ref.numbers);
     if (df.incompatible) return;
-    const res = cv.align_.superpose(df.reference.positions, f.positions, null);
+    const res = cv.align_.superpose(ref.positions, f.positions, null);
     df.aligned.resize(app.gpa, f.len()) catch return;
     df.deviations.resize(app.gpa, f.len()) catch return;
     df.max_dev_atom = 0;
-    for (f.positions, df.aligned.items, df.deviations.items, df.reference.positions, 0..) |p, *a, *dev, rp, i| {
+    for (f.positions, df.aligned.items, df.deviations.items, ref.positions, 0..) |p, *a, *dev, rp, i| {
         a.* = res.transform.apply(p);
         dev.* = cv.math.length(a.* - rp);
         if (dev.* > df.deviations.items[df.max_dev_atom]) df.max_dev_atom = i;
@@ -1058,7 +1054,7 @@ pub fn restoreCuts(app: *App) void {
 
 fn selectAll(app: *App) void {
     const d = app.doc orelse return;
-    const f = d.shown orelse return;
+    const f = d.display.frame orelse return;
     app.picks.selection.clearRetainingCapacity();
     app.picks.selection.ensureTotalCapacity(app.gpa, f.len()) catch return;
     for (0..f.len()) |i| app.picks.selection.appendAssumeCapacity(@intCast(i));
@@ -1069,7 +1065,7 @@ fn selectAll(app: *App) void {
 /// if that adds nothing (or nothing is selected), select everything.
 pub fn expandSelection(app: *App) void {
     const d = app.doc orelse return;
-    const f = d.shown orelse return;
+    const f = d.display.frame orelse return;
     var step = app.beginGesture() orelse return;
     defer app.endGesture(&step);
     if (app.picks.selection.items.len == 0) return app.selectAll();
@@ -1145,15 +1141,24 @@ pub fn drawLasso(app: *App) void {
     c.ImDrawList_AddPolyline(dl, pts, n, ui.rgba(ac[0], ac[1], ac[2], 0.9), 1.5, c.ImDrawFlags_Closed);
 }
 
+/// Bonds between the shown atoms. Out of memory, none, saying so.
+fn bonds(app: *App) []const cv.bonds.Bond {
+    const d = &(app.doc orelse return &.{});
+    return d.display.bonds(app.gpa, app.bond_params) catch |e| {
+        app.setStatus("Bond search failed: {t}", .{e});
+        return &.{};
+    };
+}
+
 /// Connectivity used for moving groups and selecting molecules: exactly the
 /// bonds that are drawn, so what moves together is what looks connected,
 /// minus the bonds the user cut.
-pub fn drawnGraph(app: *const App) !cv.geometry.Graph {
-    const d = app.doc orelse return error.NoDocument;
-    const f = d.shown orelse return error.NoDocument;
+fn drawnGraph(app: *App) !cv.geometry.Graph {
+    const d = &(app.doc orelse return error.NoDocument);
+    const f = d.display.frame orelse return error.NoDocument;
     var drawn: std.ArrayList(cv.bonds.Bond) = .empty;
     defer drawn.deinit(app.gpa);
-    for (d.bonds.items) |b| {
+    for (try d.display.bonds(app.gpa, app.bond_params)) |b| {
         if (Renderer.isDrawn(app.style, b.character) and !app.isCut(b.a, b.b)) try drawn.append(app.gpa, b);
     }
     return cv.geometry.Graph.init(app.gpa, f.len(), drawn.items, 0);
@@ -1163,7 +1168,7 @@ pub fn drawnGraph(app: *const App) !cv.geometry.Graph {
 /// except for blending, which picking adds.
 pub fn displayedPositions(app: *const App) ?[]const Vec3 {
     const d = app.doc orelse return null;
-    const f = d.shown orelse return null;
+    const f = d.display.frame orelse return null;
     if (app.diff) |df| if (df.overlay and df.result != null) return df.aligned.items;
     return f.positions;
 }
@@ -1180,7 +1185,7 @@ const Hit = struct { t: f32, target: union(enum) { atom: u32, bond: [2]u32 } };
 /// The nearest atom or drawn bond under window point (x, y), if any.
 fn hitAt(app: *App, x: f32, y: f32) ?Hit {
     const d = app.doc orelse return null;
-    const f = d.shown orelse return null;
+    const f = d.display.frame orelse return null;
     // Blending is off while diffing.
     const pos = if (app.nextReady()) app.displayPositions(f) else app.displayedPositions() orelse return null;
     const ws = app.windowSize();
@@ -1197,7 +1202,7 @@ fn hitAt(app: *App, x: f32, y: f32) ?Hit {
     }
     // Bonds: closest approach between the ray and the bond segment.
     const grab = @max(app.style.bondRadius() * 1.6, 0.12);
-    for (d.bonds.items) |bd| {
+    for (app.bonds()) |bd| {
         if (!Renderer.isDrawn(app.style, bd.character)) continue;
         const p0 = pos[bd.a];
         const e = pos[bd.b] - p0;
@@ -1264,9 +1269,8 @@ pub fn screenProjector(app: *const App) ScreenProjector {
     return .{ .m = proj.mul(app.camera.view()), .w = ws[0], .h = ws[1] };
 }
 
-pub fn bondCharacter(app: *const App, a: u32, b: u32) ?f32 {
-    const d = app.doc orelse return null;
-    for (d.bonds.items) |bd| {
+pub fn bondCharacter(app: *App, a: u32, b: u32) ?f32 {
+    for (app.bonds()) |bd| {
         if ((bd.a == a and bd.b == b) or (bd.a == b and bd.b == a)) return bd.character;
     }
     return null;
@@ -1358,16 +1362,15 @@ fn dragMotion(app: *App, x: f32, y: f32, dx: f32, dy: f32) void {
     }
     dr.moved = true;
     dr.apply(edit.atoms.positions, axes[2]);
-    app.showDragged(edit.atoms.positions);
+    app.showDragged(edit.atoms);
 }
 
-/// Show the dragged frame with these positions. Whatever puts another frame on
-/// screen, or changes this one, ends the drag first.
-fn showDragged(app: *App, positions: []const Vec3) void {
+/// Show the dragged frame with the positions of these atoms. Whatever puts
+/// another frame on screen, or changes this one, ends the drag first.
+fn showDragged(app: *App, atoms: Frame) void {
     const d = &app.doc.?;
-    std.debug.assert(d.shown_index == app.drag_edit.?.index);
-    @memcpy(d.shown.?.positions, positions);
-    app.bonds_dirty = true;
+    std.debug.assert(d.display.index == app.drag_edit.?.index);
+    d.display.move(atoms.positions);
 }
 
 /// Finish (commit = true: keep as one geometry step) or cancel the drag.
@@ -1377,8 +1380,7 @@ fn endDrag(app: *App, commit: bool) void {
     var edit = app.drag_edit.?;
     defer edit.deinit();
     // Back as they were, unless committed below.
-    for (dr.group, dr.start) |i, p| app.doc.?.shown.?.positions[i] = p;
-    app.bonds_dirty = true;
+    app.showDragged(edit.before());
     app.drag = null;
     app.drag_edit = null;
     if (commit and dr.moved) {
@@ -1392,7 +1394,7 @@ fn endDrag(app: *App, commit: bool) void {
 /// Shown in the measurement bar while dragging.
 pub fn dragHint(app: *const App, buf: []u8) ?[]const u8 {
     const dr = app.drag orelse return null;
-    const f = app.doc.?.shown.?;
+    const f = app.doc.?.display.frame.?;
     const verb = switch (dr.kind) {
         .rotate => "Rotating",
         .twist => "Twisting",
@@ -1439,19 +1441,13 @@ fn applyEditInner(app: *App, edit: Edit) !void {
 
 /// Get ready to change the shown frame: abort a drag, and pause playback on
 /// the nearest real step. With interpolation that may be the step after.
-fn stopForEdit(app: *App) !void {
+fn stopForEdit(app: *App) void {
     const d = &(app.doc orelse return);
-    const dragged = app.drag != null;
     app.endDrag(false);
     const was_playing = app.playing;
     app.playing = false;
     // Never a step that is still loading.
-    if (was_playing and !app.showNearerNext() and d.shown != null) app.moveTo(d.shown_index);
-    // An edit needs the bonds of the atoms it starts from.
-    if (dragged or was_playing) if (d.shown) |f| {
-        app.bonds_dirty = true;
-        try cv.bonds.findInto(app.gpa, &d.bonds, f.positions, f.numbers, app.bond_params);
-    };
+    if (was_playing and !app.showNearerNext() and d.display.frame != null) app.moveTo(d.display.index);
 }
 
 /// Stopping a blend: if it is nearer to the next step, show that one.
@@ -1467,9 +1463,9 @@ fn showNearerNext(app: *App) bool {
 
 /// Every transaction on the shown frame starts here.
 fn beginEdit(app: *App) !cv.edit.Transaction {
-    try app.stopForEdit();
+    app.stopForEdit();
     const d = &(app.doc orelse return error.NoDocument);
-    return app.session.begin(d.shown_index, d.shown orelse return error.NoDocument);
+    return app.session.begin(d.display.index, d.display.frame orelse return error.NoDocument);
 }
 
 /// Commit an edit of the shown frame and show it. On error the frame is as it
@@ -1494,7 +1490,7 @@ fn commitRenumbering(app: *App, edit: *cv.edit.Transaction, selection: []const u
 
 fn commitKeeping(app: *App, edit: *cv.edit.Transaction, kept: ?cv.picks.Kept) !bool {
     const d = &(app.doc orelse return error.NoDocument);
-    std.debug.assert(d.shown_index == edit.index);
+    std.debug.assert(d.display.index == edit.index);
     // Nothing may fail after the commit.
     var show = try edit.atoms.clone(app.gpa);
     errdefer show.deinit(app.gpa);
@@ -1518,17 +1514,17 @@ fn showChanged(app: *App, index: usize, frame: Frame) void {
         }
     }
     var new = frame;
-    if (d.shown_index != index) return new.deinit(app.gpa);
-    if (d.shown) |*old| old.deinit(app.gpa);
-    d.shown = new;
-    app.followPicks();
-    app.bonds_dirty = true;
+    if (d.display.index != index) return new.deinit(app.gpa);
+    d.display.show(app.gpa, index, new);
+    app.followDisplay();
 }
 
-/// The selection and cuts follow the shown frame's numbering.
-fn followPicks(app: *App) void {
+/// What has atom numbers in it follows the shown frame at once: the picks, and
+/// the diff.
+fn followDisplay(app: *App) void {
     const d = &app.doc.?;
-    app.picks.follow(app.gpa, d.shown_index, app.numberingOf(d.shown_index, d.shown.?));
+    app.picks.follow(app.gpa, d.display.index, app.numberingOf(d.display.index, d.display.frame.?));
+    app.updateDiff();
 }
 
 /// Show a change made to frame `index` by undo, redo or revert.
@@ -1536,10 +1532,9 @@ fn showSessionChange(app: *App, index: usize) void {
     const d = &app.doc.?;
     if (app.takeFrame(index)) |f| {
         app.showChanged(index, f);
-    } else if (d.shown_index == index) {
+    } else if (d.display.index == index) {
         // Out of memory: `update` tries again.
-        if (d.shown) |*f| f.deinit(app.gpa);
-        d.shown = null;
+        d.display.hide(app.gpa);
     }
 }
 
@@ -1606,7 +1601,7 @@ fn jumpToChange(app: *App, index: usize, kept: ?cv.picks.Kept, side: cv.picks.Si
     app.showSessionChange(index);
     if (d.current != index) app.setFrame(index) else app.setInterp(0);
     app.pullFrame(); // the session has its atoms
-    if (d.shown == null or d.shown_index != index) return;
+    if (d.display.frame == null or d.display.index != index) return;
     if (kept) |k| app.picks.restore(app.gpa, k, side);
 }
 
@@ -1634,18 +1629,18 @@ pub fn revertFrame(app: *App) void {
     const d = &(app.doc orelse return);
     app.endDrag(false);
     // The frame it is offered for, even if a blend is nearer to the next step.
-    if (!app.session.isEdited(d.shown_index)) return;
+    if (!app.session.isEdited(d.display.index)) return;
     app.playing = false;
     app.revertShown() catch |e| return app.setStatus("Revert failed: {t}", .{e});
-    app.showSessionChange(d.shown_index);
+    app.showSessionChange(d.display.index);
     // The frame asked for may be another one that can't be read.
-    app.moveTo(d.shown_index);
-    app.setStatus("Reverted frame {d} to the file (Ctrl+Z undoes)", .{d.shown_index + 1});
+    app.moveTo(d.display.index);
+    app.setStatus("Reverted frame {d} to the file (Ctrl+Z undoes)", .{d.display.index + 1});
 }
 
 /// The shown frame, which is edited, to its file frame in the session.
 fn revertShown(app: *App) !void {
-    const index = app.doc.?.shown_index;
+    const index = app.doc.?.display.index;
     const renumbers = app.session.origins(index) != null;
     var kept: ?cv.picks.Kept = if (renumbers and app.session.selection_steps) try app.picks.keep(app.gpa, null) else null;
     errdefer if (kept) |*k| k.deinit(app.gpa);
@@ -1654,13 +1649,13 @@ fn revertShown(app: *App) !void {
 
 pub fn saveDialog(app: *App) void {
     const d = app.doc orelse return;
-    if (d.shown == null) return;
+    if (d.display.frame == null) return;
     const filters = [_]c.SDL_DialogFileFilter{.{ .name = "XYZ", .pattern = "xyz" }};
     // Suggest <name>_frameN.xyz next to the source file.
     var buf: [4096]u8 = undefined;
     const stem = std.fs.path.stem(d.path);
     const dir = std.fs.path.dirname(d.path) orelse ".";
-    const suggestion = ui.printZ(&buf, "{s}/{s}_frame{d}.xyz", .{ dir, stem, d.shown_index + 1 }) catch null;
+    const suggestion = ui.printZ(&buf, "{s}/{s}_frame{d}.xyz", .{ dir, stem, d.display.index + 1 }) catch null;
     c.SDL_ShowSaveFileDialog(saveCallback, app, app.window, &filters, filters.len, if (suggestion) |s| s.ptr else null);
 }
 
@@ -1686,7 +1681,7 @@ pub fn saveFrame(app: *App, path: []const u8) void {
 
 fn saveFrameInner(app: *App, path: []const u8) !void {
     const d = app.doc orelse return error.NothingToSave;
-    const f = d.shown orelse return error.NothingToSave;
+    const f = d.display.frame orelse return error.NothingToSave;
     const file = try Io.Dir.cwd().createFile(app.io, path, .{});
     defer file.close(app.io);
     var buf: [64 * 1024]u8 = undefined;
@@ -1719,7 +1714,7 @@ fn menuBar(app: *App) void {
     defer c.igEndMainMenuBar();
     if (c.igBeginMenu("File", true)) {
         if (c.igMenuItem_Bool("Open...", "Ctrl+O", false, true)) app.openDialog();
-        const has_frame = app.doc != null and app.doc.?.shown != null;
+        const has_frame = app.doc != null and app.doc.?.display.frame != null;
         if (c.igMenuItem_Bool("Save frame as XYZ...", "Ctrl+S", false, has_frame)) app.saveDialog();
         if (c.igMenuItem_Bool("Close", null, false, app.doc != null)) app.closeDocument();
         c.igSeparator();
@@ -1729,7 +1724,7 @@ fn menuBar(app: *App) void {
     if (c.igBeginMenu("Edit", true)) {
         if (c.igMenuItem_Bool("Undo", "Ctrl+Z", false, app.canUndo())) app.undo();
         if (c.igMenuItem_Bool("Redo", "Ctrl+Shift+Z", false, app.canRedo())) app.redo();
-        const edited = if (app.doc) |d| app.session.isEdited(d.shown_index) else false;
+        const edited = if (app.doc) |d| app.session.isEdited(d.display.index) else false;
         if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.picks.selection.items.len > 0)) app.deleteSelection();
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
         c.igSeparator();
@@ -1779,9 +1774,9 @@ fn inspector(app: *App, timeline_h: f32) void {
         c.igSeparatorText("File");
         ui.selectableText("##path", "{s}", .{std.fs.path.basename(d.path)});
         ui.textDisabled("{s}{s}", .{ d.format.label(), if (d.source.isStreamed()) ", streamed" else "" });
-        if (d.shown) |f| {
-            ui.text("Frame {d} / {d}{s}", .{ d.shown_index + 1, d.frameCount(), if (app.session.isEdited(d.shown_index)) "  (edited)" else "" });
-            ui.text("{d} atoms, {d} links", .{ f.len(), d.bonds.items.len });
+        if (d.display.frame) |f| {
+            ui.text("Frame {d} / {d}{s}", .{ d.display.index + 1, d.frameCount(), if (app.session.isEdited(d.display.index)) "  (edited)" else "" });
+            ui.text("{d} atoms, {d} links", .{ f.len(), app.bonds().len });
             if (f.energy) |e| {
                 c.igAlignTextToFramePadding();
                 ui.text("E =", .{});
@@ -1804,7 +1799,7 @@ fn inspector(app: *App, timeline_h: f32) void {
     ui.gradientLegend(app.style.theme, app.style.snap);
     if (c.igSliderFloat("Snap", &app.style.snap, 0, 1, "%.2f", 0)) app.scene_dirty = true;
     ui.tooltip("How strongly colours settle on whole bond orders. 0 = linear in bond character, 1 = flat plateaus at single/double/triple.");
-    if (c.igSliderFloat("Cut-off x r1", &app.bond_params.cutoff_factor, 1.0, 1.8, "%.2f", 0)) app.bonds_dirty = true;
+    if (c.igSliderFloat("Cut-off x r1", &app.bond_params.cutoff_factor, 1.0, 1.8, "%.2f", 0)) app.scene_dirty = true;
     ui.tooltip("Pairs closer than this multiple of their single-bond length get a link.");
     if (c.igSliderFloat("Hide below", &app.style.min_character, 0, 3, "%.2f", 0)) app.scene_dirty = true;
     ui.tooltip("Hide links whose bond character is below this value (1 = single). Only drawn links connect atoms when moving groups or selecting molecules.");
@@ -1937,13 +1932,13 @@ fn diffPanel(app: *App) void {
     ui.textWrapped("Superimpose the current frame onto a reference frame (same atoms, same order).", .{});
     if (c.igButton("Use current frame as reference", ui.v2(-1, 0))) app.setReference();
     const df = &(app.diff orelse return);
-    ui.text("Reference: frame {d}", .{df.ref_index + 1});
+    ui.text("Reference: frame {d}", .{df.reference.index + 1});
     c.igSameLine(0, -1);
     if (c.igSmallButton("Clear")) {
         app.clearDiff();
         return;
     }
-    if (c.igSmallButton("Jump to reference")) app.setFrame(df.ref_index);
+    if (c.igSmallButton("Jump to reference")) app.setFrame(df.reference.index);
     if (c.igCheckbox("Overlay (reference red, current green)", &df.overlay)) app.scene_dirty = true;
     if (df.incompatible) {
         ui.textWrapped("Current frame has different atoms than the reference. Matching without a known correspondence is planned (Phase 3).", .{});
@@ -1954,7 +1949,7 @@ fn diffPanel(app: *App) void {
     ui.text("RMSD  {d:.4} Å", .{res.rmsd});
     if (df.deviations.items.len > 0) {
         const i = df.max_dev_atom;
-        const z = d.shown.?.numbers[i];
+        const z = d.display.frame.?.numbers[i];
         ui.text("Max   {d:.4} Å  ({s}{d})", .{ df.deviations.items[i], cv.elements.symbol(z), i + 1 });
     }
 }
@@ -2007,7 +2002,7 @@ const TestApp = struct {
         for (0..2000) |_| {
             d.stream.request(d.current);
             t.app.pullFrame();
-            if (d.shown != null and d.shown_index == d.current) return;
+            if (d.display.frame != null and d.display.index == d.current) return;
             try io.sleep(.fromMilliseconds(1), .awake);
         }
         return error.TestTimeout;
@@ -2026,16 +2021,23 @@ const TestApp = struct {
     }
 
     fn deleteAtom(t: *TestApp, atom: u32) !void {
-        const n = t.app.doc.?.shown.?.len();
+        const n = t.app.doc.?.display.frame.?.len();
         t.select(&.{atom});
         t.app.deleteSelection();
-        try expectEqual(n - 1, t.app.doc.?.shown.?.len());
+        try expectEqual(n - 1, t.app.doc.?.display.frame.?.len());
     }
 
     fn pasteAtom(t: *TestApp) !void {
-        var frag = try t.app.doc.?.shown.?.subset(gpa, &.{0});
+        var frag = try t.app.doc.?.display.frame.?.subset(gpa, &.{0});
         defer frag.deinit(gpa);
         try t.app.appendFragment(frag);
+    }
+
+    /// Whether groups and molecules go through the bond between `a` and `b`.
+    fn expectBonded(t: *TestApp, a: u32, b: u32, want: bool) !void {
+        var graph = try t.app.drawnGraph();
+        defer graph.deinit(gpa);
+        try expectEqual(want, std.mem.findScalar(u32, graph.neighbors(a), b) != null);
     }
 
     fn expectSelected(t: *TestApp, want: []const u32) !void {
@@ -2058,7 +2060,7 @@ const TestApp = struct {
     }
 
     fn click(t: *TestApp, atom: u32) !void {
-        const at = t.app.screenProjector().toScreen(t.app.doc.?.shown.?.positions[atom]).?;
+        const at = t.app.screenProjector().toScreen(t.app.doc.?.display.frame.?.positions[atom]).?;
         const was = t.app.selected().len;
         t.app.clickAt(at.x, at.y, 1);
         try expect(t.app.selected().len != was);
@@ -2089,7 +2091,7 @@ const TestApp = struct {
     fn dragSome(t: *TestApp) !void {
         try t.startDrag();
         t.app.dragMotion(0, 0, 0.1, 0);
-        try expect(t.app.doc.?.shown.?.positions[1][0] != 0);
+        try expect(t.app.doc.?.display.frame.?.positions[1][0] != 0);
     }
 
     /// No drag is going on, and it left nothing behind in frame 0.
@@ -2100,7 +2102,7 @@ const TestApp = struct {
         try expect(!t.app.session.isEdited(0));
         try expect(!t.app.canUndo());
         const d = &t.app.doc.?;
-        if (d.shown_index == 0) try expectEqual(Vec3{ 0, 0, 1 }, d.shown.?.positions[1]);
+        if (d.display.index == 0) try expectEqual(Vec3{ 0, 0, 1 }, d.display.frame.?.positions[1]);
     }
 
     /// Two steps apart in y, playing with interpolation at `at` between them.
@@ -2124,7 +2126,7 @@ const TestApp = struct {
     }
 
     fn distance(t: *TestApp) f64 {
-        return cv.geometry.distance(t.app.doc.?.shown.?.positions, 0, 1);
+        return cv.geometry.distance(t.app.doc.?.display.frame.?.positions, 0, 1);
     }
 
     fn expectCopyEdited(t: *TestApp, want: bool) !void {
@@ -2143,13 +2145,13 @@ test "undoing a frame's last edit makes it its file frame again" {
     try t.show(1);
     t.setDistance(1.5);
     t.setDistance(1.7);
-    try expectEqual(null, t.app.doc.?.shown.?.energy);
+    try expectEqual(null, t.app.doc.?.display.frame.?.energy);
     t.app.undo();
     try t.expectCopyEdited(true);
     t.app.undo();
     try t.settle();
     try expectEqual(1, t.distance());
-    try expectEqual(1, t.app.doc.?.shown.?.energy);
+    try expectEqual(1, t.app.doc.?.display.frame.?.energy);
     try t.expectCopyEdited(false);
 }
 
@@ -2171,9 +2173,9 @@ test "revert can be undone, and leaves other frames' history alone" {
     t.app.undo(); // frame 2's edit
     t.app.undo(); // frame 1's, jumping there
     try t.settle();
-    try expectEqual(0, t.app.doc.?.shown_index);
+    try expectEqual(0, t.app.doc.?.display.index);
     try expectEqual(1, t.distance());
-    try expectEqual(0, t.app.doc.?.shown.?.energy);
+    try expectEqual(0, t.app.doc.?.display.frame.?.energy);
 }
 
 test "closing or opening a file resets everything about the old one" {
@@ -2309,7 +2311,7 @@ test "undo to another frame keeps the selection if the numbering is the same" {
     t.select(&.{2});
     t.app.undo();
     try t.settle();
-    try expectEqual(1, t.app.doc.?.shown_index);
+    try expectEqual(1, t.app.doc.?.display.index);
     try t.expectSelected(&.{2});
 }
 
@@ -2334,6 +2336,102 @@ test "steps with different numberings aren't blended, so an edit stays on the sh
     try t.expectSelected(&.{ 0, 1 });
 }
 
+test "a typed value right after adding a fragment moves what is attached in it" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.show(0);
+    var water = try cv.source.openBytes(TestApp.gpa, "3\n\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n");
+    defer water.source.deinit(TestApp.io, TestApp.gpa);
+    try t.app.appendFragment(water.source.memory[0]);
+    t.select(&.{ 4, 3 });
+    t.app.applyEdit(.{ .distance = 1.5 });
+    const p = t.app.doc.?.display.frame.?.positions;
+    try std.testing.expectApproxEqAbs(1.5, cv.geometry.distance(p, 4, 3), 1e-4);
+    try std.testing.expectApproxEqAbs(0.9605, cv.geometry.distance(p, 3, 5), 1e-3);
+}
+
+test "bonds follow edits, drags, undo, redo, revert and the cut-off at once" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("2\n\nH 0 0 0\nH 0.74 0 0\n");
+    try t.show(0);
+    try t.expectBonded(0, 1, true);
+    t.setDistance(3);
+    try t.expectBonded(0, 1, false);
+    t.app.undo();
+    try t.expectBonded(0, 1, true);
+    t.app.redo();
+    try t.expectBonded(0, 1, false);
+    t.app.revertFrame();
+    try t.expectBonded(0, 1, true);
+
+    t.app.clearSelection();
+    t.app.toggleSelect(0); // the base: only atom 1 is dragged
+    t.app.toggleCutPair(0, 1);
+    try t.app.startDrag(.translate, 1);
+    t.app.restoreCuts();
+    t.app.dragMotion(0, 0, 50, 0);
+    try t.expectBonded(0, 1, false);
+    t.app.endDrag(false);
+    try t.expectBonded(0, 1, true);
+
+    t.app.bond_params.cutoff_factor = 1;
+    try t.expectBonded(0, 1, false);
+}
+
+test "a delete followed at once by a click, Ctrl+A or an edit uses the new bonds" {
+    const Next = enum { click, ctrl_a, set };
+    for ([_]Next{ .click, .ctrl_a, .set }) |next| {
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.openText("4\n\nO 9 0 0\nH 0 0 0\nH 0.74 0 0\nH 1.48 0 0\n");
+        try t.show(0);
+        t.app.fitCamera();
+        try t.expectBonded(2, 3, true);
+        try t.deleteAtom(0);
+        switch (next) {
+            .click => try t.click(0),
+            .ctrl_a => {
+                t.select(&.{0});
+                t.app.expandSelection();
+                try t.expectSelected(&.{ 0, 1, 2 });
+            },
+            .set => {
+                t.setDistance(1);
+                try std.testing.expectApproxEqAbs(1.74, t.app.doc.?.display.frame.?.positions[2][0], 1e-4);
+            },
+        }
+    }
+}
+
+test "a delete followed at once by a click in a diff overlay" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openRow(1);
+    t.app.setReference();
+    try t.deleteAtom(0);
+    try t.click(1);
+    try t.expectSelected(&.{1});
+    t.app.undo(); // the click
+    t.app.undo();
+    try t.click(2);
+}
+
+test "an edit fails, changing nothing, if its bonds can't be found" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("2\n\nH 0 0 0\nH 0.74 0 0\n");
+    try t.show(0);
+    var failing: std.testing.FailingAllocator = .init(TestApp.gpa, .{ .fail_index = 0 });
+    t.select(&.{ 0, 1 });
+    t.app.gpa = failing.allocator();
+    t.app.applyEdit(.{ .distance = 2 });
+    t.app.gpa = TestApp.gpa;
+    try expect(!t.app.session.isEdited(0));
+    t.app.applyEdit(.{ .distance = 2 });
+    try expect(t.app.session.isEdited(0));
+}
+
 test "a cut changes what a typed value moves" {
     for ([_]bool{ false, true }) |cut| {
         var t: TestApp = try .init(1);
@@ -2341,11 +2439,10 @@ test "a cut changes what a typed value moves" {
         try t.openText("3\n\nH 0 0 0\nH 0.74 0 0\nH 1.48 0 0\n");
         try t.show(0);
         const d = &t.app.doc.?;
-        try cv.bonds.findInto(TestApp.gpa, &d.bonds, d.shown.?.positions, d.shown.?.numbers, t.app.bond_params);
         if (cut) t.app.toggleCutPair(1, 2);
         t.setDistance(1);
         const x: f32 = if (cut) 1.48 else 1.74;
-        try std.testing.expectApproxEqAbs(x, d.shown.?.positions[2][0], 1e-4);
+        try std.testing.expectApproxEqAbs(x, d.display.frame.?.positions[2][0], 1e-4);
     }
 }
 
@@ -2430,7 +2527,7 @@ test "redo restores each kind of edit exactly, and the edited state" {
             .revert => t.app.revertFrame(),
         }
         const d = &t.app.doc.?;
-        var after = try d.shown.?.clone(TestApp.gpa);
+        var after = try d.display.frame.?.clone(TestApp.gpa);
         defer after.deinit(TestApp.gpa);
         const origins: ?[]u32 = if (t.app.session.origins(0)) |o| try TestApp.gpa.dupe(u32, o) else null;
         defer if (origins) |o| TestApp.gpa.free(o);
@@ -2439,9 +2536,9 @@ test "redo restores each kind of edit exactly, and the edited state" {
             try t.expectCopyEdited(kind == .revert);
             t.app.redo();
             try t.expectCopyEdited(kind != .revert);
-            try std.testing.expectEqualSlices(Vec3, after.positions, d.shown.?.positions);
-            try std.testing.expectEqualSlices(u8, after.numbers, d.shown.?.numbers);
-            try expectEqual(after.energy, d.shown.?.energy);
+            try std.testing.expectEqualSlices(Vec3, after.positions, d.display.frame.?.positions);
+            try std.testing.expectEqualSlices(u8, after.numbers, d.display.frame.?.numbers);
+            try expectEqual(after.energy, d.display.frame.?.energy);
             try std.testing.expectEqualDeep(@as(?[]const u32, origins), t.app.session.origins(0));
         }
     }
@@ -2464,8 +2561,8 @@ test "redo jumps to the frame it changed and translates cuts and selection" {
     try t.show(0);
     t.app.redo();
     try t.settle();
-    try expectEqual(1, t.app.doc.?.shown_index);
-    try expectEqual(2, t.app.doc.?.shown.?.len());
+    try expectEqual(1, t.app.doc.?.display.index);
+    try expectEqual(2, t.app.doc.?.display.frame.?.len());
 }
 
 test "redo aborts a drag and pauses playback" {
@@ -2617,7 +2714,7 @@ test "undoing a delete made before its frame was left restores the selection onl
     try t.show(1);
     t.app.undo();
     try t.settle();
-    try expectEqual(0, t.app.doc.?.shown_index);
+    try expectEqual(0, t.app.doc.?.display.index);
     try t.expectSelected(&.{1});
     try t.expectCuts(&.{});
 }
@@ -2640,7 +2737,7 @@ test "selection steps stay on the frame and don't pause playback, geometry steps
     try expect(t.app.playing);
     t.app.undo();
     try t.settle();
-    try expectEqual(0, t.app.doc.?.shown_index);
+    try expectEqual(0, t.app.doc.?.display.index);
     try expect(!t.app.playing);
 }
 
@@ -2679,7 +2776,7 @@ test "a step that was skipped gives way to one that has an effect" {
     try t.show(1);
     t.app.undo(); // past the cut
     try t.expectSelected(&.{});
-    try expectEqual(1, t.app.doc.?.shown_index);
+    try expectEqual(1, t.app.doc.?.display.index);
     t.app.redo();
     try t.expectSelected(&.{1});
     try expect(!t.app.canRedo()); // the cut ended
@@ -2789,7 +2886,7 @@ test "a delete or paste that fails changes nothing" {
             try t.openRow(1);
             try t.click(2);
             t.app.cutBond(0, 1);
-            var frag = try t.app.doc.?.shown.?.subset(TestApp.gpa, &.{0});
+            var frag = try t.app.doc.?.display.frame.?.subset(TestApp.gpa, &.{0});
             defer frag.deinit(TestApp.gpa);
             var failing: std.testing.FailingAllocator = .init(TestApp.gpa, .{ .fail_index = fail_index });
             const gpa = if (in_session) &t.app.session.gpa else &t.app.gpa;
@@ -2797,7 +2894,7 @@ test "a delete or paste that fails changes nothing" {
             if (paste) t.app.appendFragment(frag) catch {} else t.app.deleteSelection();
             gpa.* = TestApp.gpa;
             if (t.app.session.isEdited(0)) break;
-            try expectEqual(3, t.app.doc.?.shown.?.len());
+            try expectEqual(3, t.app.doc.?.display.frame.?.len());
             try t.expectSelected(&.{2});
             try t.expectCuts(&.{.{ 0, 1 }});
         }
@@ -2851,8 +2948,8 @@ test "a frame with fewer atoms arriving aborts a drag" {
     try t.settle();
     try t.expectAborted();
     t.app.dragMotion(0, 0, 0.1, 0);
-    try expectEqual(1, t.app.doc.?.shown.?.len());
-    try expectEqual(Vec3{ 5, 5, 5 }, t.app.doc.?.shown.?.positions[0]);
+    try expectEqual(1, t.app.doc.?.display.frame.?.len());
+    try expectEqual(Vec3{ 5, 5, 5 }, t.app.doc.?.display.frame.?.positions[0]);
 }
 
 test "starting playback aborts a drag" {
@@ -2911,12 +3008,12 @@ test "paste and delete abort a drag, then go ahead on the atoms as they were" {
         if (delete) {
             t.app.deleteSelection();
         } else {
-            var frag = try t.app.doc.?.shown.?.subset(TestApp.gpa, &.{0});
+            var frag = try t.app.doc.?.display.frame.?.subset(TestApp.gpa, &.{0});
             defer frag.deinit(TestApp.gpa);
             try t.app.appendFragment(frag);
         }
         try expect(t.app.drag == null);
-        const f = t.app.doc.?.shown.?;
+        const f = t.app.doc.?.display.frame.?;
         try expectEqual(@as(usize, if (delete) 2 else 4), f.len());
         try expectEqual(Vec3{ 0, 0, 1 }, f.positions[1]);
         t.app.undo();
@@ -2946,7 +3043,7 @@ test "a completed drag is one geometry step, a cancelled one none" {
     t.app.dragMotion(0, 0, 0.1, 0);
     t.app.endDrag(true);
     try t.expectCopyEdited(true);
-    try expectEqual(null, t.app.doc.?.shown.?.energy);
+    try expectEqual(null, t.app.doc.?.display.frame.?.energy);
     t.app.undo();
     try t.expectAborted();
 }
@@ -2967,7 +3064,7 @@ test "an edit during interpolated playback pauses it and applies to the nearest 
             },
             .set => t.setDistance(5),
             .paste => {
-                var frag = try t.app.doc.?.shown.?.subset(TestApp.gpa, &.{0});
+                var frag = try t.app.doc.?.display.frame.?.subset(TestApp.gpa, &.{0});
                 defer frag.deinit(TestApp.gpa);
                 try t.app.appendFragment(frag);
             },
@@ -2981,12 +3078,12 @@ test "an edit during interpolated playback pauses it and applies to the nearest 
         try expect(!t.app.playing);
         try expectEqual(0, t.app.interp_t);
         try expectEqual(want, d.current);
-        try expectEqual(want, d.shown_index);
+        try expectEqual(want, d.display.index);
         try expect(t.app.session.isEdited(want));
         try expect(!t.app.session.isEdited(1 - want));
         // Atom 0 is where that step has it (none of these move it).
         const y: f32 = if (want == 0) 0 else 2;
-        try expectEqual(Vec3{ 0, y, 0 }, d.shown.?.positions[0]);
+        try expectEqual(Vec3{ 0, y, 0 }, d.display.frame.?.positions[0]);
     };
 }
 
@@ -3044,7 +3141,7 @@ test "pausing shows the nearest step at once" {
     try t.playBlend(0.7);
     t.app.togglePlay();
     try expectEqual(1, t.app.doc.?.current);
-    try expectEqual(1, t.app.doc.?.shown_index);
+    try expectEqual(1, t.app.doc.?.display.index);
 }
 
 test "an edit that lands on another step uses its bonds" {
@@ -3053,7 +3150,7 @@ test "an edit that lands on another step uses its bonds" {
     try t.playBlendOf("3\n\nH 0 0 0\nH 0.74 0 0\nH 2.7 0 0\n" ++ "3\n\nH 0 0 0\nH 2 0 0\nH 2.74 0 0\n", 0.7);
     t.setDistance(3);
     // Atom 2 is bonded to atom 1 in this step, and moves with it.
-    try std.testing.expectApproxEqAbs(3.74, t.app.doc.?.shown.?.positions[2][0], 1e-4);
+    try std.testing.expectApproxEqAbs(3.74, t.app.doc.?.display.frame.?.positions[2][0], 1e-4);
 }
 
 test "delete with nothing selected and pasting as new abort a drag" {
@@ -3127,11 +3224,11 @@ test "a drag grabs the atom that was drawn under the cursor" {
     var t: TestApp = try .init(1);
     defer t.deinit();
     try t.playBlend(0.7);
-    const p = t.app.displayPositions(t.app.doc.?.shown.?)[1];
+    const p = t.app.displayPositions(t.app.doc.?.display.frame.?)[1];
     try expect(p[1] > 1 and p[1] < 1.9);
     const at = t.app.screenProjector().toScreen(p).?;
     t.app.beginDrag(.translate, at.x, at.y);
-    try expectEqual(1, t.app.doc.?.shown_index);
+    try expectEqual(1, t.app.doc.?.display.index);
     const drag = t.app.drag orelse return error.TestUnexpectedResult;
     try expectEqual(1, drag.handle);
 }

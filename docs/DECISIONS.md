@@ -310,7 +310,7 @@ the same weights.
 
 ### D24 — One owner for each fact about a frame
 *Decided 2026-11-24. Implemented so far: the frame stream,
-the edit session, and cuts and selection.* Terms are in GLOSSARY.md. Data flows
+the edit session, cuts and selection, and the displayed geometry except blends.* Terms are in GLOSSARY.md. Data flows
 one way: the frame stream owns file frames, the edit session owns the current
 atoms of every frame, and the displayed geometry is derived from both and never
 edited.

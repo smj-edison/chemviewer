@@ -166,7 +166,7 @@ fn energyPlot(app: *App, d: *App.Document) void {
     // Diff reference marker and playhead.
     if (n > 1) {
         if (app.diff) |df| {
-            const x = frameX(df.ref_index, n, p0.x, w);
+            const x = frameX(df.reference.index, n, p0.x, w);
             c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), ui.rgba(0.90, 0.20, 0.20, 0.9), 2, 0);
         }
         const x = frameX(d.current, n, p0.x, w);

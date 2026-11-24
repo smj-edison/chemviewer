@@ -314,13 +314,18 @@ pub const Transaction = struct {
         t.origins = null;
     }
 
+    /// The frame as it is without this edit. Valid until either changes.
+    pub fn before(t: *const Transaction) Frame {
+        return t.session.current(t.index) orelse t.file.?;
+    }
+
     /// Whether `commit` would change the frame.
     fn isChanged(t: *const Transaction) bool {
-        const old = t.session.current(t.index) orelse t.file.?;
+        const old = t.before();
         if (!std.mem.eql(u8, t.atoms.numbers, old.numbers)) return true;
         if (t.origins) |o| {
-            const before = t.session.origins(t.index) orelse return true;
-            if (!std.mem.eql(u32, o, before)) return true;
+            const old_origins = t.session.origins(t.index) orelse return true;
+            if (!std.mem.eql(u32, o, old_origins)) return true;
         }
         for (t.atoms.positions, old.positions) |p, q| if (@reduce(.Or, p != q)) return true;
         return false;

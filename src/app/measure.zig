@@ -53,7 +53,7 @@ pub fn bar(app: *App) void {
         ui.textDisabled("No structure loaded", .{});
         return;
     };
-    const f = d.shown orelse {
+    const f = d.display.frame orelse {
         c.igAlignTextToFramePadding();
         ui.textDisabled("loading...", .{});
         return;
@@ -186,7 +186,7 @@ pub fn atomLabels(app: *App) void {
 
 fn atomLabelsInner(app: *App) !void {
     const pos = app.displayedPositions() orelse return;
-    const f = app.doc.?.shown.?;
+    const f = app.doc.?.display.frame.?;
     const numbers = app.show_atom_numbers;
     var ambiguous: [cv.elements.max_z + 1]bool = @splat(false);
     var any_ambiguous = false;
