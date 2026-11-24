@@ -389,7 +389,7 @@ fn appendFragment(app: *App, frag: Frame) !void {
     const total: u32 = @intCast(first + frag.len());
     try app.picks.selection.ensureTotalCapacity(gpa, frag.len());
     try edit.append(frag, offset);
-    _ = try app.commitEdit(&edit);
+    if (!try app.commitEdit(&edit)) return app.setStatus("No atoms to paste", .{});
     app.picks.selection.clearRetainingCapacity();
     for (first..total) |i| app.picks.selection.appendAssumeCapacity(@intCast(i));
     app.scene_dirty = true;
@@ -597,8 +597,13 @@ fn nextReady(app: *const App) bool {
     const d = app.doc orelse return false;
     const s = d.shown orelse return false;
     const nx = d.next orelse return false;
-    return d.shown_index == d.current and d.next_index > d.current and
-        nx.positions.len == s.positions.len and app.diff == null;
+    return d.shown_index == d.current and d.next_index > d.current and app.diff == null and
+        app.numberingOf(d.shown_index, s).eql(app.numberingOf(d.next_index, nx));
+}
+
+/// How the atoms of frame `index`, currently `frame`, are numbered.
+fn numberingOf(app: *const App, index: usize, frame: Frame) cv.picks.Numbering {
+    return .{ .numbers = frame.numbers, .origins = app.session.origins(index) };
 }
 
 /// Keeps the frames around the current step loaded while interpolated
@@ -1388,7 +1393,7 @@ fn applyEditInner(app: *App, edit: Edit) !void {
         .angle => |v| if (sel.len == 3) try cv.geometry.setAngle(gpa, p, graph, sel[0], sel[1], sel[2], v, app.edit_mode),
         .dihedral => |v| if (sel.len == 4) try cv.geometry.setDihedral(gpa, p, graph, sel[0], sel[1], sel[2], sel[3], v, app.edit_mode),
     }
-    _ = try app.commitEdit(&tx);
+    if (!try app.commitEdit(&tx)) app.setStatus("Nothing to change", .{});
 }
 
 /// Get ready to change the shown frame: abort a drag, and pause playback on
@@ -1464,10 +1469,7 @@ fn showChanged(app: *App, index: usize, frame: Frame) void {
 /// The selection and cuts follow the shown frame's numbering.
 fn followPicks(app: *App) void {
     const d = &app.doc.?;
-    app.picks.follow(app.gpa, d.shown_index, .{
-        .numbers = d.shown.?.numbers,
-        .origins = app.session.origins(d.shown_index),
-    });
+    app.picks.follow(app.gpa, d.shown_index, app.numberingOf(d.shown_index, d.shown.?));
 }
 
 /// Show a change made to frame `index` by undo or revert.
@@ -1495,7 +1497,7 @@ fn deleteSelectionInner(app: *App) !void {
     defer edit.deinit();
     const sel = app.selected();
     const n = sel.len;
-    // It may have landed on a step with another numbering.
+    // Landing on another step may have run out of memory and dropped it.
     if (n == 0) return app.setStatus("Select atoms to delete", .{});
     if (n >= edit.atoms.len()) return app.setStatus("Can't delete every atom", .{});
 
@@ -2131,6 +2133,66 @@ test "moving to or from a frame with deleted or pasted atoms clears the selectio
         t.select(&.{0});
         try t.show(0);
         try t.expectSelected(&.{});
+    }
+}
+
+test "deleting what was pasted gives the file's numbering back" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    try t.pasteAtom();
+    try t.deleteAtom(3);
+    t.select(&.{1});
+    try t.show(1);
+    try t.expectSelected(&.{1});
+}
+
+test "undo to another frame keeps the selection if the numbering is the same" {
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(1);
+    t.setDistance(1.5);
+    try t.show(0);
+    t.select(&.{2});
+    t.app.undo();
+    try t.settle();
+    try expectEqual(1, t.app.doc.?.shown_index);
+    try t.expectSelected(&.{2});
+}
+
+test "steps with different numberings aren't blended, so an edit stays on the shown one" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("2\n\nO 0 0 0\nH 0 0 1\n" ++ "2\n\nH 0 0 0\nO 0 0 1\n");
+    try t.show(0);
+    t.app.interpolate = true;
+    t.app.playing = true;
+    t.app.interp_t = 0.7;
+    const d = &t.app.doc.?;
+    for (0..2000) |_| {
+        t.app.updateNextFrame();
+        if (d.next != null) break;
+        try TestApp.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try expect(d.next != null);
+    try expect(!t.app.nextReady());
+    t.setDistance(1.5);
+    try expect(t.app.session.isEdited(0));
+    try t.expectSelected(&.{ 0, 1 });
+}
+
+test "a cut changes what a typed value moves" {
+    for ([_]bool{ false, true }) |cut| {
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.openText("3\n\nH 0 0 0\nH 0.74 0 0\nH 1.48 0 0\n");
+        try t.show(0);
+        const d = &t.app.doc.?;
+        try cv.bonds.findInto(TestApp.gpa, &d.bonds, d.shown.?.positions, d.shown.?.numbers, t.app.bond_params);
+        if (cut) t.app.toggleCutPair(1, 2);
+        t.setDistance(1);
+        const x: f32 = if (cut) 1.48 else 1.74;
+        try std.testing.expectApproxEqAbs(x, d.shown.?.positions[2][0], 1e-4);
     }
 }
 

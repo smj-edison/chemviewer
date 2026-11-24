@@ -198,11 +198,17 @@ pub const Transaction = struct {
         return if (t.origins) |o| o[atom] else @intCast(atom);
     }
 
+    /// Takes ownership of both.
     fn renumber(t: *Transaction, atoms: Frame, origins: []u32) void {
-        t.atoms.deinit(t.session.gpa);
-        if (t.origins) |o| t.session.gpa.free(o);
+        const gpa = t.session.gpa;
+        t.atoms.deinit(gpa);
+        if (t.origins) |o| gpa.free(o);
         t.atoms = atoms;
         t.origins = origins;
+        for (origins, 0..) |o, i| if (o != i) return;
+        // Numbered as in the file (again).
+        gpa.free(origins);
+        t.origins = null;
     }
 
     /// Whether `commit` would change the frame.

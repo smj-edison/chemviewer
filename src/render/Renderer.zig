@@ -374,7 +374,7 @@ pub fn addStructure(
     style: Style,
     tint: ?Tint,
     /// Bonds cut by the user (keys from `picks.pairKey`): drawn thin and red.
-    cut: ?*const std.AutoHashMapUnmanaged(u64, void),
+    cut: ?*const cv.picks.CutSet,
 ) !usize {
     const start = r.atoms.items.len;
     try r.atoms.ensureUnusedCapacity(r.gpa, positions.len);

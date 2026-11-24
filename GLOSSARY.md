@@ -33,6 +33,9 @@ _Avoid_: Broken bond, deleted bond
 **Selection**:
 The atoms the user has picked, in order. Unlike cuts it carries over between frames with the same atom numbering.
 
+**Picks**:
+The selection and the cuts together, with the numbering they refer to.
+
 **Origin**:
 Where an atom of a frame comes from: its number in the file, or an id of its own if it was pasted. It stays the same when other atoms are deleted.
 
