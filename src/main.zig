@@ -274,7 +274,7 @@ pub fn main(init: std.process.Init) !void {
             applied_theme = want_theme;
             if (want_theme.aero) aeroImGuiColors(app.style.theme == .dark) else switch (app.style.theme) {
                 .light => lightImGuiColors(),
-                .dark => c.igStyleColorsDark(null),
+                .dark => darkImGuiColors(),
             }
         }
 
@@ -505,43 +505,55 @@ test {
     _ = @import("app/occlusion.zig");
 }
 
+fn setColor(cs: anytype, i: c_int, hex: u24, a: f32) void {
+    cs[@intCast(i)] = .{
+        .x = @as(f32, @floatFromInt((hex >> 16) & 0xFF)) / 255.0,
+        .y = @as(f32, @floatFromInt((hex >> 8) & 0xFF)) / 255.0,
+        .z = @as(f32, @floatFromInt(hex & 0xFF)) / 255.0,
+        .w = a,
+    };
+}
+
+// Slider values are drawn over the knob, so in every theme the knob colours
+// keep a 4.5:1 contrast with the text (and at least 2:1 with the track).
+
+/// ImGui's dark colours with darker slider knobs.
+fn darkImGuiColors() void {
+    c.igStyleColorsDark(null);
+    const col = &c.igGetStyle().*.Colors;
+    setColor(col, c.ImGuiCol_FrameBgHovered, 0x2A4568, 1);
+    setColor(col, c.ImGuiCol_FrameBgActive, 0x2A4568, 1);
+    setColor(col, c.ImGuiCol_SliderGrab, 0x3976C4, 1);
+    setColor(col, c.ImGuiCol_SliderGrabActive, 0x7A63D0, 1);
+}
+
 /// Light ImGui colours on the blue-grey of the light theme, with violet and
 /// pink accents. Dark text sits on every fill, so fills stay light tints.
 fn lightImGuiColors() void {
     c.igStyleColorsLight(null);
     const col = &c.igGetStyle().*.Colors;
-    const set = struct {
-        fn f(cs: anytype, i: c_int, hex: u24, a: f32) void {
-            cs[@intCast(i)] = .{
-                .x = @as(f32, @floatFromInt((hex >> 16) & 0xFF)) / 255.0,
-                .y = @as(f32, @floatFromInt((hex >> 8) & 0xFF)) / 255.0,
-                .z = @as(f32, @floatFromInt(hex & 0xFF)) / 255.0,
-                .w = a,
-            };
-        }
-    }.f;
-    set(col, c.ImGuiCol_WindowBg, 0xF4F7FA, 0.96);
-    set(col, c.ImGuiCol_PopupBg, 0xF4F7FA, 0.98);
-    set(col, c.ImGuiCol_MenuBarBg, 0xE6ECF3, 1);
-    set(col, c.ImGuiCol_TitleBg, 0xE6ECF3, 1);
-    set(col, c.ImGuiCol_TitleBgActive, 0xD9D3FF, 1);
-    set(col, c.ImGuiCol_Border, 0xC8D4E3, 0.8);
-    set(col, c.ImGuiCol_FrameBg, 0xE3E9F1, 1);
-    set(col, c.ImGuiCol_FrameBgHovered, 0xD6DFEA, 1);
-    set(col, c.ImGuiCol_FrameBgActive, 0xC8D4E3, 1);
-    set(col, c.ImGuiCol_Button, 0xD9D3FF, 1);
-    set(col, c.ImGuiCol_ButtonHovered, 0xFFCFE2, 1);
-    set(col, c.ImGuiCol_ButtonActive, 0xFFB0CF, 1);
-    set(col, c.ImGuiCol_Header, 0xD9D3FF, 1);
-    set(col, c.ImGuiCol_HeaderHovered, 0xFFCFE2, 1);
-    set(col, c.ImGuiCol_HeaderActive, 0xFFB0CF, 1);
-    set(col, c.ImGuiCol_CheckMark, 0x5540F0, 1);
-    set(col, c.ImGuiCol_SliderGrab, 0x5540F0, 1);
-    set(col, c.ImGuiCol_SliderGrabActive, 0xFF2E7E, 1);
-    set(col, c.ImGuiCol_PlotLines, 0x5540F0, 1);
-    set(col, c.ImGuiCol_PlotHistogram, 0xFF2E7E, 1);
-    set(col, c.ImGuiCol_Text, 0x2A1F66, 1);
-    set(col, c.ImGuiCol_TextDisabled, 0x8A7FB8, 1);
+    setColor(col, c.ImGuiCol_WindowBg, 0xF4F7FA, 0.96);
+    setColor(col, c.ImGuiCol_PopupBg, 0xF4F7FA, 0.98);
+    setColor(col, c.ImGuiCol_MenuBarBg, 0xE6ECF3, 1);
+    setColor(col, c.ImGuiCol_TitleBg, 0xE6ECF3, 1);
+    setColor(col, c.ImGuiCol_TitleBgActive, 0xD9D3FF, 1);
+    setColor(col, c.ImGuiCol_Border, 0xC8D4E3, 0.8);
+    setColor(col, c.ImGuiCol_FrameBg, 0xE3E9F1, 1);
+    setColor(col, c.ImGuiCol_FrameBgHovered, 0xD6DFEA, 1);
+    setColor(col, c.ImGuiCol_FrameBgActive, 0xD6DFEA, 1);
+    setColor(col, c.ImGuiCol_Button, 0xD9D3FF, 1);
+    setColor(col, c.ImGuiCol_ButtonHovered, 0xFFCFE2, 1);
+    setColor(col, c.ImGuiCol_ButtonActive, 0xFFB0CF, 1);
+    setColor(col, c.ImGuiCol_Header, 0xD9D3FF, 1);
+    setColor(col, c.ImGuiCol_HeaderHovered, 0xFFCFE2, 1);
+    setColor(col, c.ImGuiCol_HeaderActive, 0xFFB0CF, 1);
+    setColor(col, c.ImGuiCol_CheckMark, 0x5540F0, 1);
+    setColor(col, c.ImGuiCol_SliderGrab, 0x9C8CFA, 1);
+    setColor(col, c.ImGuiCol_SliderGrabActive, 0xF9609D, 1);
+    setColor(col, c.ImGuiCol_PlotLines, 0x5540F0, 1);
+    setColor(col, c.ImGuiCol_PlotHistogram, 0xFF2E7E, 1);
+    setColor(col, c.ImGuiCol_Text, 0x2A1F66, 1);
+    setColor(col, c.ImGuiCol_TextDisabled, 0x8A7FB8, 1);
 }
 
 /// Aero ImGui colours: frosted sky-glass panels with aqua buttons (light),
@@ -549,61 +561,51 @@ fn lightImGuiColors() void {
 fn aeroImGuiColors(dark: bool) void {
     if (dark) c.igStyleColorsDark(null) else c.igStyleColorsLight(null);
     const col = &c.igGetStyle().*.Colors;
-    const set = struct {
-        fn f(cs: anytype, i: c_int, hex: u24, a: f32) void {
-            cs[@intCast(i)] = .{
-                .x = @as(f32, @floatFromInt((hex >> 16) & 0xFF)) / 255.0,
-                .y = @as(f32, @floatFromInt((hex >> 8) & 0xFF)) / 255.0,
-                .z = @as(f32, @floatFromInt(hex & 0xFF)) / 255.0,
-                .w = a,
-            };
-        }
-    }.f;
     if (!dark) {
-        set(col, c.ImGuiCol_WindowBg, 0xEAF6FF, 0.78);
-        set(col, c.ImGuiCol_PopupBg, 0xF2FAFF, 0.95);
-        set(col, c.ImGuiCol_MenuBarBg, 0xD4EDFF, 0.9);
-        set(col, c.ImGuiCol_TitleBg, 0xBFE3FA, 0.9);
-        set(col, c.ImGuiCol_TitleBgActive, 0x7CC4F0, 0.95);
-        set(col, c.ImGuiCol_Border, 0xFFFFFF, 0.7);
-        set(col, c.ImGuiCol_FrameBg, 0xFFFFFF, 0.75);
-        set(col, c.ImGuiCol_FrameBgHovered, 0xDDF2FF, 0.9);
-        set(col, c.ImGuiCol_FrameBgActive, 0xBDE6FF, 1);
-        set(col, c.ImGuiCol_Button, 0xA9DCFA, 0.9);
-        set(col, c.ImGuiCol_ButtonHovered, 0x7FCBF7, 1);
-        set(col, c.ImGuiCol_ButtonActive, 0x3FA9EE, 1);
-        set(col, c.ImGuiCol_Header, 0xA9DCFA, 0.8);
-        set(col, c.ImGuiCol_HeaderHovered, 0x7FCBF7, 0.9);
-        set(col, c.ImGuiCol_HeaderActive, 0x3FA9EE, 1);
-        set(col, c.ImGuiCol_CheckMark, 0x1A7FD4, 1);
-        set(col, c.ImGuiCol_SliderGrab, 0x2E9BEA, 1);
-        set(col, c.ImGuiCol_SliderGrabActive, 0x58B84A, 1);
-        set(col, c.ImGuiCol_PlotLines, 0x1A7FD4, 1);
-        set(col, c.ImGuiCol_PlotHistogram, 0x58B84A, 1);
-        set(col, c.ImGuiCol_Text, 0x0B3A5B, 1);
-        set(col, c.ImGuiCol_TextDisabled, 0x5A85A3, 1);
+        setColor(col, c.ImGuiCol_WindowBg, 0xEAF6FF, 0.78);
+        setColor(col, c.ImGuiCol_PopupBg, 0xF2FAFF, 0.95);
+        setColor(col, c.ImGuiCol_MenuBarBg, 0xD4EDFF, 0.9);
+        setColor(col, c.ImGuiCol_TitleBg, 0xBFE3FA, 0.9);
+        setColor(col, c.ImGuiCol_TitleBgActive, 0x7CC4F0, 0.95);
+        setColor(col, c.ImGuiCol_Border, 0xFFFFFF, 0.7);
+        setColor(col, c.ImGuiCol_FrameBg, 0xFFFFFF, 0.75);
+        setColor(col, c.ImGuiCol_FrameBgHovered, 0xDDF2FF, 0.9);
+        setColor(col, c.ImGuiCol_FrameBgActive, 0xDDF2FF, 1);
+        setColor(col, c.ImGuiCol_Button, 0xA9DCFA, 0.9);
+        setColor(col, c.ImGuiCol_ButtonHovered, 0x7FCBF7, 1);
+        setColor(col, c.ImGuiCol_ButtonActive, 0x3FA9EE, 1);
+        setColor(col, c.ImGuiCol_Header, 0xA9DCFA, 0.8);
+        setColor(col, c.ImGuiCol_HeaderHovered, 0x7FCBF7, 0.9);
+        setColor(col, c.ImGuiCol_HeaderActive, 0x3FA9EE, 1);
+        setColor(col, c.ImGuiCol_CheckMark, 0x1A7FD4, 1);
+        setColor(col, c.ImGuiCol_SliderGrab, 0x48A8EE, 1);
+        setColor(col, c.ImGuiCol_SliderGrabActive, 0x58B84A, 1);
+        setColor(col, c.ImGuiCol_PlotLines, 0x1A7FD4, 1);
+        setColor(col, c.ImGuiCol_PlotHistogram, 0x58B84A, 1);
+        setColor(col, c.ImGuiCol_Text, 0x0B3A5B, 1);
+        setColor(col, c.ImGuiCol_TextDisabled, 0x5A85A3, 1);
     } else {
-        set(col, c.ImGuiCol_WindowBg, 0x06222C, 0.80);
-        set(col, c.ImGuiCol_PopupBg, 0x06222C, 0.95);
-        set(col, c.ImGuiCol_MenuBarBg, 0x041820, 0.9);
-        set(col, c.ImGuiCol_TitleBg, 0x08303C, 0.9);
-        set(col, c.ImGuiCol_TitleBgActive, 0x0F5A66, 0.95);
-        set(col, c.ImGuiCol_Border, 0x3FD9C0, 0.35);
-        set(col, c.ImGuiCol_FrameBg, 0x0C3A46, 0.8);
-        set(col, c.ImGuiCol_FrameBgHovered, 0x135061, 0.9);
-        set(col, c.ImGuiCol_FrameBgActive, 0x1A6A7A, 1);
-        set(col, c.ImGuiCol_Button, 0x135A6A, 0.9);
-        set(col, c.ImGuiCol_ButtonHovered, 0x1C7F86, 1);
-        set(col, c.ImGuiCol_ButtonActive, 0x2AA88F, 1);
-        set(col, c.ImGuiCol_Header, 0x135A6A, 0.8);
-        set(col, c.ImGuiCol_HeaderHovered, 0x1C7F86, 0.9);
-        set(col, c.ImGuiCol_HeaderActive, 0x2AA88F, 1);
-        set(col, c.ImGuiCol_CheckMark, 0x5CF2B0, 1);
-        set(col, c.ImGuiCol_SliderGrab, 0x46D6C8, 1);
-        set(col, c.ImGuiCol_SliderGrabActive, 0x7CFF9E, 1);
-        set(col, c.ImGuiCol_PlotLines, 0x46D6C8, 1);
-        set(col, c.ImGuiCol_PlotHistogram, 0x7CFF9E, 1);
-        set(col, c.ImGuiCol_Text, 0xE2FBFF, 1);
-        set(col, c.ImGuiCol_TextDisabled, 0x7FA9B3, 1);
+        setColor(col, c.ImGuiCol_WindowBg, 0x06222C, 0.80);
+        setColor(col, c.ImGuiCol_PopupBg, 0x06222C, 0.95);
+        setColor(col, c.ImGuiCol_MenuBarBg, 0x041820, 0.9);
+        setColor(col, c.ImGuiCol_TitleBg, 0x08303C, 0.9);
+        setColor(col, c.ImGuiCol_TitleBgActive, 0x0F5A66, 0.95);
+        setColor(col, c.ImGuiCol_Border, 0x3FD9C0, 0.35);
+        setColor(col, c.ImGuiCol_FrameBg, 0x0C3A46, 0.8);
+        setColor(col, c.ImGuiCol_FrameBgHovered, 0x0F4552, 0.9);
+        setColor(col, c.ImGuiCol_FrameBgActive, 0x0F4552, 1);
+        setColor(col, c.ImGuiCol_Button, 0x135A6A, 0.9);
+        setColor(col, c.ImGuiCol_ButtonHovered, 0x1C7F86, 1);
+        setColor(col, c.ImGuiCol_ButtonActive, 0x2AA88F, 1);
+        setColor(col, c.ImGuiCol_Header, 0x135A6A, 0.8);
+        setColor(col, c.ImGuiCol_HeaderHovered, 0x1C7F86, 0.9);
+        setColor(col, c.ImGuiCol_HeaderActive, 0x2AA88F, 1);
+        setColor(col, c.ImGuiCol_CheckMark, 0x5CF2B0, 1);
+        setColor(col, c.ImGuiCol_SliderGrab, 0x147D77, 1);
+        setColor(col, c.ImGuiCol_SliderGrabActive, 0x208050, 1);
+        setColor(col, c.ImGuiCol_PlotLines, 0x46D6C8, 1);
+        setColor(col, c.ImGuiCol_PlotHistogram, 0x7CFF9E, 1);
+        setColor(col, c.ImGuiCol_Text, 0xE2FBFF, 1);
+        setColor(col, c.ImGuiCol_TextDisabled, 0x7FA9B3, 1);
     }
 }
