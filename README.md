@@ -77,6 +77,20 @@ cd packaging/aur && makepkg -Csi
 
 On other Linux systems, `zig build -Doptimize=ReleaseFast --prefix ~/.local`.
 
+Windows and macOS packages are written to the install prefix. Windows ones can
+be built on any system, macOS ones only on a Mac (SDL needs Apple's SDK):
+
+```sh
+zig build -Dtarget=x86_64-windows-gnu -Dcpu=baseline -Doptimize=ReleaseFast -Dpackage=portable   # .zip
+zig build -Dsystem-sdl=false -Dcpu=baseline -Doptimize=ReleaseFast -Dpackage=portable            # .app in a .zip
+```
+
+`-Dpackage=installer` makes a per-user setup program (needs NSIS's `makensis`)
+or a `.dmg` instead; `-Dversion=X.Y.Z` sets the version. The GitHub workflow
+`package.yml` builds them all; pushing a `v*` tag puts them on a draft release.
+They are not signed by a paid certificate, so Windows SmartScreen and macOS
+Gatekeeper warn on first launch.
+
 Headless rendering (for CI or quick checks):
 
 ```sh

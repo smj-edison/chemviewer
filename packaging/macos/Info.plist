@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>chemviewer</string>
+  <key>CFBundleIdentifier</key><string>io.github.smj-edison.chemviewer</string>
+  <key>CFBundleExecutable</key><string>chemviewer</string>
+  <key>CFBundleIconFile</key><string>chemviewer</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+  <key>CFBundleVersion</key><string>@VERSION@</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.education</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>Molecular structure</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>xyz</string>
+        <string>extxyz</string>
+        <string>gjf</string>
+        <string>traj</string>
+        <string>log</string>
+        <string>out</string>
+        <string>inp</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

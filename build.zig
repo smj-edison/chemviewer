@@ -1,4 +1,5 @@
 const std = @import("std");
+const package = @import("packaging/package.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -120,6 +121,11 @@ pub fn build(b: *std.Build) void {
     exe_mod.linkLibrary(imgui_lib);
 
     const exe = b.addExecutable(.{ .name = "chemviewer", .root_module = exe_mod });
+    if (target.result.os.tag == .windows) {
+        exe_mod.addWin32ResourceFile(.{ .file = b.path("packaging/windows/chemviewer.rc") });
+        // No console window, except in debug builds (for the log).
+        if (optimize != .debug) exe.subsystem = .windows;
+    }
     b.installArtifact(exe);
 
     // Desktop entry, file types and icons, for `zig build --prefix /usr`.
@@ -151,6 +157,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(inspect);
+
+    // -------------------------------------------------------- packages
+    const package_kind = b.option(package.Kind, "package", "Also build a Windows/macOS package") orelse .none;
+    const version = b.option([]const u8, "version", "Version shown in packages") orelse "0.0.0";
+    package.add(b, package_kind, version, exe, inspect);
+
     const inspect_run = b.addRunArtifact(inspect);
     inspect_run.addPassthruArgs();
     b.step("inspect", "Print a summary of structure files (headless)").dependOn(&inspect_run.step);

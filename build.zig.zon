@@ -40,6 +40,12 @@
             .url = "https://github.com/ocornut/imgui/archive/6d32174508fb8c518e7a832cc1d571fadd5cba76.tar.gz",
             .hash = "N-V-__8AAGNjfgBD2GOqdPUGkR89I-Ygw93OyAENnPPahX_t",
         },
+        // Bundled in macOS packages only.
+        .moltenvk = .{
+            .url = "https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.2/MoltenVK-macos.tar",
+            .hash = "N-V-__8AAE_YiwPIE_JJGNssqD-hldlwyTTI7tQDZMXFtb9m",
+            .lazy = true,
+        },
         .sdl = .{
             .url = "git+https://github.com/castholm/SDL#ce475292f172d506468218f939ef607d9be5e083",
             .hash = "sdl-0.6.1+3.4.20-SDL--rskqQH3W9l4AJX-kdZ93M9XuhsqLrUsd2fnUE_X",
