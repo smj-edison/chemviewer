@@ -1,0 +1,36 @@
+pkgname=chemviewer-git
+pkgver=r0
+pkgrel=1
+pkgdesc='Fast molecular structure and trajectory viewer'
+arch=('x86_64')
+url='https://github.com/smj-edison/chemviewer'
+license=('LicenseRef-unknown') # no license file upstream yet
+depends=('glibc' 'hicolor-icon-theme' 'sdl3' 'vulkan-driver' 'vulkan-icd-loader')
+makedepends=('git' 'shaderc' 'zig>=0.17.1')
+provides=('chemviewer')
+conflicts=('chemviewer')
+options=('!debug' '!lto')
+source=("$pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$pkgname"
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "$pkgname"
+  # Dependencies are pinned by hash in build.zig.zon.
+  ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache" zig build --fetch
+}
+
+build() {
+  cd "$pkgname"
+  ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache" zig build --prefix "$srcdir/install" \
+    -Dcpu=baseline -Doptimize=ReleaseFast
+}
+
+package() {
+  install -d "$pkgdir/usr"
+  cp -r --no-preserve=ownership "$srcdir/install/." "$pkgdir/usr/"
+}

@@ -67,6 +67,16 @@ zig build test                                 # core unit tests (headless)
 zig build inspect -- file1.xyz file2.traj      # headless summary of files
 ```
 
+Install on Arch Linux (program, desktop entry, icons and file types). The
+package builds the latest commit on GitHub; run the same command again to
+upgrade:
+
+```sh
+cd packaging/aur && makepkg -Csi
+```
+
+On other Linux systems, `zig build -Doptimize=ReleaseFast --prefix ~/.local`.
+
 Headless rendering (for CI or quick checks):
 
 ```sh

@@ -5,3 +5,6 @@ zig-pkg/
 docs/style-refs/**/*.jpg
 renders/
 !packaging/icons/*.png
+packaging/aur/*
+!packaging/aur/PKGBUILD
+!packaging/aur/.SRCINFO
