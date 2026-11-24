@@ -17,6 +17,7 @@ Close it after review, once the review's fixes are committed:
 1. Tick each criterion that was met as written. Leave the others open and say why in the answer.
 2. Append an `## Answer`: what was built and where, what was left to which ticket, and which tests were seen failing before the code that made them pass.
 3. Set `Status: resolved`.
+4. Commit the ticket. Feature directories are tracked and become public when pushed; loose files in `.scratch/` are ignored, so logs and other working files go there.
 
 ## Inbox: docs/feature-requests.md
 

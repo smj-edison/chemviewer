@@ -9,4 +9,6 @@ packaging/aur/*
 !packaging/aur/PKGBUILD
 !packaging/aur/.SRCINFO
 dist/
-.scratch/
+# Tickets are tracked; loose files are not.
+.scratch/*
+!.scratch/*/
