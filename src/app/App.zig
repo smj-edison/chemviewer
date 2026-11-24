@@ -1341,8 +1341,9 @@ fn endDrag(app: *App, commit: bool) void {
     const frame = f orelse return;
     if (commit and dr.moved) {
         @memcpy(edit.atoms.positions, frame.positions);
-        if (app.commitEdit(&edit, null)) |_| {
-            return app.setStatus("Moved {d} atom{s} (Ctrl+Z undoes)", .{ dr.group.len, if (dr.group.len == 1) "" else "s" });
+        if (app.commitEdit(&edit, null)) |changed| {
+            if (changed) app.setStatus("Moved {d} atom{s} (Ctrl+Z undoes)", .{ dr.group.len, if (dr.group.len == 1) "" else "s" });
+            return;
         } else |e| app.setStatus("Move failed: {t}", .{e});
     }
     for (dr.group, dr.start) |i, p| frame.positions[i] = p;
@@ -1510,7 +1511,7 @@ pub fn undo(app: *App) void {
     const change = app.session.undo() orelse return;
     app.applyChange(change);
     if (d.current != change.index) app.setFrame(change.index);
-    app.setStatus("Undid edit on frame {d}", .{change.index + 1});
+    app.setStatus("Undid the last change to frame {d}", .{change.index + 1});
 }
 
 /// Make the shown frame its file frame again (one geometry step).

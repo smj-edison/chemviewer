@@ -173,7 +173,7 @@ pub const Transaction = struct {
     }
 
     /// Whether `commit` would change the frame.
-    pub fn isChanged(t: *const Transaction) bool {
+    fn isChanged(t: *const Transaction) bool {
         const old = t.session.current(t.index) orelse t.file.?;
         if (!std.mem.eql(u8, t.atoms.numbers, old.numbers)) return true;
         for (t.atoms.positions, old.positions) |p, q| if (@reduce(.Or, p != q)) return true;
@@ -420,7 +420,25 @@ test "running out of memory in an edit or revert leaves the frame as it was" {
                 steps += 1;
                 x = to;
             }
-            _ = try s.revert(0, .empty);
+            // As a delete: renumbering, so revert has cuts to copy.
+            var cuts: CutSet = .empty;
+            var owned = true;
+            defer if (owned) cuts.deinit(a);
+            try cuts.put(a, pairKey(0, 1), {});
+            {
+                var tx = try s.begin(0, file);
+                defer tx.deinit();
+                tx.atoms.positions[0][0] = 3;
+                _ = try tx.commit(cuts);
+                owned = false;
+                steps += 1;
+                x = 3;
+            }
+            var now: CutSet = .empty;
+            defer now.deinit(a);
+            try now.put(a, pairKey(1, 2), {});
+            var reverted = (try s.revert(0, now)).?;
+            reverted.cuts.?.deinit(a);
         }
     }.run;
     try testing.checkAllAllocationFailures(test_gpa, run, .{});
