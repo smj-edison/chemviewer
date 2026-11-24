@@ -96,7 +96,6 @@ last_advance: Io.Timestamp = .zero,
 interpolate: bool = false,
 /// Fraction of the way from the shown step to the next (0 when not blending).
 interp_t: f32 = 0,
-/// Blended positions for the scene while interpolating.
 scene_dirty: bool = true,
 scene_radius: f32 = 10,
 show_inspector: bool = true,
@@ -573,10 +572,15 @@ fn setInterp(app: *App, t: f32) void {
 /// The step after the shown one is loaded and can be blended with it.
 fn nextReady(app: *const App) bool {
     const d = app.doc orelse return false;
-    const s = d.display.real.frame orelse return false;
     const next = d.display.next orelse return false;
-    return d.display.real.index == d.current and next.index > d.current and app.diff == null and
-        app.numberingOf(d.display.real.index, s).eql(app.numberingOf(next.index, next.atoms));
+    return d.display.real.frame != null and d.display.real.index == d.current and next.index > d.current and
+        app.diff == null and app.numberedAsShown(next);
+}
+
+/// Whether atom numbers mean the same atoms in `step` as in the shown frame.
+fn numberedAsShown(app: *const App, step: cv.display.DisplayedGeometry.Step) bool {
+    const real = app.doc.?.display.real;
+    return app.numberingOf(real.index, real.frame.?).eql(app.numberingOf(step.index, step.atoms));
 }
 
 /// How the atoms of frame `index`, currently `frame`, are numbered.
@@ -1119,7 +1123,11 @@ pub fn drawnPositions(app: *App) ?[]const Vec3 {
     const d = &(app.doc orelse return null);
     if (d.display.real.frame == null) return null;
     if (app.diff) |df| if (df.overlay and df.result != null) return df.aligned.items;
-    return d.display.positions(app.gpa, app.blendTime());
+    const t = app.blendTime();
+    return d.display.positions(app.gpa, t, .{
+        .prev = if (d.display.prev) |s| app.numberedAsShown(s) else false,
+        .next2 = if (d.display.next2) |s| app.numberedAsShown(s) else false,
+    });
 }
 
 /// The value of the internal coordinate that is selected, as drawn.
@@ -1147,7 +1155,6 @@ const Hit = struct { t: f32, target: union(enum) { atom: u32, bond: [2]u32 } };
 fn hitAt(app: *App, x: f32, y: f32) ?Hit {
     const d = app.doc orelse return null;
     const f = d.display.real.frame orelse return null;
-    // Blending is off while diffing.
     const pos = app.drawnPositions() orelse return null;
     const ws = app.windowSize();
     const r = app.camera.ray(2 * x / ws[0] - 1, 1 - 2 * y / ws[1], ws[0] / ws[1]);
@@ -3248,6 +3255,52 @@ test "the lasso selects atoms where they are drawn during a blend" {
         try t.app.lasso_points.appendSlice(TestApp.gpa, &corners);
         t.app.applyLasso();
         try expectEqual(want, t.app.selected().len);
+    }
+}
+
+test "a click during a blend hits what is drawn, not the real step" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.playBlend(0.7);
+    const p = t.app.drawnPositions().?[1];
+    const sp = t.app.screenProjector();
+    const real = sp.toScreen(t.app.doc.?.display.real.frame.?.positions[1]).?;
+    t.app.clickAt(real.x, real.y, 1);
+    try t.expectSelected(&.{});
+    const drawn = sp.toScreen(p).?;
+    t.app.clickAt(drawn.x, drawn.y, 1);
+    try t.expectSelected(&.{1});
+}
+
+test "steps with other atoms don't shape a blend, even if they look alike" {
+    for ([_]bool{ false, true }) |replaced| {
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        const file = "2\n\nH 0 0 0\nH 5 1 0\n" ++ "2\n\nH 0 0 0\nH 5 0 0\n" ++ "2\n\nH 0 0 0\nH 5 1 0\n";
+        try t.openText(file);
+        try t.show(0);
+        if (replaced) {
+            // The same elements as before, but atom 1 is another one.
+            try t.deleteAtom(1);
+            var frag = try t.app.doc.?.display.real.frame.?.subset(TestApp.gpa, &.{0});
+            defer frag.deinit(TestApp.gpa);
+            frag.positions[0] = .{ 5, -1, 0 };
+            try t.app.appendFragment(frag);
+        }
+        t.app.interpolate = true;
+        t.app.playing = true;
+        t.app.interp_t = 0.25;
+        t.app.doc.?.current = 1;
+        try t.settle();
+        for (0..2000) |_| {
+            t.app.updateNextFrame();
+            if (t.app.nextReady() and t.app.doc.?.display.prev != null) break;
+            try TestApp.io.sleep(.fromMilliseconds(1), .awake);
+        }
+        // Flat at frame 1: it is a turn (1, 0, 1), or has no neighbour. The
+        // pasted atom (-1, 0, 1) would make it start rising.
+        const y = t.app.drawnPositions().?[1][1];
+        try std.testing.expectApproxEqAbs(0.15625, y, 1e-4);
     }
 }
 

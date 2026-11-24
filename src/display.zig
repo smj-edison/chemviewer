@@ -80,8 +80,9 @@ pub const DisplayedGeometry = struct {
 
     blended: std.ArrayList(Vec3) = .empty,
     /// What `blended` is for (null = nothing).
-    blended_for: ?struct { t: f32, changes: u64 } = null,
+    blended_for: ?Blended = null,
 
+    const Blended = struct { t: f32, changes: u64, shape: Shape };
     pub const Step = struct { index: usize, atoms: Frame };
     pub const Slot = enum { next, prev, next2 };
 
@@ -124,25 +125,26 @@ pub const DisplayedGeometry = struct {
         return g.next;
     }
 
+    /// Which steps have the same numbering as the shown one, so that they may
+    /// shape the curve.
+    pub const Shape = struct { prev: bool, next2: bool };
+
     /// Where the atoms are, `t` of the way from the shown step to `next` (0 =
     /// at the real atoms). Valid until something changes. Out of memory, the
     /// real atoms' positions.
-    pub fn positions(g: *DisplayedGeometry, gpa: Allocator, t: f32) ?[]const Vec3 {
+    pub fn positions(g: *DisplayedGeometry, gpa: Allocator, t: f32, shape: Shape) ?[]const Vec3 {
         const f = g.real.frame orelse return null;
         if (t <= 0) return f.positions;
         const next = g.next orelse return f.positions;
-        if (g.blended_for) |b| if (b.t == t and b.changes == g.real.changes) return g.blended.items;
+        const wanted: Blended = .{ .t = t, .changes = g.real.changes, .shape = shape };
+        if (g.blended_for) |have| if (std.meta.eql(have, wanted)) return g.blended.items;
         g.blended_for = null;
         g.blended.resize(gpa, f.len()) catch return f.positions;
-        const before = if (g.prev) |s| (if (s.index < g.real.index) matching(s, f) else null) else null;
-        const after = if (g.next2) |s| (if (s.index > next.index) matching(s, f) else null) else null;
+        const before = if (g.prev) |s| (if (shape.prev and s.index < g.real.index) s.atoms.positions else null) else null;
+        const after = if (g.next2) |s| (if (shape.next2 and s.index > next.index) s.atoms.positions else null) else null;
         blend(g.blended.items, before, f.positions, next.atoms.positions, after, t);
-        g.blended_for = .{ .t = t, .changes = g.real.changes };
+        g.blended_for = wanted;
         return g.blended.items;
-    }
-
-    fn matching(step: Step, f: Frame) ?[]const Vec3 {
-        return if (std.mem.eql(u8, step.atoms.numbers, f.numbers)) step.atoms.positions else null;
     }
 };
 
@@ -212,7 +214,7 @@ fn testBlend(xs: [4]f32) !DisplayedGeometry {
 }
 
 fn blendedX(g: *DisplayedGeometry, t: f32) f32 {
-    return g.positions(test_gpa, t).?[0][0];
+    return g.positions(test_gpa, t, .{ .prev = true, .next2 = true }).?[0][0];
 }
 
 test "a blend passes through the steps and never overshoots between them" {
@@ -253,17 +255,15 @@ test "an atom that jumps snaps, and steps across a jump don't shape the curve" {
     try testing.expectEqual(blendedX(&alone, 0.3), blendedX(&across, 0.3));
 }
 
-test "only steps on the right side with the same atoms shape a blend" {
+test "only steps on the right side with the same numbering shape a blend" {
     var g = try testBlend(.{ 0, 1, 2, 3 });
     defer g.deinit(test_gpa);
     var alone = try testBlend(.{ 1, 1, 2, 2 });
     defer alone.deinit(test_gpa);
     try testing.expect(blendedX(&alone, 0.3) != blendedX(&g, 0.3));
     g.keep(test_gpa, .prev, try testStep(5, 0));
-    var other = try testStep(3, 3);
-    other.atoms.numbers[0] = 8;
-    g.keep(test_gpa, .next2, other);
-    try testing.expectEqual(blendedX(&alone, 0.3), blendedX(&g, 0.3));
+    const x = g.positions(test_gpa, 0.3, .{ .prev = true, .next2 = false }).?[0][0];
+    try testing.expectEqual(blendedX(&alone, 0.3), x);
 }
 
 test "a blend follows its time, its steps and the real atoms" {
@@ -285,7 +285,7 @@ test "out of memory, a blend is at the real atoms" {
     var g = try testBlend(.{ 0, 1, 2, 3 });
     defer g.deinit(test_gpa);
     var failing: testing.FailingAllocator = .init(test_gpa, .{ .fail_index = 0 });
-    try testing.expectEqual(1, g.positions(failing.allocator(), 0.5).?[0][0]);
+    try testing.expectEqual(1, g.positions(failing.allocator(), 0.5, .{ .prev = true, .next2 = true }).?[0][0]);
     try testing.expect(blendedX(&g, 0.5) > 1);
 }
 
@@ -294,7 +294,7 @@ test "the bonds of a blend are the base step's" {
     defer g.deinit(test_gpa);
     g.real.show(test_gpa, 0, try testFrame(0.74));
     g.keep(test_gpa, .next, .{ .index = 1, .atoms = try testFrame(3) });
-    try testing.expect(g.positions(test_gpa, 0.9).?[1][0] > 2);
+    try testing.expect(g.positions(test_gpa, 0.9, .{ .prev = true, .next2 = true }).?[1][0] > 2);
     try expectBonds(&g.real, 1, .{});
 }
 

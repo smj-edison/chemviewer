@@ -203,6 +203,43 @@ test "interpolated playback carries what is left of a step over, but not across 
     }
 }
 
+test "stepped playback waits a period, keeps its schedule, and resyncs when far behind" {
+    var t: TestTrajectory = undefined;
+    try t.init(5, &.{}, .{});
+    defer t.deinit();
+    const At = struct { now: i64, shown: usize, current: usize, last: i64 };
+    var head: Playhead = .{ .current = 0, .last = .zero };
+    for ([_]At{
+        .{ .now = 99, .shown = 0, .current = 0, .last = 0 },
+        .{ .now = 110, .shown = 0, .current = 1, .last = 100 }, // late, but the schedule holds
+        .{ .now = 205, .shown = 0, .current = 1, .last = 100 }, // waits for the frame
+        .{ .now = 206, .shown = 1, .current = 2, .last = 200 },
+        .{ .now = 450, .shown = 2, .current = 3, .last = 450 }, // two periods late
+    }) |at| {
+        advance(&head, &t.stream, .{
+            .now = Io.Timestamp.zero.addDuration(.fromMilliseconds(at.now)),
+            .fps = 10,
+            .loop = false,
+            .interpolate = false,
+            .shown = at.shown,
+        });
+        try std.testing.expectEqual(at.current, head.current);
+        try std.testing.expectEqual(at.last * std.time.ns_per_ms, Io.Timestamp.zero.durationTo(head.last).nanoseconds);
+    }
+}
+
+test "after a stall, interpolated playback goes on from where it was" {
+    var t: TestTrajectory = undefined;
+    try t.init(5, &.{}, .{});
+    defer t.deinit();
+    t.stream.request(0);
+    _ = try t.settle(1);
+    var head: Playhead = .{ .current = 0, .t = 0.5, .last = .zero };
+    advance(&head, &t.stream, .{ .now = Io.Timestamp.zero.addDuration(.fromMilliseconds(5000)), .fps = 2, .loop = false, .interpolate = true, .shown = 0 });
+    try std.testing.expectEqual(0, head.current);
+    try std.testing.expectApproxEqAbs(0.7, head.t, 1e-5); // at most 0.1 s at once
+}
+
 test "interpolated playback never moves more than a step at a time" {
     var t: TestTrajectory = undefined;
     try t.init(5, &.{}, .{});

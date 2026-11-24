@@ -20,6 +20,9 @@ _Avoid_: Edit state, edits map
 The atoms and bonds on screen now, derived from the file frames and the edit session. Never edited directly.
 _Avoid_: Displayed positions, display positions
 
+**Blend**:
+Atoms drawn between two frames during interpolated playback. The frame it starts from is the base step; its atoms are the real atoms, which edits, saving and copying use.
+
 **Shown frame**:
 Which frame is on screen. It lags behind the timeline position while a frame loads, and stays at the last good one if that frame can't be read. Its atoms on screen are the displayed geometry.
 
