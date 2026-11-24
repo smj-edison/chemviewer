@@ -1400,7 +1400,7 @@ fn applyEditInner(app: *App, edit: Edit) !void {
     if (!try app.commitEdit(&tx)) app.setStatus("Nothing to change", .{});
 }
 
-/// Get ready to change the shown frame: abort a drag, and pause playback on
+/// Get ready to change or save the shown frame: abort a drag, and pause playback on
 /// the nearest real step. With interpolation that may be the step after.
 fn stopForEdit(app: *App) void {
     const d = &(app.doc orelse return);
@@ -1454,6 +1454,7 @@ fn commitKeeping(app: *App, edit: *cv.edit.Transaction, kept: ?cv.picks.Kept) !b
     const d = &(app.doc orelse return error.NoDocument);
     std.debug.assert(d.display.real.index == edit.index);
     // Nothing may fail after the commit.
+    try edit.dropEnergy();
     var show = try edit.atoms.clone(app.gpa);
     errdefer show.deinit(app.gpa);
     if (!try edit.commitKeeping(kept)) {
@@ -1461,7 +1462,6 @@ fn commitKeeping(app: *App, edit: *cv.edit.Transaction, kept: ?cv.picks.Kept) !b
         return false;
     }
     app.unlockRotation();
-    show.energy = app.session.current(edit.index).?.energy;
     app.showChanged(edit.index, show);
     return true;
 }
@@ -1611,6 +1611,8 @@ fn revertShown(app: *App) !void {
 }
 
 pub fn saveDialog(app: *App) void {
+    // So that the frame the dialog names is the one that is saved.
+    app.stopForEdit();
     const d = app.doc orelse return;
     if (d.display.real.frame == null) return;
     const filters = [_]c.SDL_DialogFileFilter{.{ .name = "XYZ", .pattern = "xyz" }};

@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const Frame = @import("core/structure.zig").Frame;
 const Vec3 = @import("core/math.zig").Vec3;
 const picks = @import("picks.zig");
+const xyz = @import("formats/xyz.zig");
 
 /// Geometry steps kept in the history; the oldest are dropped.
 pub const max_steps = 100;
@@ -331,6 +332,18 @@ pub const Transaction = struct {
         return false;
     }
 
+    /// The file's energy, also in its comment, doesn't describe an edited
+    /// geometry. Part of `commit`; only needed before to see what that will have.
+    pub fn dropEnergy(t: *Transaction) !void {
+        const gpa = t.session.gpa;
+        if (t.atoms.comment.len > 0) {
+            const comment = try xyz.withoutEnergy(gpa, t.atoms.comment);
+            gpa.free(t.atoms.comment);
+            t.atoms.comment = comment;
+        }
+        t.atoms.energy = null;
+    }
+
     /// Make it one geometry step. If nothing changed there is no step, and
     /// false is returned. On error the frame and the history are as they were.
     pub fn commit(t: *Transaction) !bool {
@@ -341,14 +354,13 @@ pub const Transaction = struct {
     /// atoms. Takes ownership of them if it returns true.
     pub fn commitKeeping(t: *Transaction, kept: ?picks.Kept) !bool {
         if (!t.isChanged()) return false;
+        try t.dropEnergy();
         const s = t.session;
         try s.reserve();
         const gop = try s.frames.getOrPut(s.gpa, t.index);
         if (!gop.found_existing) {
             gop.value_ptr.* = .{ .file = t.file.? };
         } else if (t.file) |*f| f.deinit(s.gpa);
-        // The file's energy doesn't describe the new geometry.
-        t.atoms.energy = null;
         s.push(.{ .geometry = .{ .index = t.index, .other = gop.value_ptr.edited, .kept = kept } });
         gop.value_ptr.edited = .{ .frame = t.atoms, .origins = t.origins };
         t.committed = true;
@@ -449,6 +461,21 @@ test "a committed edit replaces the frame's atoms and drops its energy" {
     var tx = try t.s.begin(3, t.file);
     defer tx.deinit();
     try testing.expectEqual(1, tx.atoms.positions[0][0]);
+}
+
+test "an edit drops the energy from the frame's comment too, until it is undone" {
+    var t: TestSession = try .init();
+    defer t.deinit();
+    t.file.comment = try test_gpa.dupe(u8, "water energy=-7 step=1");
+    try t.moveTo(0, 1);
+    try testing.expectEqualStrings("water step=1", t.s.current(0).?.comment);
+    try t.moveTo(0, 2);
+    try testing.expectEqualStrings("water step=1", t.s.current(0).?.comment);
+    _ = t.undo();
+    _ = t.undo();
+    try testing.expectEqualStrings("water energy=-7 step=1", t.s.current(0).?.comment);
+    _ = t.redo();
+    try testing.expectEqualStrings("water step=1", t.s.current(0).?.comment);
 }
 
 test "an edit that is dropped or changes nothing leaves no trace" {

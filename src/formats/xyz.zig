@@ -174,6 +174,42 @@ pub fn parseComment(comment: []const u8) CommentMeta {
     return meta;
 }
 
+/// The comment without the energy that `parseComment` finds in it, which
+/// doesn't describe an edited geometry. Owned by the caller.
+pub fn withoutEnergy(gpa: Allocator, comment: []const u8) ![]u8 {
+    var rest: std.ArrayList(u8) = .empty;
+    errdefer rest.deinit(gpa);
+    try rest.appendSlice(gpa, comment);
+    while (parseComment(rest.items).energy != null) {
+        const span = energySpan(rest.items) orelse break;
+        rest.replaceRangeAssumeCapacity(span[0], span[1] - span[0], "");
+    }
+    return rest.toOwnedSlice(gpa);
+}
+
+/// Where the energy that `parseComment` finds is, with the blanks after it, or
+/// before it if it is last.
+fn energySpan(comment: []const u8) ?[2]usize {
+    const blank = " \t";
+    var start: usize = undefined;
+    var end: usize = undefined;
+    if (findKey(comment, "energy=")) |rest| {
+        start = comment.len - rest.len - "energy=".len;
+        end = std.mem.findAnyPos(u8, comment, comment.len - rest.len, blank) orelse comment.len;
+    } else {
+        var it = std.mem.tokenizeAny(u8, comment, blank);
+        while (it.next()) |tok| {
+            if (std.mem.eql(u8, tok, "E")) break;
+        } else return null;
+        start = it.index - 1;
+        _ = it.next() orelse return null;
+        end = it.index;
+    }
+    while (end < comment.len and (comment[end] == ' ' or comment[end] == '\t')) end += 1;
+    if (end == comment.len) start = std.mem.trimEnd(u8, comment[0..start], blank).len;
+    return .{ start, end };
+}
+
 fn findKey(s: []const u8, key: []const u8) ?[]const u8 {
     var i: usize = 0;
     while (i + key.len <= s.len) : (i += 1) {
@@ -182,6 +218,25 @@ fn findKey(s: []const u8, key: []const u8) ?[]const u8 {
         }
     }
     return null;
+}
+
+test "an energy is taken out of a comment, and nothing else is" {
+    const gpa = std.testing.allocator;
+    const Case = struct { []const u8, []const u8 };
+    for ([_]Case{
+        .{ "energy=-5", "" },
+        .{ "water Energy=\"-76.4\" step=3", "water step=3" },
+        .{ "energy=-5 energy=-5 x", "x" },
+        .{ "Lattice=\"1 0 0 0 1 0 0 0 1\" energy=-5 pbc=\"T T T\"", "Lattice=\"1 0 0 0 1 0 0 0 1\" pbc=\"T T T\"" },
+        .{ "Coordinates from ORCA-job foo E -76.329", "Coordinates from ORCA-job foo" },
+        .{ "vitamin E and free_energy=3  kept", "vitamin E and free_energy=3  kept" },
+        .{ "", "" },
+    }) |case| {
+        const got = try withoutEnergy(gpa, case[0]);
+        defer gpa.free(got);
+        try std.testing.expectEqualStrings(case[1], got);
+        try std.testing.expectEqual(null, parseComment(got).energy);
+    }
 }
 
 /// Random-access XYZ reader. Keeps the file open and only an offset table in memory.
