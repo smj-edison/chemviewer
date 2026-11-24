@@ -4,7 +4,6 @@ const std = @import("std");
 const math = @import("math.zig");
 const Vec3 = math.Vec3;
 const Vec3d = math.Vec3d;
-const Allocator = std.mem.Allocator;
 
 pub const Transform = struct {
     /// Row-major rotation in f64.
@@ -159,13 +158,6 @@ fn jacobiEigen(comptime n: usize, a: *[n][n]f64, vals: *[n]f64, vecs: *[n][n]f64
         };
     }
     for (0..n) |i| vals[i] = a[i][i];
-}
-
-/// Per-atom displacement after alignment. Caller owns result.
-pub fn deviations(gpa: Allocator, reference: []const Vec3, mobile: []const Vec3, t: Transform) ![]f32 {
-    const out = try gpa.alloc(f32, reference.len);
-    for (out, reference, mobile) |*o, p, q| o.* = math.length(t.apply(q) - p);
-    return out;
 }
 
 test "recovers a known rigid transform" {

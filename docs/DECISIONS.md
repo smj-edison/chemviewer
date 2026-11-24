@@ -229,6 +229,7 @@ superseded). Choices that keep it small:
   timestamp queries, read back when a frame slot comes round again.
 
 ### D21 — Lock rotation moves the camera, not the atoms
+*Extended by D26: one lock for playback and diffs, which an edit switches off.*
 "Lock rotation" keeps a structure's orientation steady across frames. The
 frame's coordinates are left alone: picking, measuring, editing and saving
 all keep working on the file's coordinates. Instead the camera follows each
@@ -309,8 +310,7 @@ the same weights.
 
 
 ### D24 — One owner for each fact about a frame
-*Decided 2026-11-24. Implemented so far: the frame stream,
-the edit session, cuts and selection, and the displayed geometry.* Terms are in GLOSSARY.md. Data flows
+*Decided and implemented 2026-11-24.* Terms are in GLOSSARY.md. Data flows
 one way: the frame stream owns file frames, the edit session owns the current
 atoms of every frame, and the displayed geometry is derived from both and never
 edited.
@@ -332,6 +332,8 @@ edited.
   each atom's origin (its number in the file, or an id of its own if pasted), so
   any two numberings of a frame can be translated. Steps also restore what
   translating can't (D25). Frames have the same numbering if their elements and origins match.
+- **Scene:** built again when what it is drawn from differs (`App.sceneKey`), so
+  nothing has to say that it changed something.
 - **Displayed geometry:** drawing, picking, lasso, labels and measured values
   use what is visible, blends included. Saving and copying use the real frame.
   Bonds always match the atoms.
@@ -340,7 +342,7 @@ The modules don't depend on SDL, ImGui or Vulkan. Order: stream, edit session,
 displayed geometry.
 
 ### D25 — Selection is part of the undo history (provisional)
-*Decided and implemented 2026-11-24; to be
+*Decided and implemented 2026-11-24; still to be
 revisited after trying it.* As
 in Blender, selecting can take real effort, so selection and cut changes are
 undo steps, one per gesture, with redo (Ctrl+Shift+Z, Ctrl+Y). Geometry steps

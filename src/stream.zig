@@ -160,11 +160,6 @@ pub const FrameStream = struct {
         s.cond.signal(s.io);
     }
 
-    /// Load synchronously, bypassing the cache (e.g. for diff references).
-    pub fn loadNow(s: *FrameStream, gpa: Allocator, index: usize) !Frame {
-        return s.source.loadFrame(s.io, gpa, index);
-    }
-
     pub fn energy(s: *const FrameStream, index: usize) ?f64 {
         const e = s.energies[index].load(.monotonic);
         return if (std.math.isNan(e)) null else e;

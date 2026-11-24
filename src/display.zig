@@ -77,6 +77,8 @@ pub const DisplayedGeometry = struct {
     next: ?Step = null,
     prev: ?Step = null,
     next2: ?Step = null,
+    /// Counts changes to those, as `real.changes` does to the real atoms.
+    held: u64 = 0,
 
     blended: std.ArrayList(Vec3) = .empty,
     /// What `blended` is for (null = nothing).
@@ -108,6 +110,8 @@ pub const DisplayedGeometry = struct {
     /// Hold this step (takes ownership), instead of the one held.
     pub fn keep(g: *DisplayedGeometry, gpa: Allocator, which: Slot, step: ?Step) void {
         const s = g.slot(which);
+        if (s.* == null and step == null) return;
+        g.held += 1;
         if (s.*) |*old| old.atoms.deinit(gpa);
         s.* = step;
         g.blended_for = null;
@@ -120,9 +124,11 @@ pub const DisplayedGeometry = struct {
 
     /// The step blended towards, which is no longer held. Owned by the caller.
     pub fn takeNext(g: *DisplayedGeometry) ?Step {
-        defer g.next = null;
+        const next = g.next orelse return null;
+        g.next = null;
+        g.held += 1;
         g.blended_for = null;
-        return g.next;
+        return next;
     }
 
     /// Which steps have the same numbering as the shown one, so that they may

@@ -28,8 +28,6 @@ pub const Document = struct {
     current: usize = 0,
     /// What is on screen (its frame may lag `current` while that loads).
     display: cv.display.DisplayedGeometry = .{},
-    /// What `App.update` last brought everything else in line with.
-    followed: ?struct { changes: u64, bond_params: cv.bonds.Params } = null,
     needs_fit: bool = true,
 
     pub fn frameCount(d: *const Document) usize {
@@ -66,7 +64,11 @@ last_advance: Io.Timestamp = .zero,
 interpolate: bool = false,
 /// Fraction of the way from the shown step to the next (0 when not blending).
 interp_t: f32 = 0,
-scene_dirty: bool = true,
+/// What the scene was last built from (null = build it again).
+scene_key: ?SceneKey = null,
+/// Documents and diffs so far, to tell them apart.
+documents: u64 = 0,
+diffs: u64 = 0,
 scene_radius: f32 = 10,
 show_inspector: bool = true,
 show_diff: bool = false,
@@ -162,7 +164,6 @@ pub fn closeDocument(app: *App) void {
     app.gpa.free(d.path);
     app.doc = null;
     app.unlockRotation();
-    app.scene_dirty = true;
 }
 
 pub fn openFile(app: *App, path: []const u8) void {
@@ -195,6 +196,7 @@ fn install(app: *App, opened: cv.source.Opened, path: []const u8) !void {
     const owned_path = try gpa.dupe(u8, path);
 
     app.closeDocument();
+    app.documents += 1;
     app.doc = .{ .path = owned_path, .format = opened.format, .source = src, .stream = stream };
     app.setStatus("Opened {s} ({s}, {d} frame{s})", .{
         std.fs.path.basename(path),             opened.format.label(), src.frameCount(),
@@ -349,7 +351,6 @@ fn appendFragment(app: *App, frag: Frame) !void {
     for (pasted, first..) |*atom, i| atom.* = @intCast(i);
     try edit.append(frag, offset);
     if (!try app.commitRenumbering(&edit, pasted)) return app.setStatus("No atoms to paste", .{});
-    app.scene_dirty = true;
     // Re-frame if any pasted atom is off-screen. The background stays put in
     // the world, so it doesn't turn if frames were followed before.
     const sp = app.screenProjector();
@@ -459,29 +460,52 @@ pub fn update(app: *App) void {
     app.refresh();
 }
 
+/// Everything the scene is drawn from. It is built again when this differs.
+const SceneKey = struct {
+    document: u64 = 0,
+    changes: u64 = 0,
+    blend: f32 = 0,
+    /// Counts the steps held, during a blend.
+    held: u64 = 0,
+    picks: u64,
+    style: Renderer.Style,
+    bond_params: cv.bonds.Params,
+    diff: ?struct { number: u64, overlay: bool, comparable: bool, placement: cv.align_.Transform } = null,
+};
+
+fn sceneKey(app: *const App) SceneKey {
+    var key: SceneKey = .{ .picks = app.picks.hash(), .style = app.style, .bond_params = app.bond_params };
+    const d = app.doc orelse return key;
+    key.document = app.documents;
+    key.changes = d.display.real.changes;
+    key.blend = app.blendTime();
+    if (key.blend > 0) key.held = d.display.held;
+    if (app.diff) |df| key.diff = .{
+        .number = app.diffs,
+        .overlay = df.overlay,
+        .comparable = df.result != null,
+        .placement = df.placement,
+    };
+    return key;
+}
+
 /// Bring the scene in line with everything else. Part of `update`; call it
 /// again after `drawUi`, so that what the UI changed is never drawn half (a
 /// moved camera with the old scene).
 pub fn refresh(app: *App) void {
-    if (app.doc) |*d| if (d.display.real.frame != null) {
-        const changes = d.display.real.changes;
-        if (d.followed == null or d.followed.?.changes != changes or
-            !std.meta.eql(d.followed.?.bond_params, app.bond_params))
-        {
-            d.followed = .{ .changes = changes, .bond_params = app.bond_params };
-            app.updateDiff();
-            if (d.needs_fit) {
-                d.needs_fit = false;
-                app.fitCamera();
-            }
-            app.scene_dirty = true;
-        }
+    app.updateDiff();
+    if (app.doc) |*d| if (d.needs_fit and d.display.real.frame != null) {
+        d.needs_fit = false;
+        app.fitCamera();
     };
-    if (app.scene_dirty) {
-        app.followRotationLock(); // may set it too
-        app.scene_dirty = false;
-        app.rebuildScene() catch |e| app.setStatus("Scene build failed: {t}", .{e});
-    }
+    app.followRotationLock();
+    const key = app.sceneKey();
+    if (std.meta.eql(app.scene_key, @as(?SceneKey, key))) return;
+    app.scene_key = key;
+    app.rebuildScene() catch |e| {
+        app.scene_key = null; // try again
+        app.setStatus("Scene build failed: {t}", .{e});
+    };
 }
 
 /// Shows the requested frame if it's ready.
@@ -542,7 +566,6 @@ fn advancePlayback(app: *App) void {
 }
 
 fn setInterp(app: *App, t: f32) void {
-    if (t != app.interp_t) app.scene_dirty = true;
     app.interp_t = t;
 }
 
@@ -666,10 +689,10 @@ pub fn setReference(app: *App) void {
         return app.setStatus("Can't set the reference: {t}", .{e});
     if (app.diff) |*old| old.deinit(app.gpa);
     app.diff = new;
+    app.diffs += 1;
     app.show_diff = true;
     app.setLockRotation(true);
     app.updateDiff();
-    app.scene_dirty = true;
 }
 
 pub fn clearDiff(app: *App) void {
@@ -678,7 +701,6 @@ pub fn clearDiff(app: *App) void {
     // Without the diff, the lock starts again at the current frame.
     app.setLockRotation(df.was_locked);
     df.deinit(app.gpa);
-    app.scene_dirty = true;
 }
 
 /// Where the reference's atoms are drawn, if they are.
@@ -693,7 +715,6 @@ pub fn resetPlacement(app: *App) void {
     app.unlockRotation();
     df.place(.identity);
     app.updateDiff();
-    app.scene_dirty = true;
 }
 
 // ------------------------------------------------------- rotation lock
@@ -742,7 +763,6 @@ fn followRotationLock(app: *App) void {
             if (app.diff) |*df| {
                 df.place(l.current.inverse());
                 app.updateDiff();
-                app.scene_dirty = true;
             }
             return;
         }
@@ -918,7 +938,6 @@ pub fn selected(app: *const App) []const u32 {
 pub fn clearSelection(app: *App) void {
     if (app.picks.selection.items.len == 0) return;
     app.picks.selection.clearRetainingCapacity();
-    app.scene_dirty = true;
 }
 
 /// Clear the selection by hand.
@@ -948,7 +967,6 @@ fn endGesture(app: *App, before: *cv.picks.Snapshot) void {
     defer before.deinit(app.gpa);
     app.session.recordSelection(&app.picks, before.*) catch |e| {
         app.picks.restoreSnapshot(before);
-        app.scene_dirty = true;
         app.setStatus("Can't change the selection: {t}", .{e});
     };
 }
@@ -964,7 +982,6 @@ pub fn toggleSelect(app: *App, atom: u32) void {
     } else {
         app.picks.selection.append(app.gpa, atom) catch return;
     }
-    app.scene_dirty = true;
 }
 
 pub fn isCut(app: *const App, a: u32, b: u32) bool {
@@ -980,14 +997,12 @@ pub fn toggleCutPair(app: *App, a: u32, b: u32) void {
         app.picks.cuts.put(app.gpa, key, {}) catch return;
         app.setStatus("Cut bond: ignored when moving groups and selecting molecules", .{});
     }
-    app.scene_dirty = true;
 }
 
 pub fn restoreCuts(app: *App) void {
     var before = app.beginGesture() orelse return;
     defer app.endGesture(&before);
     app.picks.cuts.clearRetainingCapacity();
-    app.scene_dirty = true;
 }
 
 fn selectAll(app: *App) void {
@@ -996,7 +1011,6 @@ fn selectAll(app: *App) void {
     app.picks.selection.clearRetainingCapacity();
     app.picks.selection.ensureTotalCapacity(app.gpa, f.len()) catch return;
     for (0..f.len()) |i| app.picks.selection.appendAssumeCapacity(@intCast(i));
-    app.scene_dirty = true;
 }
 
 /// Ctrl+A: grow the selection to the whole molecules of the selected atoms;
@@ -1024,7 +1038,6 @@ pub fn expandSelection(app: *App) void {
         };
     }
     if (app.picks.selection.items.len == before) return app.selectAll();
-    app.scene_dirty = true;
     app.setStatus("Selected {d} atoms (whole molecules); Ctrl+A again selects all", .{app.picks.selection.items.len});
 }
 
@@ -1062,7 +1075,6 @@ fn applyLasso(app: *App) void {
             changed += 1;
         };
     }
-    app.scene_dirty = true;
     app.setStatus("{s} {d} atom{s} ({d} selected)", .{
         if (app.lasso_remove) "Deselected" else "Selected", changed, if (changed == 1) "" else "s", app.picks.selection.items.len,
     });
@@ -1088,7 +1100,7 @@ fn bonds(app: *App) []const cv.bonds.Bond {
 fn bondsOf(app: *App, atoms: *cv.display.BondedAtoms) []const cv.bonds.Bond {
     return atoms.bonds(app.gpa, app.bond_params) catch |e| {
         app.setStatus("Bond search failed: {t}", .{e});
-        app.scene_dirty = true; // drawn without; try again
+        app.scene_key = null; // drawn without; try again
         return &.{};
     };
 }
@@ -1177,15 +1189,6 @@ fn hitAt(app: *App, x: f32, y: f32) ?Hit {
         if (gap < grab and (best == null or s < best.?.t)) best = .{ .t = s, .target = .{ .bond = .{ bd.a, bd.b } } };
     }
     return best;
-}
-
-/// The atom under window point (x, y), if any.
-pub fn atomAt(app: *App, x: f32, y: f32) ?u32 {
-    const h = app.hitAt(x, y) orelse return null;
-    return switch (h.target) {
-        .atom => |a| a,
-        .bond => null,
-    };
 }
 
 /// A click toggles the atom under the cursor, or clears the selection on
@@ -1542,7 +1545,6 @@ pub fn redo(app: *App) void {
 }
 
 fn showPicks(app: *App, comptime what: []const u8) void {
-    app.scene_dirty = true;
     app.setStatus(what, .{});
 }
 
@@ -1705,7 +1707,7 @@ fn menuBar(app: *App) void {
     if (c.igBeginMenu("View", true)) {
         _ = c.igMenuItem_BoolPtr("Inspector", null, &app.show_inspector, true);
         _ = c.igMenuItem_BoolPtr("Diff", null, &app.show_diff, true);
-        if (c.igMenuItem_BoolPtr("Unit cell", null, &app.style.show_cell, true)) app.scene_dirty = true;
+        _ = c.igMenuItem_BoolPtr("Unit cell", null, &app.style.show_cell, true);
         _ = c.igMenuItem_BoolPtr("Atom numbers", "N", &app.show_atom_numbers, true);
         _ = c.igMenuItem_BoolPtr("Element labels", null, &app.show_element_labels, true);
         ui.tooltip("Show element symbols on atoms whose colour could be mistaken for another element in the structure (the rarer of the two).");
@@ -1756,39 +1758,39 @@ fn inspector(app: *App, timeline_h: f32) void {
 
     c.igSeparatorText("Bonds");
     var coloring: c_int = @backingInt(app.style.bond_coloring);
-    if (c.igRadioButton_IntPtr("Character gradient", &coloring, 0)) app.scene_dirty = true;
+    _ = c.igRadioButton_IntPtr("Character gradient", &coloring, 0);
     c.igSameLine(0, -1);
-    if (c.igRadioButton_IntPtr("Element", &coloring, 1)) app.scene_dirty = true;
+    _ = c.igRadioButton_IntPtr("Element", &coloring, 1);
     app.style.bond_coloring = @fromBackingInt(@intCast(coloring));
     ui.gradientLegend(app.style.theme, app.style.snap);
-    if (c.igSliderFloat("Snap", &app.style.snap, 0, 1, "%.2f", 0)) app.scene_dirty = true;
+    _ = c.igSliderFloat("Snap", &app.style.snap, 0, 1, "%.2f", 0);
     ui.tooltip("How strongly colours settle on whole bond orders. 0 = linear in bond character, 1 = flat plateaus at single/double/triple.");
-    if (c.igSliderFloat("Cut-off x r1", &app.bond_params.cutoff_factor, 1.0, 1.8, "%.2f", 0)) app.scene_dirty = true;
+    _ = c.igSliderFloat("Cut-off x r1", &app.bond_params.cutoff_factor, 1.0, 1.8, "%.2f", 0);
     ui.tooltip("Pairs closer than this multiple of their single-bond length get a link.");
-    if (c.igSliderFloat("Hide below", &app.style.min_character, 0, 3, "%.2f", 0)) app.scene_dirty = true;
+    _ = c.igSliderFloat("Hide below", &app.style.min_character, 0, 3, "%.2f", 0);
     ui.tooltip("Hide links whose bond character is below this value (1 = single). Only drawn links connect atoms when moving groups or selecting molecules.");
 
     c.igSeparatorText("Display");
     var theme: c_int = @backingInt(app.style.theme);
-    if (c.igRadioButton_IntPtr("Light", &theme, 0)) app.scene_dirty = true;
+    _ = c.igRadioButton_IntPtr("Light", &theme, 0);
     c.igSameLine(0, -1);
-    if (c.igRadioButton_IntPtr("Dark", &theme, 1)) app.scene_dirty = true;
+    _ = c.igRadioButton_IntPtr("Dark", &theme, 1);
     app.style.theme = @fromBackingInt(@intCast(theme));
     var shading: c_int = @backingInt(app.style.shading);
-    if (c.igRadioButton_IntPtr("Cel", &shading, 0)) app.scene_dirty = true;
+    _ = c.igRadioButton_IntPtr("Cel", &shading, 0);
     ui.tooltip("Toon bands with outlines.");
     c.igSameLine(0, -1);
-    if (c.igRadioButton_IntPtr("Flat", &shading, 1)) app.scene_dirty = true;
+    _ = c.igRadioButton_IntPtr("Flat", &shading, 1);
     ui.tooltip("Inspired by Kurzgesagt's flat illustrations: solid colours, flat drop shadows, depth shown by fading into the background.");
     c.igSameLine(0, -1);
-    if (c.igRadioButton_IntPtr("Aero", &shading, 2)) app.scene_dirty = true;
+    _ = c.igRadioButton_IntPtr("Aero", &shading, 2);
     ui.tooltip("Glossy, in the spirit of Frutiger Aero: glassy atoms with highlight caps, in front of a sky (or an aurora at night) with bubbles and lens flare.");
     c.igSameLine(0, -1);
-    if (c.igRadioButton_IntPtr("Glass", &shading, 3)) app.scene_dirty = true;
+    _ = c.igRadioButton_IntPtr("Glass", &shading, 3);
     ui.tooltip("Experimental: liquid glass. Translucent tinted glass atoms and bonds that refract whatever is behind them, other glass included, with bright rims.");
     app.style.shading = @fromBackingInt(@intCast(shading));
     if (app.style.shading == .glass) {
-        if (c.igCheckbox("Liquid", &app.style.liquid)) app.scene_dirty = true;
+        _ = c.igCheckbox("Liquid", &app.style.liquid);
         ui.tooltip("Bonds flow into the atoms, like drops of liquid glass, instead of separate balls and sticks.");
     }
     if (app.style.shading == .flat) {
@@ -1825,11 +1827,11 @@ fn inspector(app: *App, timeline_h: f32) void {
         _ = c.igSliderFloat("Background blur", &app.style.background_blur, 0, 2.5, "%.2f", 0);
         ui.tooltip("Depth of field: the molecule stays in focus and the backdrop blurs with distance. Zooming in blurs it more.");
     }
-    if (c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0)) app.scene_dirty = true;
-    if (c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0)) app.scene_dirty = true;
+    _ = c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0);
+    _ = c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0);
     if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
 
-    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. Right drag on the timeline: scrub one frame per pixel. F: fit. Double-click a bond: cut / restore it. Ctrl+Z: undo (selecting and cutting too). Ctrl+Shift+Z or Ctrl+Y: redo.", .{});
+    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) ui.textWrapped("Left drag: rotate. Right drag: roll (left/right), zoom (up/down). Middle drag, or Shift + any drag: translate. Wheel: zoom. Space: play. Left/Right keys: step. Right drag on the timeline: scrub one frame per pixel. F: fit. Double-click a bond: cut / restore it, until you leave the frame. Alt + drag an atom: move its group, also in a diff overlay (Esc cancels). Ctrl+Z: undo (selecting and cutting too). Ctrl+Shift+Z or Ctrl+Y: redo.", .{});
 }
 
 /// Element key: a colour swatch and count per element present, in Hill
@@ -1903,7 +1905,7 @@ fn diffPanel(app: *App) void {
         return;
     }
     if (c.igSmallButton("Jump to reference")) app.setFrame(df.reference.index);
-    if (c.igCheckbox("Overlay (reference red, current green)", &df.overlay)) app.scene_dirty = true;
+    _ = c.igCheckbox("Overlay (reference red, current green)", &df.overlay);
     if (c.igSmallButton("Reset")) app.resetPlacement();
     ui.tooltip("Show both frames at their file positions, and switch Lock rotation off. Lock rotation lines them up again.");
     app.updateDiff(); // again, if it ran out of memory
@@ -3707,6 +3709,78 @@ test "fitting a diff overlay includes the reference" {
     t.app.diff.?.overlay = false;
     t.app.fitCamera();
     try expect(t.app.scene_radius < 10);
+}
+
+test "whatever changes what is drawn makes a new scene, and nothing else does" {
+    const run = struct {
+        fn run(t: *TestApp, what: usize) !bool {
+            const app = &t.app;
+            switch (what) {
+                0 => t.select(&.{0}),
+                1 => t.select(&.{1}),
+                2 => app.toggleCutPair(0, 1),
+                3 => app.toggleCutPair(1, 2),
+                4 => app.restoreCuts(),
+                5 => t.setDistance(4),
+                6 => app.undo(),
+                7 => app.redo(),
+                8 => app.revertFrame(),
+                9 => try t.pasteAtom(),
+                10 => try t.deleteAtom(0),
+                11 => try t.dragSome(),
+                12 => app.endDrag(false),
+                13 => {
+                    app.revertFrame();
+                    try t.show(1);
+                },
+                14 => app.style.shading = .flat,
+                15 => app.style.theme = .dark,
+                16 => app.style.show_cell = false,
+                17 => app.style.atom_scale = 2,
+                18 => app.bond_params.cutoff_factor = 1.5,
+                19 => {
+                    try t.show(0);
+                    app.setReference();
+                },
+                20 => app.diff.?.overlay = false,
+                21 => app.diff.?.overlay = true,
+                22 => app.diff.?.place(.{ .rot = cv.align_.Transform.identity.rot, .from_center = @splat(0), .to_center = @splat(1) }),
+                // The same frame again, but another diff.
+                23 => app.setReference(),
+                24 => app.clearDiff(),
+                25 => {
+                    app.interpolate = true;
+                    app.playing = true;
+                    app.interp_t = 0.3;
+                    try t.waitForNext();
+                },
+                26 => app.interp_t = 0.4,
+                27 => app.closeDocument(),
+                28 => try t.open(2),
+                29 => try t.show(0),
+                else => return false,
+            }
+            return true;
+        }
+    }.run;
+    var t: TestApp = try .init(2);
+    defer t.deinit();
+    try t.show(0);
+    var what: usize = 0;
+    var key = t.app.sceneKey();
+    while (try run(&t, what)) : (what += 1) {
+        errdefer std.debug.print("change {d}\n", .{what});
+        const now = t.app.sceneKey();
+        try expect(!std.meta.eql(key, now));
+        // Looking, redrawing and doing nothing isn't a change.
+        t.app.camera.orbit(3, 4);
+        t.app.updateDiff();
+        if (t.app.doc != null) t.app.updateNextFrame();
+        _ = t.app.drawnPositions();
+        _ = t.app.bonds();
+        key = t.app.sceneKey();
+        try std.testing.expectEqualDeep(now, key);
+    }
 }
 
 test "Alt-drag works in a diff overlay" {

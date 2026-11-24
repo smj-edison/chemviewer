@@ -16,9 +16,11 @@ ImGui (via cimgui) doing the heavy lifting.
   Large trajectories are streamed from disk with background prefetch.
   **Lock rotation** (next to Loop) turns the view with each frame so a
   tumbling structure keeps its orientation: every frame is superposed onto
-  the frame shown when the lock was switched on, as in diffing.
-- **Diffing.** Superimpose the current frame onto a reference frame
-  (Horn/Kabsch), with a red/green overlay, RMSD and max deviation.
+  the frame shown when the lock was switched on. Editing switches it off.
+- **Diffing.** Line up a reference frame with the current one (Horn/Kabsch),
+  with a red/green overlay, RMSD and max deviation. Alt+drag works in the
+  overlay: Lock rotation switches off, the reference stays put, and the numbers
+  update live. Lock again to refit, or Reset to see both at their file positions.
 - **Measure and edit.** Click two to four atoms to get a distance, angle or
   dihedral in the bottom bar. Type a new value (degrees or radians for
   angles) and the attached group moves with it, Chemcraft-style. Edits are per
@@ -33,10 +35,12 @@ ImGui (via cimgui) doing the heavy lifting.
   base swings around it, with the grabbed atom following the cursor. Alt+right
   drag twists; Alt+middle (or Alt+Shift+left/right) drag translates. With nothing
   selected the grabbed atom's molecule moves. Each drag is one undoable edit;
-  Esc cancels.
+  Esc cancels, and so does anything that changes the frame under it.
+- **Undo and redo.** Edits, selections and cuts are undone one gesture at a time.
+  Edits jump to the frame they were on; selections and cuts stay on yours.
 - **Cut bonds.** Double-click a bond to cut it (and again to restore it). It stays drawn (thin, red),
   but edits and molecule selection treat the two sides as separate, so you can
-  move part of a ring or a ligand freely.
+  move part of a ring or a ligand freely. Cuts end when you leave the frame.
 - **Formats:** XYZ / extended XYZ, Gaussian input (`.gjf`/`.com`) and output
   (`.log`), ORCA input (`.inp`) and output (`.out`), ASE trajectories (`.traj`).
 
@@ -132,7 +136,7 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Input | Action |
 |---|---|
 | Left click | select / deselect an atom; empty space: clear selection |
-| Double-click a bond | cut / restore it |
+| Double-click a bond | cut / restore it (until you leave the frame) |
 | Alt + left drag | on a selected atom: rotate the selection about its centre; with one base atom selected, on another atom: swing its branch around the base |
 | Alt + right drag | twist the group about the base→grabbed axis |
 | Alt + middle drag / Alt + Shift + left or right drag | translate the group |

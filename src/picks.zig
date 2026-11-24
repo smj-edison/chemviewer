@@ -76,6 +76,15 @@ pub const Picks = struct {
         return if (p.shared) |s| s.numbering else .{ .numbers = &.{} };
     }
 
+    /// Differs (but for a fluke) between different selections or cuts.
+    pub fn hash(p: *const Picks) u64 {
+        var h = std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(p.selection.items));
+        // In whatever order the cuts come.
+        var it = p.cuts.keyIterator();
+        while (it.next()) |key| h +%= std.hash.Wyhash.hash(1, std.mem.asBytes(key));
+        return h;
+    }
+
     // ---- selection steps
 
     /// The picks as they are, to make a step of what a gesture changes.
