@@ -7,7 +7,7 @@ something is picked up.
   *View > Atom numbers or N (`--atom-numbers` on the CLI). 1-based, with a
   halo; labels are hidden by atoms in front of them (fading when partly
   covered); skipped above 5000 atoms.*
-- [ ] Timeline scrubbing should update immediately instead of waiting for scrubbing to stop
+- [x] Timeline scrubbing should update immediately instead of waiting for scrubbing to stop
   *Couldn't reproduce headlessly: a scripted scrub updates on the next loop
   iteration for the in-memory IRC log and keeps up with metad.traj. Two
   latency fixes are in: frames are requested the moment the timeline moves,
@@ -15,6 +15,7 @@ something is picked up.
   If it still lags, note the file, whether it's a debug build (`zig build
   run`) or `-Doptimize=ReleaseFast`, and whether it's the slider or the
   energy plot.*
+  *Confirmed gone by the user, 2026-11-24.*
 - [x] Double click on bond to toggle being ignored
   *Double-clicking a bond toggles its cut (same as X). Clicking a bond selects
   only the bond, not its atoms.*
@@ -88,3 +89,7 @@ something is picked up.
   it was switched on, rather than to the previous frame, so a frame looks the
   same however you reach it. Interpolated playback used to swing between
   steps and snap back at each one; fixed.*
+- [x] The UI contrast between the slider knob and the text isn't great.
+  *Knob colours re-chosen in all four themes (light, dark, Aero light/dark):
+  at least 4.5:1 against the text on top and 2:1 against the track. Comparison:
+  renders/slider-contrast/compare.png.*
