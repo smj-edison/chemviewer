@@ -4,7 +4,7 @@
 
 **Blocked by:** None
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] `window.zig`: zoom keeps the coordinate under the cursor, never shows less than 2 frames or more than all; headless tests, 1 to 500,000 frames
 - [ ] Ctrl+wheel zooms, Shift+wheel and middle drag pan, left drag scrubs, right drag scrubs finely, a key fits

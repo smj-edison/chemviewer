@@ -4,7 +4,7 @@
 
 **Blocked by:** 03
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] `layout.zig`: move a series, split it off, share rules; headless tests
 - [ ] Dragging a series shows where it would land before it is let go

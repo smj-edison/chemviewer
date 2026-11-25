@@ -4,7 +4,7 @@
 
 **Blocked by:** 05
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] Read from the log together with the points `Irc` already orders; reverse is negative, the TS is 0
 - [ ] Tested on cut-down, made-up pieces shaped like the user's IRC logs (none of their data in the repo): forward and reverse, reverse only, an unfinished path

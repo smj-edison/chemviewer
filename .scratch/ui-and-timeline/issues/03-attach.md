@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] `table.zig` reads the three kinds; tests cover every case in the spec's Testing section
 - [ ] Reading runs in the background, is cancelled on close, and the lane fills as it goes

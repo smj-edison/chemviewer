@@ -4,7 +4,7 @@
 
 **Blocked by:** 05
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] Without Shift, steps are whole frames whatever the axis
 - [ ] With Shift, the finest series in view decides; with none finer, it is a frame

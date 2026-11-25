@@ -4,7 +4,7 @@
 
 **Blocked by:** 05, 08
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] Kept in the app's config by path, size and modification time; never in the data's directories
 - [ ] A missing file keeps its place, with "Locate..."; a changed one is marked and its alignment is unconfirmed again

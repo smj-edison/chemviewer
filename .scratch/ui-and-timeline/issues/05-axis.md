@@ -4,7 +4,7 @@
 
 **Blocked by:** 04
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] A time in an unconfirmed unit can't be the axis, and the menu says why
 - [ ] `axis.zig` tests: coordinate to frame and back, floors, ties, non-monotonic columns refused with the first offending row

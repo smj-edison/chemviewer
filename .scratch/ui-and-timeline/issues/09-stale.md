@@ -4,7 +4,7 @@
 
 **Blocked by:** 03
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] Stale rows look different without relying on colour, and the readout says "(stale)"
 - [ ] The inspector shows an edited frame's file energy as "(stale)" instead of hiding it

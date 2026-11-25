@@ -1,6 +1,6 @@
 # Timeline: spec
 
-Status: needs-triage (waiting for the user's review; no code before that)
+Status: ready-for-agent (reviewed by the user, 2026-11-24; C1 to C5 confirmed)
 
 From `decisions.md` section 4, `audit.md` (2, 17, T1 to T6) and what the test run's
 files contain. Everything in section 4 holds unless "Changes" below says otherwise.
@@ -44,7 +44,7 @@ one pixel covers hundreds of them.
 - Every file is regular: no rewinds, gaps or repeated headers. Those need made-up
   test files.
 
-## Changes to what was agreed (please confirm)
+## Changes to what was agreed (confirmed)
 
 - **C1. Alignment is proposed in this order:** (1) energies; (2) the clock of a file
   that is already aligned, with both time units known; (3) the nearest whole number
@@ -53,6 +53,10 @@ one pixel covers hundreds of them.
 - **C2. Files may extend past the trajectory at either end.** The rows past it are
   hatched, not grey (T3).
 - **C3. plumed.log is read for its unit lines only**; its other contents aren't data.
+  It is optional. If it is missing, unreadable, has no unit or disagrees with
+  plumed.dat, the unit is "unknown" and the user is asked: a field on the source,
+  in place, not a pop-up. Until answered the data is shown and lined up by the
+  rules that need no unit.
 - **C4. The axis is chosen in a menu at the axis's left end** (T1), not by radio
   buttons in the tree. Columns that can't be an axis are greyed there, with why.
 - **C5. The overview strip and a zoom slider do everything the modifiers do** (T2).

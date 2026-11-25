@@ -4,7 +4,7 @@
 
 **Blocked by:** 04, 06, 07, 08, 09, 10
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] The spec's "Done when" holds
 - [ ] `--profile` covers the timeline; release build, 8 lanes of a million points, display rate while panning, zooming and playing

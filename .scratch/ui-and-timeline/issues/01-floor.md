@@ -4,7 +4,7 @@
 
 **Blocked by:** None
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 - [ ] Pausing at 0.7 between frames 4 and 5 shows frame 4, and the timeline position is 4
 - [ ] The same for an edit, a save, undo and revert
