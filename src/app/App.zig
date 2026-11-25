@@ -1399,10 +1399,8 @@ fn endDrag(app: *App, commit: bool) void {
     app.drag_edit = null;
     if (!commit) app.aborted_button = app.drag_button;
     if (commit and dr.moved) {
-        if (app.commitEdit(&edit)) |changed| {
-            if (changed) app.inform("Moved {d} atom{s} (Ctrl+Z undoes)", .{ dr.group.len, if (dr.group.len == 1) "" else "s" });
-            return;
-        } else |e| app.fail("Move failed: {t}", .{e});
+        // Nothing to say if it worked, changed or not: it shows.
+        if (app.commitEdit(&edit)) |_| {} else |e| app.fail("Move failed: {t}", .{e});
     }
 }
 
