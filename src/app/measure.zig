@@ -90,7 +90,7 @@ fn modeSelector(app: *App, last_label: []const u8) void {
 pub fn bar(app: *App) void {
     const d = app.doc orelse {
         c.igAlignTextToFramePadding();
-        ui.textDisabled("No structure loaded", .{});
+        ui.textDisabled("No file open", .{});
         return;
     };
     const f = d.display.real.frame orelse {

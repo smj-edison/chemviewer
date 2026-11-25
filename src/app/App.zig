@@ -1941,7 +1941,7 @@ fn displaySection(app: *App) void {
     }
     _ = c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0);
     _ = c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0);
-    if (c.igButton("Fit view (F)", ui.v2(0, 0))) app.fitCamera();
+    if (c.igButton("Fit to view (F)", ui.v2(0, 0))) app.fitCamera();
 }
 
 const help = .{
@@ -2090,7 +2090,7 @@ fn diffPanel(app: *App) void {
     if (c.igSmallButton("Reset")) app.resetPlacement();
     ui.tooltip("Show both frames at their file positions, and switch Lock rotation off. Lock rotation lines them up again.");
     const res = df.result orelse {
-        if (df.followed == null) ui.textWrapped("Out of memory.", .{}) else ui.textWrapped("Current frame has different atoms than the reference, or numbered differently. Matching without a known correspondence is planned (Phase 3).", .{});
+        if (df.followed == null) ui.textWrapped("Out of memory.", .{}) else ui.textWrapped("Current frame has different atoms than the reference, or numbers them differently, so they can't be compared.", .{});
         return;
     };
     c.igSeparator();

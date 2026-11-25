@@ -26,13 +26,11 @@ pub fn draw(app: *App, h: f32) void {
     if (!c.igBegin("##timeline", null, flags)) return;
     measure.bar(app);
 
-    const d = &(app.doc orelse {
-        ui.textDisabled("No trajectory loaded", .{});
-        return;
-    });
+    const d = &(app.doc orelse return);
     const n = d.frameCount();
 
-    // Transport controls.
+    // Transport controls, greyed out when there is nothing to step through.
+    c.igBeginDisabled(n < 2);
     if (c.igButton("|<", ui.v2(0, 0))) app.setFrame(0);
     c.igSameLine(0, -1);
     if (c.igButton("<", ui.v2(0, 0))) app.setFrame(d.current -| 1);
@@ -68,6 +66,7 @@ pub fn draw(app: *App, h: f32) void {
     var lock = app.lock_rotation;
     if (c.igCheckbox("Lock rotation", &lock)) app.setLockRotation(lock);
     ui.tooltip("Turn the view with each frame so the structure keeps its orientation: every frame is superposed onto the frame shown when this was switched on, or onto the reference of a diff. Your own rotations still apply. Editing the structure switches it off.");
+    c.igEndDisabled();
 
     energyPlot(app, d);
 }
