@@ -557,6 +557,7 @@ test {
     _ = @import("app/lasso.zig");
     _ = @import("app/drag.zig");
     _ = @import("app/messages.zig");
+    _ = @import("app/timeline.zig");
     _ = @import("app/occlusion.zig");
 }
 

@@ -151,6 +151,24 @@ pub const EditSession = struct {
         return list.toOwnedSlice(gpa);
     }
 
+    pub const Mark = struct { index: usize, unsaved: bool };
+
+    /// Every edited frame, in order. Owned by the caller.
+    pub fn marks(s: *const EditSession, gpa: Allocator) ![]Mark {
+        var list: std.ArrayList(Mark) = .empty;
+        errdefer list.deinit(gpa);
+        var it = s.frames.iterator();
+        while (it.next()) |entry| if (entry.value_ptr.edited != null) {
+            try list.append(gpa, .{ .index = entry.key_ptr.*, .unsaved = isUnsaved(entry.value_ptr) });
+        };
+        std.mem.sort(Mark, list.items, {}, struct {
+            fn lt(_: void, a: Mark, b: Mark) bool {
+                return a.index < b.index;
+            }
+        }.lt);
+        return list.toOwnedSlice(gpa);
+    }
+
     /// Whether `undo` would have an effect.
     pub fn canUndo(s: *const EditSession, p: *const picks.Picks) bool {
         return lastEffective(s.steps.items, p, .before) != null;
@@ -569,6 +587,21 @@ test "undo is one history across frames" {
     try t.expectEdited(4, 1);
     try testing.expectEqual(4, t.undo());
     try t.expectFileFrame(4);
+}
+
+test "edited frames are marked, in order, until their edits are undone" {
+    var t: TestSession = try .init();
+    defer t.deinit();
+    try t.moveTo(9, 1);
+    try t.moveTo(2, 1);
+    t.s.markSaved(9, EditSession.contentHash(t.s.current(9).?));
+    const both = try t.s.marks(test_gpa);
+    defer test_gpa.free(both);
+    try testing.expectEqualSlices(EditSession.Mark, &.{ .{ .index = 2, .unsaved = true }, .{ .index = 9, .unsaved = false } }, both);
+    _ = t.undo();
+    const one = try t.s.marks(test_gpa);
+    defer test_gpa.free(one);
+    try testing.expectEqualSlices(EditSession.Mark, &.{.{ .index = 9, .unsaved = false }}, one);
 }
 
 test "what undo and redo would do is known before" {
