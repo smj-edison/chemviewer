@@ -26,6 +26,7 @@ pub const edit = @import("edit.zig");
 pub const lock = @import("lock.zig");
 pub const picks = @import("picks.zig");
 pub const playback = @import("playback.zig");
+pub const saving = @import("saving.zig");
 
 pub const Frame = structure.Frame;
 pub const Vec3 = math.Vec3;

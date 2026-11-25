@@ -281,7 +281,7 @@ pub fn main(init: std.process.Init) !void {
 
     while (!app.quit_requested) {
         var ev: c.SDL_Event = undefined;
-        const idle = !app.playing and app.isSettled() and startup.phase == .done;
+        const idle = !app.playing and app.saving == null and app.isSettled() and startup.phase == .done;
         const wait_ms: i32 = if (app.messages.fading(app.seconds())) 16 else 100;
         if (idle and c.SDL_WaitEventTimeout(&ev, wait_ms)) handleEvent(&app, &ev);
         while (c.SDL_PollEvent(&ev)) handleEvent(&app, &ev);
@@ -379,16 +379,17 @@ fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
     // Ctrl+C there, and handling it here too would overwrite its copy.
     const widget_active = typing or c.igIsAnyItemActive();
     if (ev.type == c.SDL_EVENT_KEY_DOWN and ev.key.key == c.SDLK_F1 and !ev.key.repeat) app.show_help = !app.show_help;
-    if (ev.type == c.SDL_EVENT_KEY_DOWN and (ev.key.mod & c.SDL_KMOD_CTRL) != 0 and !typing) {
+    if (ev.type == c.SDL_EVENT_KEY_DOWN and (ev.key.mod & c.SDL_KMOD_CTRL) != 0 and !typing and app.leaving == null) {
         switch (ev.key.key) {
             c.SDLK_C => if (!widget_active) return app.copyXyz(),
-            c.SDLK_V => if (!widget_active) return app.pasteXyz((ev.key.mod & c.SDL_KMOD_SHIFT) != 0),
+            c.SDLK_V => if (!widget_active) {
+                return if ((ev.key.mod & c.SDL_KMOD_SHIFT) != 0) app.leave(.paste) else app.pasteXyz(false);
+            },
             c.SDLK_A => if (!widget_active) return app.expandSelection(),
             c.SDLK_O => return app.openDialog(),
             c.SDLK_S => return app.saveDialog(),
             c.SDLK_Q => {
-                app.quit_requested = true;
-                return;
+                return app.leave(.quit);
             },
             else => |key| if (App.historyKey(key, ev.key.mod)) |h| switch (h) {
                 .undo => return app.undo(),

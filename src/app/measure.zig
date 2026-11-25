@@ -119,6 +119,10 @@ pub fn bar(app: *App) void {
         rowTail(app, f.numbers);
         return;
     }
+    if (app.savingHint(&hint_buf)) |hint| {
+        ui.text("{s}", .{hint});
+        return;
+    }
     if (hintReplacesRow()) return gestureHint(app, f.numbers, true);
     if (sel.len == 0) {
         ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all.", .{});

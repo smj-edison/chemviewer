@@ -35,6 +35,8 @@ pub const EditSession = struct {
         file: Frame,
         /// Null = it is its file frame.
         edited: ?Edited = null,
+        /// The `contentHash` of its atoms when they were last saved.
+        saved: ?u64 = null,
     };
 
     const Edited = struct {
@@ -112,6 +114,41 @@ pub const EditSession = struct {
     pub fn isEdited(s: *const EditSession, index: usize) bool {
         const h = s.frames.getPtr(index) orelse return false;
         return h.edited != null;
+    }
+
+    /// Tells the atoms of one frame from each other.
+    pub fn contentHash(f: Frame) u64 {
+        var h: std.hash.Wyhash = .init(0);
+        h.update(f.numbers);
+        for (f.positions) |p| h.update(std.mem.asBytes(&[3]f32{ p[0], p[1], p[2] }));
+        return h.final();
+    }
+
+    /// The atoms of frame `index` with that `contentHash` have been saved.
+    pub fn markSaved(s: *EditSession, index: usize, hash: u64) void {
+        if (s.frames.getPtr(index)) |h| h.saved = hash;
+    }
+
+    fn isUnsaved(h: *const Held) bool {
+        const e = h.edited orelse return false;
+        return h.saved != contentHash(e.frame);
+    }
+
+    pub fn anyUnsaved(s: *const EditSession) bool {
+        var it = s.frames.valueIterator();
+        while (it.next()) |h| if (isUnsaved(h)) return true;
+        return false;
+    }
+
+    /// The edited frames that aren't saved as they are, in order. Owned by
+    /// the caller.
+    pub fn unsaved(s: *const EditSession, gpa: Allocator) ![]usize {
+        var list: std.ArrayList(usize) = .empty;
+        errdefer list.deinit(gpa);
+        var it = s.frames.iterator();
+        while (it.next()) |entry| if (isUnsaved(entry.value_ptr)) try list.append(gpa, entry.key_ptr.*);
+        std.mem.sort(usize, list.items, {}, std.sort.asc(usize));
+        return list.toOwnedSlice(gpa);
     }
 
     /// Whether `undo` would have an effect.
