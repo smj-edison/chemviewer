@@ -38,7 +38,7 @@ e.g. some metal–ligand bonds) is planned.
 
 ## Distance → character
 
-With `r1 > r2 > r3` and the cut-off `rc = f · r1` (default `f = 1.25`):
+With `r1 > r2 > r3` and the cut-off `rc = f · r1` (default `f = 1.50`):
 
 ```
 d >= rc            → not drawn

@@ -14,7 +14,7 @@ pub const Bond = struct {
 
 pub const Params = struct {
     /// A pair is considered when d < cutoff_factor * r_single(A,B).
-    cutoff_factor: f32 = 1.25,
+    cutoff_factor: f32 = 1.50,
 };
 
 /// Reference bond lengths (Å) for one element pair, longest (single) first.
@@ -235,11 +235,11 @@ test "character is continuous and ordered for C-C" {
     // Benzene ~1.39 Å sits between single and double.
     const ar = character(ref, 1.39, p).?;
     try std.testing.expect(ar > 1.5 and ar < 1.8);
-    try std.testing.expectEqual(@as(?f32, null), character(ref, 1.9, p));
+    try std.testing.expectEqual(@as(?f32, null), character(ref, 2.3, p));
     // Monotonic.
     var prev: f32 = 4;
     var d: f32 = 1.0;
-    while (d < 1.87) : (d += 0.01) {
+    while (d < 2.24) : (d += 0.01) {
         const ch = character(ref, d, p).?;
         try std.testing.expect(ch <= prev + 1e-6);
         prev = ch;

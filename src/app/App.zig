@@ -3841,7 +3841,7 @@ test "whatever changes what is drawn makes a new scene, and nothing else does" {
                 15 => app.style.theme = .dark,
                 16 => app.style.show_cell = false,
                 17 => app.style.atom_scale = 2,
-                18 => app.bond_params.cutoff_factor = 1.5,
+                18 => app.bond_params.cutoff_factor = 1.25,
                 19 => {
                     try t.show(0);
                     app.setReference();
