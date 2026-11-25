@@ -240,14 +240,11 @@ fn gestureHint(app: *App, numbers: []const u8, alone: bool) void {
         c.igSameLine(0, gap);
         if (going_on == p.kind) {
             const ac = app.style.theme.accent();
-            const oa = app.style.theme.onAccent();
             const at = c.igGetCursorScreenPos();
             const size = c.igCalcTextSize(p.text.ptr, null, false, -1);
             const y = at.y + c.igGetStyle().*.FramePadding.y;
-            c.ImDrawList_AddRectFilled(c.igGetWindowDrawList(), ui.v2(at.x - 4, y - 1), ui.v2(at.x + size.x + 4, y + size.y + 1), ui.rgba(ac[0], ac[1], ac[2], 1), 3, 0);
-            c.igPushStyleColor_U32(c.ImGuiCol_Text, ui.rgba(oa[0], oa[1], oa[2], 1));
+            c.ImDrawList_AddRectFilled(c.igGetWindowDrawList(), ui.v2(at.x - 4, y - 1), ui.v2(at.x + size.x + 4, y + size.y + 1), ui.rgba(ac[0], ac[1], ac[2], 0.22), 3, 0);
             ui.text("{s}", .{p.text});
-            c.igPopStyleColor(1);
         } else if (going_on == null and alt and (!shift or p.kind == .rotate)) {
             ui.text("{s}", .{p.text});
         } else {
