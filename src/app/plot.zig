@@ -86,7 +86,7 @@ fn playhead(app: *const App, d: *const App.Document) f64 {
     return if (t > 0) from + t * (@as(f64, @floatFromInt(next.index)) - from) else from;
 }
 
-pub const hint: [:0]const u8 = "drag: scrub   right drag: finely   wheel: zoom   Shift+wheel or middle drag: pan   Z: fit";
+pub const hint: [:0]const u8 = "drag: scrub   right drag: finely   wheel: zoom   Shift+wheel or middle drag: pan   Z: show all";
 
 fn plotHeight() f32 {
     return c.igGetFontSize() * 4.3;
@@ -306,25 +306,30 @@ fn headColor(app: *const App, light: bool) u32 {
     return if (light) ui.rgba(0.85, 0.45, 0.0, 1) else ui.rgba(1, 0.85, 0.3, 1);
 }
 
-/// A line through the frames, or with more frames than pixel columns, a min/max
-/// envelope per column.
+/// Steps: each frame's value until the next frame, as it is read. With more
+/// frames than pixel columns, a min/max envelope per column.
 fn curve(dl: *c.ImDrawList, d: *App.Document, env: *const Envelope, scale: Scale, axis: Axis, top: f32, h: f32, pad: f32, col: u32) void {
     const range = axis.window.frames(d.frameCount());
-    var prev: ?c.ImVec2_c = null;
     if (range[1] - range[0] <= env.min.len) {
+        // Where the last step ended.
+        var prev_y: ?f32 = null;
         for (range[0]..range[1]) |i| {
             const e = d.stream.energy(i) orelse {
-                prev = null;
+                prev_y = null;
                 continue;
             };
-            const at = ui.v2(axis.x(i), yOf(e, scale, top, h, pad));
-            if (prev) |p| c.ImDrawList_AddLine(dl, p, at, col, 1, 0);
+            const x = axis.x(i);
+            const y = yOf(e, scale, top, h, pad);
+            if (prev_y) |p| c.ImDrawList_AddLine(dl, ui.v2(x, p), ui.v2(x, y), col, 1, 0);
+            if (i + 1 < d.frameCount()) c.ImDrawList_AddLine(dl, ui.v2(x, y), ui.v2(axis.x(i + 1), y), col, 1, 0);
             // Single frames, once there is room for them.
-            if (axis.window.span() * 8 < axis.width) c.ImDrawList_AddCircleFilled(dl, at, 2, col, 0);
-            prev = at;
+            if (axis.window.span() * 8 < axis.width) c.ImDrawList_AddCircleFilled(dl, ui.v2(x, y), 2, col, 0);
+            prev_y = y;
         }
         return;
     }
+    // Top and bottom of the column before.
+    var prev: ?[2]f32 = null;
     for (env.min, env.max, 0..) |lo, hi, k| {
         if (lo > hi) {
             prev = null;
@@ -333,10 +338,11 @@ fn curve(dl: *c.ImDrawList, d: *App.Document, env: *const Envelope, scale: Scale
         const x = axis.x0 + @as(f32, @floatFromInt(k)) + 0.5;
         const ya = yOf(hi, scale, top, h, pad);
         const yb = yOf(lo, scale, top, h, pad);
-        c.ImDrawList_AddLine(dl, ui.v2(x, ya), ui.v2(x, yb + 1), col, 1, 0);
-        const mid = ui.v2(x, (ya + yb) / 2);
-        if (prev) |p| c.ImDrawList_AddLine(dl, p, mid, col, 1, 0);
-        prev = mid;
+        // Up or down to where the column before ended, so that there are no gaps.
+        const from = if (prev) |p| @min(ya, p[1]) else ya;
+        const to = if (prev) |p| @max(yb, p[0]) else yb;
+        c.ImDrawList_AddLine(dl, ui.v2(x, from), ui.v2(x, to + 1), col, 1, 0);
+        prev = .{ ya, yb };
     }
 }
 
@@ -372,14 +378,13 @@ fn strip(app: *App, d: *App.Document) void {
     const n = d.frameCount();
     const fs = c.igGetFontSize();
     const style = c.igGetStyle();
-    c.igBeginDisabled(n < 3);
+    c.igBeginDisabled(!Window.canZoom(n));
     defer c.igEndDisabled();
     const slider_w = fs * 9;
-    const fit_w = c.igCalcTextSize("Fit", null, false, -1).x + 2 * style.*.FramePadding.x;
     const inset = fs * 0.4;
     const outer0 = c.igGetCursorScreenPos();
-    const fit_e_w = c.igCalcTextSize("Fit E", null, false, -1).x + 2 * style.*.FramePadding.x;
-    const outer_w = @max(c.igGetContentRegionAvail().x - slider_w - fit_w - fit_e_w - 3 * style.*.ItemSpacing.x, fs * 4);
+    const fit_w = c.igCalcTextSize("Reset E", null, false, -1).x + 2 * style.*.FramePadding.x;
+    const outer_w = @max(c.igGetContentRegionAvail().x - slider_w - fit_w - 2 * style.*.ItemSpacing.x, fs * 4);
     const h = c.igGetFrameHeight();
     const outer1 = ui.v2(outer0.x + outer_w, outer0.y + h);
     _ = c.igInvisibleButton("##strip", ui.v2(outer_w, h), 0);
@@ -464,9 +469,11 @@ fn strip(app: *App, d: *App.Document) void {
     }
     ui.tooltip("Zoom in around the playhead, or the middle if it is out of view.");
     c.igSameLine(0, -1);
-    if (c.igButton("Fit E", ui.v2(fit_e_w, 0))) s.fitted = s.plot_env.scale();
-    ui.tooltip("Fit the energy scale to what is in view now. It stays so until Fit.");
-    c.igSameLine(0, -1);
-    if (c.igButton("Fit", ui.v2(fit_w, 0))) s.fitAll(n);
-    ui.tooltip("Show every frame, and every energy (Z).");
+    if (s.fitted == null) {
+        if (c.igButton("Fit E##scale", ui.v2(fit_w, 0))) s.fitted = s.plot_env.scale();
+        ui.tooltip("Fit the energy scale to what is in view now. It stays so until you reset it.");
+    } else {
+        if (c.igButton("Reset E##scale", ui.v2(fit_w, 0))) s.fitted = null;
+        ui.tooltip("Back to the energy scale of the whole trajectory.");
+    }
 }

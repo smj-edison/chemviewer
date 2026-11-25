@@ -1,5 +1,5 @@
 //! The part of the timeline's axis that is visible, in frames (0-based, with
-//! fractions). It always lies within the trajectory and shows at least two of
+//! fractions). It always lies within the trajectory and shows at least ten of
 //! its frames, if there are as many.
 const std = @import("std");
 
@@ -32,9 +32,15 @@ pub const Window = struct {
         return w.lo <= 0 and w.hi >= last(n);
     }
 
-    /// The least that always has two frames in it, wherever it starts.
+    /// The least that always has ten frames in it, wherever it starts. Fewer
+    /// say little.
     fn leastSpan(n: usize) f64 {
-        return @min(2, last(n));
+        return @min(10, last(n));
+    }
+
+    /// Whether there is anything to zoom in to.
+    pub fn canZoom(n: usize) bool {
+        return last(n) > leastSpan(n);
     }
 
     /// Within the trajectory; keeps the span where it can.
@@ -188,15 +194,15 @@ pub fn tickStep(least: f64) u64 {
 }
 
 const testing = std.testing;
-const sizes = [_]usize{ 0, 1, 2, 3, 10, 1000, 492_963, 500_000 };
+const sizes = [_]usize{ 0, 1, 2, 3, 9, 10, 11, 12, 1000, 492_963, 500_000 };
 
 fn expectSound(w: Window, n: usize) !void {
     const end: f64 = @floatFromInt(n -| 1);
     errdefer std.debug.print("n={d} {any}\n", .{ n, w });
     try testing.expect(w.lo >= 0 and w.hi <= end and w.lo <= w.hi);
-    // Two frames in it, wherever it starts.
+    // Ten frames in it, wherever it starts.
     const seen = @floor(w.hi + 1e-6) - @ceil(w.lo - 1e-6) + 1;
-    try testing.expect(seen >= @as(f64, @floatFromInt(@min(n, 2))));
+    try testing.expect(seen >= @as(f64, @floatFromInt(@min(n, 10))));
 }
 
 test "whatever is done to a window, it stays within the trajectory and shows two frames" {
@@ -238,7 +244,7 @@ test "zooming keeps what is under the cursor there" {
         }
         // All the way in and out again.
         for (0..200) |_| w = w.zoomed(at, 1.25, n);
-        try testing.expectApproxEqAbs(2, w.span(), 1e-6);
+        try testing.expectApproxEqAbs(10, w.span(), 1e-6);
         for (0..200) |_| w = w.zoomed(at, 0.8, n);
         try testing.expect(w.isAll(n));
     }
@@ -254,8 +260,8 @@ test "panning keeps the span and stops at the ends" {
 test "the ends can be moved, but not through each other" {
     const w: Window = .between(100, 200, 1000);
     try testing.expectEqual(Window{ .lo = 50, .hi = 200 }, w.withLo(50, 1000));
-    try testing.expectEqual(Window{ .lo = 198, .hi = 200 }, w.withLo(500, 1000));
-    try testing.expectEqual(Window{ .lo = 100, .hi = 102 }, w.withHi(3, 1000));
+    try testing.expectEqual(Window{ .lo = 190, .hi = 200 }, w.withLo(500, 1000));
+    try testing.expectEqual(Window{ .lo = 100, .hi = 110 }, w.withHi(3, 1000));
     try testing.expectEqual(Window{ .lo = 100, .hi = 999 }, w.withHi(3000, 1000));
 }
 
@@ -353,8 +359,18 @@ test "steps at rest scroll only as far as needed, and jumps go there" {
     try testing.expectEqual(Window{ .lo = 650, .hi = 750 }, far);
 }
 
-test "the zoom level goes from everything to two frames, and back to the same window" {
-    for ([_]usize{ 10, 1000, 492_963 }) |n| {
+test "a short trajectory can't be zoomed" {
+    for (sizes) |n| try testing.expectEqual(n > 11, Window.canZoom(n));
+    for ([_]usize{ 1, 5, 11 }) |n| {
+        const w: Window = .all(n);
+        try testing.expectEqual(w, w.zoomed(1, 5, n));
+        try testing.expectEqual(w, w.atLevel(1, 1, n));
+        try testing.expectEqual(0, w.zoomLevel(n));
+    }
+}
+
+test "the zoom level goes from everything to ten frames, and back to the same window" {
+    for ([_]usize{ 100, 1000, 492_963 }) |n| {
         const end: f64 = @floatFromInt(n - 1);
         try testing.expectApproxEqAbs(0, Window.all(n).zoomLevel(n), 1e-12);
         for ([_]f64{ 0, 0.25, 0.5, 0.9, 1 }) |level| {

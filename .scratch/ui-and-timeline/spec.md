@@ -101,7 +101,8 @@ energies prove nothing: go to the next rule. It runs as the energy scan arrives.
 first row it reads nothing ("-"), not the first value.
 
 **Values are never interpolated, eased or rescaled by themselves.** Only atom positions
-are interpolated, while a blend plays. Readouts are values of a row, as read. A
+are interpolated, while a blend plays. Lines are steps, each value until the next row.
+At least ten frames are in view. Readouts are values of a row, as read. A
 lane's scale is that of its whole series, and changes only when the user fits it.
 
 **Stale.** A series row is stale if the frame its position floors to is edited. The
