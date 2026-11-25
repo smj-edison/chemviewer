@@ -9,12 +9,25 @@ layout(location = 2) in float v_t;
 layout(location = 3) flat in vec4 v_ca;
 layout(location = 4) flat in vec4 v_cb;
 layout(location = 5) flat in float v_outline_a;
+layout(location = 6) flat in vec4 v_atom_a;
+layout(location = 7) flat in vec4 v_atom_b;
 
 layout(location = 0) out vec4 o_color;
+
+// Whether the view ray `d` (unit) hits the sphere.
+bool hits(vec3 d, vec4 sphere) {
+    float b = dot(d, sphere.xyz);
+    return dot(sphere.xyz, sphere.xyz) - b * b < sphere.w * sphere.w;
+}
 
 void main() {
     if (u_outline_pass == 1) {
         if (v_outline_a <= 0.003) discard;
+        // Not over the bond's own atoms. The hull's back faces enter an atom
+        // before the bond's visible front does, so the outline would stop
+        // short of the joint, as loose black strokes on the atom.
+        vec3 d = normalize(v_view_pos);
+        if (hits(d, v_atom_a) || hits(d, v_atom_b)) discard;
         o_color = vec4(u_outline_color, v_outline_a);
         gl_FragDepth = gl_FragCoord.z;
         return;

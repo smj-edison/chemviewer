@@ -10,6 +10,7 @@ layout(location = 1) in vec4 a_start_radius;
 layout(location = 2) in vec4 a_end;
 layout(location = 3) in vec4 a_color_a;
 layout(location = 4) in vec4 a_color_b;
+layout(location = 5) in vec2 a_atom_radii;
 
 layout(location = 0) out vec3 v_normal;
 layout(location = 1) out vec3 v_view_pos;
@@ -17,6 +18,9 @@ layout(location = 2) out float v_t;
 layout(location = 3) flat out vec4 v_ca;
 layout(location = 4) flat out vec4 v_cb;
 layout(location = 5) flat out float v_outline_a;
+// The bond's atoms in view space (xyz) and their radii (w).
+layout(location = 6) flat out vec4 v_atom_a;
+layout(location = 7) flat out vec4 v_atom_b;
 
 void main() {
     vec3 a = a_start_radius.xyz;
@@ -41,6 +45,8 @@ void main() {
     v_ca = a_color_a;
     v_cb = a_color_b;
     v_outline_a = a_end.w * min(a_color_a.a, a_color_b.a);
+    v_atom_a = vec4((u_view * vec4(a, 1.0)).xyz, a_atom_radii.x);
+    v_atom_b = vec4((u_view * vec4(a_end.xyz, 1.0)).xyz, a_atom_radii.y);
     gl_Position = u_proj * vp;
     gl_Position.xy += u_shadow_offset * gl_Position.w;
     gl_Position = toVulkanDepth(gl_Position);

@@ -121,10 +121,11 @@ something is picked up.
   Things." Make sure we have signifiers for standard things and progressive
   discoverability for others. Also make sure we avoid modes as much as
   reasonably possible.
-- [ ] Small visual glitch in Cel display style. If you look at the root where a bond
+- [x] Small visual glitch in Cel display style. If you look at the root where a bond
   joins with an atom, you can see a black halo around the bond, but it should appear
   to be a filled cylinder with the bond embedded inside of it.
-  *Not reproduced yet: waiting for a screenshot.*
+  *Done: a bond's outline is not drawn over its own two atoms, and an atom's
+  outline no longer pokes through bonds that enter from the side.*
 - [ ] Adjust mouse buttons with Alt. Alt + Left should translate, Alt + Right should
   rotate along the bond axis, and Alt + Center should rotate around the center atom.
   Also, when a single atom is selected, it should have a tooltip in the bar above

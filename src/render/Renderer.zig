@@ -278,6 +278,8 @@ const BondInstance = extern struct {
     outline: f32,
     color_a: [4]f32,
     color_b: [4]f32,
+    /// Radii of the atoms at `a` and `b`: no outline is drawn over them.
+    atom_radii: [2]f32,
 };
 const LineVertex = extern struct { pos: [3]f32, color: [4]f32 };
 /// Liquid glass blob (shaders/liquid.vert): an atom with its bonds.
@@ -458,6 +460,7 @@ pub fn addStructure(
             .outline = outline,
             .color_a = ca,
             .color_b = cb,
+            .atom_radii = .{ style.atomRadius(numbers[b.a]), style.atomRadius(numbers[b.b]) },
         };
         if (ca[3] < 0.99) {
             // Liquid glass: the faint rod hands over to the blobs' liquid
@@ -966,6 +969,7 @@ fn createPipelines(gpu: *const Gpu, layout: vk.PipelineLayout) !Pipelines {
         .{ .location = 2, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(BondInstance, "b") },
         .{ .location = 3, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(BondInstance, "color_a") },
         .{ .location = 4, .binding = 1, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(BondInstance, "color_b") },
+        .{ .location = 5, .binding = 1, .format = .r32g32_sfloat, .offset = @offsetOf(BondInstance, "atom_radii") },
     };
     const line_bindings = [_]vk.VertexInputBindingDescription{
         .{ .binding = 0, .stride = @sizeOf(LineVertex), .input_rate = .vertex },

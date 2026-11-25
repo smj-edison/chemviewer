@@ -27,7 +27,9 @@ void main() {
     if (disc_o < 0.0) discard;
     float disc_i = b * b - (cc - v_radius * v_radius);
     bool inner = disc_i > 0.0;
-    float t = b - sqrt(inner ? disc_i : disc_o);
+    // The ring lies at the silhouette's depth. The outer sphere's front would
+    // bulge toward the viewer and poke through bonds that enter from the side.
+    float t = inner ? b - sqrt(disc_i) : b;
     vec3 p = d * t;
     // Normal of the inner sphere (clamped to its silhouette near the edge).
     vec3 n = normalize(p - v_center);
