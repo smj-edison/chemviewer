@@ -10,6 +10,7 @@ const Camera = @import("../render/Camera.zig");
 const ui = @import("ui.zig");
 const timeline_mod = @import("timeline.zig");
 const plot_mod = @import("plot.zig");
+const data_mod = @import("data.zig");
 const measure = @import("measure.zig");
 const lasso = @import("lasso.zig");
 const drag_mod = @import("drag.zig");
@@ -56,6 +57,7 @@ fine_scrub: ?f32 = null,
 /// Frame last scrubbed to by the current drag on the energy plot.
 plot_drag: ?usize = null,
 timeline: plot_mod.State = .{},
+data: data_mod.State = .{},
 /// Keep the structure's orientation steady across frames (see `cv.lock`).
 lock_rotation: bool = false,
 rotation_lock: ?cv.lock.RotationLock = null,
@@ -157,6 +159,7 @@ fn deinitState(app: *App) void {
     app.setHoverGroup(null, &.{});
     app.timeline.deinit(app.gpa);
     app.closeDocument();
+    app.data.deinit(app.gpa);
     app.session.deinit();
     app.picks.deinit(app.gpa);
     app.lasso_points.deinit(app.gpa);
@@ -195,6 +198,7 @@ pub fn seconds(app: *const App) f64 {
 /// cuts, gestures in progress, playback and diff.
 pub fn closeDocument(app: *App) void {
     app.stopSaving();
+    app.data.clear(app.gpa);
     app.endDrag(false);
     app.session.clear();
     app.picks.clear(app.gpa);
@@ -504,6 +508,7 @@ pub fn update(app: *App) void {
         if (app.save_what.document == app.documents_opened) app.startSaving(app.save_what.what, copy[0..p.len]);
     }
     app.saveSome(0.01);
+    data_mod.update(app);
 
     const d = &(app.doc orelse return);
     app.advancePlayback();
@@ -849,7 +854,7 @@ fn updateDiff(app: *App) void {
 pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_keyboard: bool) void {
     switch (ev.type) {
         c.SDL_EVENT_QUIT => app.leave(.quit),
-        c.SDL_EVENT_DROP_FILE => if (ev.drop.data) |p| app.leaveToOpen(std.mem.span(p)),
+        c.SDL_EVENT_DROP_FILE => if (ev.drop.data) |p| data_mod.drop(app, std.mem.span(p)),
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
             if (app.aborted_button == ev.button.button) app.aborted_button = null;
             if (want_mouse) return;
@@ -969,7 +974,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
                 c.SDLK_END => app.keyFrame(n - 1, held),
                 c.SDLK_F => app.fitCamera(),
                 c.SDLK_Z => if ((ev.key.mod & c.SDL_KMOD_CTRL) == 0) {
-                    app.timeline.fitAll(n);
+                    plot_mod.showAll(app, n);
                 },
                 else => {},
             }
@@ -1909,7 +1914,7 @@ fn leaveQuestion(app: *App) void {
 // ------------------------------------------------------------ UI
 
 /// Window placement condition: re-place panels when the UI scale changes.
-fn layoutCond(app: *App) c_int {
+pub fn layoutCond(app: *App) c_int {
     return if (c.igGetFontSize() != app.layout_font_size) c.ImGuiCond_Always else c.ImGuiCond_FirstUseEver;
 }
 
@@ -1921,11 +1926,12 @@ pub fn drawUi(app: *App) void {
     measure.hoverOutline(app);
     app.drawLasso();
     app.menuBar();
-    const timeline_h = timeline_mod.height();
+    const timeline_h = timeline_mod.height(app);
     timeline_mod.draw(app, timeline_h);
     app.timeline.wheel = .{};
     if (app.show_inspector) app.inspector(timeline_h);
     if (app.show_diff) app.diffPanel();
+    if (app.data.show_panel) data_mod.panel(app, timeline_h);
     if (app.show_help) app.helpWindow();
     if (app.doc == null) app.emptyView(timeline_h);
     app.leaveQuestion();
@@ -1952,6 +1958,7 @@ fn menuBar(app: *App) void {
         ui.tooltip("Only the frames with edits that aren't saved yet, in one file.");
         if (c.igMenuItem_Bool("Save trajectory as XYZ...", null, false, has_frame and app.doc.?.frameCount() > 1)) app.saveDialogFor(.all);
         ui.tooltip("Every frame, with its edits.");
+        if (c.igMenuItem_Bool("Attach data...", null, false, app.doc != null)) data_mod.fileDialog(app);
         if (c.igMenuItem_Bool("Close", null, false, app.doc != null)) app.leave(.close);
         c.igSeparator();
         if (c.igMenuItem_Bool("Quit", "Ctrl+Q", false, true)) app.leave(.quit);
@@ -2212,6 +2219,7 @@ const help = .{
         .{ "Ctrl+Shift+V", "paste as a new structure" },
         .{ "Ctrl+S", "save current frame (with edits) as XYZ" },
         .{ "Ctrl+O", "open file (or drop a file on the window)" },
+        .{ "Drop a data file or a folder", "attach data to the timeline" },
     } },
 };
 
@@ -3648,6 +3656,68 @@ test "pausing floors, however near the next step is, and playing goes on from th
         try expectEqual(0, t.app.doc.?.current);
         try expectEqual(0, t.app.interp_t);
     }
+}
+
+test "data is attached, given lanes, removed, and goes with the file" {
+    var t: TestApp = try .init(101);
+    defer t.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(TestApp.io, .{ .sub_path = "COLVAR", .data = "#! FIELDS time cv metad.bias\n0 1 2\n10 3 4\n20 5 6\n30 7 8\n40 9 10\n50 11 12\n60 1 1\n70 1 1\n80 1 1\n90 1 1\n100 13 14\n" });
+    try tmp.dir.writeFile(TestApp.io, .{ .sub_path = "HILLS", .data = "#! FIELDS time height\n0 1\n" });
+    try tmp.dir.writeFile(TestApp.io, .{ .sub_path = "notes.txt", .data = "just words\n" });
+    try tmp.dir.writeFile(TestApp.io, .{ .sub_path = "mol.xyz", .data = "1\n\nH 0 0 0\n" });
+    var buf: [128]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    var path_buf: [160]u8 = undefined;
+    const colvar = try std.fmt.bufPrint(&path_buf, "{s}/COLVAR", .{dir});
+    const s = &t.app.data;
+
+    data_mod.drop(&t.app, colvar);
+    try expectEqual(1, s.sources.items.len);
+    data_mod.attach(&t.app, colvar); // again
+    try expectEqual(1, s.sources.items.len);
+    try expectEqual(.refusal, t.app.messages.last.?.kind);
+    for (0..5000) |_| {
+        if (!s.reading()) break;
+        try TestApp.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try expect(try s.addLane(TestApp.gpa, "cv"));
+    try expect(try s.addLane(TestApp.gpa, "metad.bias"));
+    try expect(!try s.addLane(TestApp.gpa, "nothing"));
+    try expectEqual(2, s.lanes.items.len);
+    // 10 frames per row: values floor.
+    const lanes_mod = @import("lanes.zig");
+    try expectEqual(1, lanes_mod.valueAt(&t.app, s.lanes.items[0], 9.9).?);
+    try expectEqual(3, lanes_mod.valueAt(&t.app, s.lanes.items[0], 10).?);
+    try expectEqual(13, lanes_mod.valueAt(&t.app, s.lanes.items[0], 100).?);
+    try s.toggleLane(TestApp.gpa, s.sources.items[0], 1);
+    try expectEqual(1, s.lanes.items.len);
+
+    // A folder offers what it has, and attaches nothing.
+    data_mod.drop(&t.app, dir);
+    try expectEqual(2, s.offered.items.len);
+    try expectEqual(1, s.sources.items.len);
+    try expect(t.app.leaving == null);
+    s.detach(0);
+    try expectEqual(0, s.sources.items.len);
+    try expectEqual(0, s.lanes.items.len);
+
+    const notes = try std.fmt.bufPrint(&path_buf, "{s}/notes.txt", .{dir});
+    data_mod.attach(&t.app, notes);
+    for (0..5000) |_| {
+        if (!s.reading()) break;
+        try TestApp.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    // A structure is opened, and takes the data with it.
+    const mol = try std.fmt.bufPrint(&path_buf, "{s}/mol.xyz", .{dir});
+    data_mod.drop(&t.app, mol);
+    try expectEqual(1, t.app.doc.?.frameCount());
+    try expectEqual(0, s.sources.items.len);
+    try expectEqual(0, s.offered.items.len);
+    t.app.closeDocument();
+    data_mod.attach(&t.app, mol);
+    try expectEqual(.refusal, t.app.messages.last.?.kind);
 }
 
 test "the timeline's window: a new file's, following, and pans that hold" {

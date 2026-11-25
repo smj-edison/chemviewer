@@ -166,7 +166,16 @@ pub fn likeness(gpa: Allocator, head: []const u8) Likeness {
     const header = headerOf(head) orelse return .no;
     var t = Table.init(gpa, header) catch return .no;
     defer t.deinit();
-    return if (t.kind == .generic) .maybe else .sure;
+    if (t.kind != .generic) return .sure;
+    // Words are a header only if numbers follow.
+    const rest = head[@intFromPtr(header.ptr) - @intFromPtr(head.ptr) + header.len ..];
+    var lines = std.mem.splitScalar(u8, rest, '\n');
+    while (lines.next()) |line| {
+        t.add(line) catch return .no;
+        if (t.rows > 0) return .maybe;
+        if (t.skipped > 0) return .no;
+    }
+    return .no;
 }
 
 const testing = std.testing;
@@ -271,6 +280,8 @@ test "what looks like data" {
     try expectEqual(.sure, likeness(gpa, "Time[ps] Etot[eV]\n"));
     try expectEqual(.maybe, likeness(gpa, "step,energy\n1,2\n"));
     try expectEqual(.no, likeness(gpa, "3\nwater\nO 0 0 0\n"));
+    try expectEqual(.no, likeness(gpa, "#!/usr/bin/env python\n# coding: utf-8\nimport os\n"));
+    try expectEqual(.no, likeness(gpa, "just words\n"));
     try expectEqual(.no, likeness(gpa, "- of Ulm\x00\x00"));
 }
 

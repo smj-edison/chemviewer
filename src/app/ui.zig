@@ -58,6 +58,13 @@ pub fn tooltip(s: [:0]const u8) void {
     }
 }
 
+/// Text over a plot, on a backing so that the curves don't hide it.
+pub fn plotLabel(dl: *c.ImDrawList, x: f32, y: f32, col: u32, s: [:0]const u8) void {
+    const size = c.igCalcTextSize(s.ptr, null, false, -1);
+    c.ImDrawList_AddRectFilled(dl, v2(x - 3, y), v2(x + size.x + 3, y + size.y), c.igGetColorU32_Col(c.ImGuiCol_WindowBg, 0.8), 2, 0);
+    c.ImDrawList_AddText_Vec2(dl, v2(x, y), col, s.ptr, null);
+}
+
 /// A dot of a colour, on the line of framed widgets.
 pub fn swatch(rgb: [3]f32, size: f32) void {
     const p = c.igGetCursorScreenPos();

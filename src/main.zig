@@ -16,6 +16,7 @@ const Io = std.Io;
 const c = @import("c");
 const Gpu = @import("render/Gpu.zig");
 const App = @import("app/App.zig");
+const data_mod = @import("app/data.zig");
 
 pub const std_options: std.Options = .{
     // On Windows Zig's handler sees exceptions before the code that raised
@@ -36,6 +37,11 @@ const Args = struct {
     ui_scale: ?f32 = null,
     no_ui: bool = false,
     dark: bool = false,
+    /// Data files to attach, and columns of theirs to plot.
+    data: [16][]const u8 = undefined,
+    data_len: usize = 0,
+    lanes: [16][]const u8 = undefined,
+    lanes_len: usize = 0,
     /// First and last visible frame of the timeline, 0-based.
     window: ?[2]f64 = null,
     light: bool = false,
@@ -89,7 +95,7 @@ fn parseArgs(argv: []const []const u8) !Args {
             eql(u8, arg, "--cut") or eql(u8, arg, "--add") or eql(u8, arg, "--fps") or
             eql(u8, arg, "--orbit") or eql(u8, arg, "--zoom") or eql(u8, arg, "--pan") or
             eql(u8, arg, "--backdrop") or eql(u8, arg, "--bg-blur") or eql(u8, arg, "--profile") or
-            eql(u8, arg, "--window"))
+            eql(u8, arg, "--window") or eql(u8, arg, "--data") or eql(u8, arg, "--lane"))
         {
             i += 1;
             if (i >= argv.len) return error.MissingArgumentValue;
@@ -103,6 +109,12 @@ fn parseArgs(argv: []const []const u8) !Args {
                     try std.fmt.parseFloat(f32, it.next() orelse return error.BadPose),
                 };
                 if (eql(u8, arg, "--orbit")) a.orbit = xy else a.pan = xy;
+            } else if (eql(u8, arg, "--data") or eql(u8, arg, "--lane")) {
+                const list = if (eql(u8, arg, "--data")) &a.data else &a.lanes;
+                const len = if (eql(u8, arg, "--data")) &a.data_len else &a.lanes_len;
+                if (len.* == list.len) return error.TooManyDataArguments;
+                list[len.*] = v;
+                len.* += 1;
             } else if (eql(u8, arg, "--window")) {
                 var it = std.mem.splitScalar(u8, v, ',');
                 var ends: [2]f64 = undefined;
@@ -207,7 +219,7 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
-            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--window A,B] [--screenshot OUT.png] [--size WxH]
+            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--window A,B] [--data FILE]... [--lane COLUMN]... [--screenshot OUT.png] [--size WxH]
             \\                  [--ui-scale X] [--no-ui] [--light] [--dark] [--cel] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
             \\                  [--play] [--interpolate] [--fps N] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop none|cells|space] [--bg-blur K]
@@ -297,6 +309,11 @@ pub fn main(init: std.process.Init) !void {
     app.timeline.initial = args.window;
     app.show_atom_numbers = args.atom_numbers;
     if (args.file) |f| app.openFile(f);
+    for (args.data[0..args.data_len]) |path| data_mod.attach(&app, path);
+    for (args.lanes[0..args.lanes_len]) |name| if (!try app.data.addLane(gpa, name)) {
+        std.log.err("no column {s} in the data", .{name});
+        return error.NoSuchColumn;
+    };
 
     var startup: Startup = .{ .args = args, .start = Io.Timestamp.now(io, .awake) };
     if (args.file != null) {
@@ -306,7 +323,7 @@ pub fn main(init: std.process.Init) !void {
 
     while (!app.quit_requested) {
         var ev: c.SDL_Event = undefined;
-        const idle = !app.playing and app.saving == null and app.isSettled() and startup.phase == .done;
+        const idle = !app.playing and app.saving == null and !app.data.reading() and app.isSettled() and startup.phase == .done;
         const wait_ms: i32 = if (app.messages.fading(app.seconds())) 16 else 100;
         if (idle and c.SDL_WaitEventTimeout(&ev, wait_ms)) handleEvent(&app, &ev);
         while (c.SDL_PollEvent(&ev)) handleEvent(&app, &ev);
@@ -492,6 +509,7 @@ const Startup = struct {
                     s.phase = .done;
                     return .none;
                 }
+                if (app.data.reading()) return .none;
                 // A few frames for ImGui windows to size themselves and the scene to rebuild.
                 s.settle_frames += 1;
                 if (s.settle_frames >= 4) return .screenshot;

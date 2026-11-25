@@ -6,6 +6,7 @@ const c = @import("c");
 const cv = @import("chemviewer");
 const ui = @import("ui.zig");
 const App = @import("App.zig");
+const lanes = @import("lanes.zig");
 const Window = cv.window.Window;
 const Envelope = cv.envelope.Envelope;
 const Scale = cv.envelope.Scale;
@@ -50,12 +51,6 @@ pub const State = struct {
         return if (of_run) s.strip_env.scale() else s.plot_env.scale();
     }
 
-    /// Show every frame, and every energy.
-    pub fn fitAll(s: *State, n: usize) void {
-        s.window = .all(n);
-        s.fitted = null;
-    }
-
     /// Keep the playhead in view. A new file starts with everything in view, or
     /// `initial`.
     pub fn follow(s: *State, app: *const App, d: *const App.Document) void {
@@ -86,10 +81,35 @@ fn playhead(app: *const App, d: *const App.Document) f64 {
     return if (t > 0) from + t * (@as(f64, @floatFromInt(next.index)) - from) else from;
 }
 
+/// Show every frame, and every value.
+pub fn showAll(app: *App, n: usize) void {
+    app.timeline.window = .all(n);
+    resetScales(app);
+}
+
+fn resetScales(app: *App) void {
+    app.timeline.fitted = null;
+    for (app.data.lanes.items) |*l| l.fitted = null;
+}
+
+fn isFitted(app: *const App) bool {
+    if (app.timeline.fitted != null) return true;
+    for (app.data.lanes.items) |l| if (l.fitted != null) return true;
+    return false;
+}
+
 pub const hint: [:0]const u8 = "drag: scrub   right drag: finely   wheel: zoom   Shift+wheel or middle drag: pan   Z: show all";
 
-fn plotHeight() f32 {
-    return c.igGetFontSize() * 4.3;
+/// The energy and the lanes.
+fn plotCount(app: *const App) usize {
+    return @max(@intFromBool(app.data.show_energy) + app.data.lanes.items.len, 1);
+}
+
+/// Of each of them: smaller when there are many.
+fn plotHeight(app: *const App) f32 {
+    const fs = c.igGetFontSize();
+    const room = c.igGetMainViewport().*.Size.y * 0.5 / @as(f32, @floatFromInt(plotCount(app)));
+    return std.math.clamp(room, fs * 1.6, fs * 4.3);
 }
 
 /// The frame numbers under the plot.
@@ -97,12 +117,12 @@ fn axisHeight() f32 {
     return c.igGetFontSize() * 1.2;
 }
 
-pub fn height() f32 {
-    return plotHeight() + axisHeight() + c.igGetStyle().*.ItemSpacing.y + c.igGetFrameHeight();
+pub fn height(app: *const App) f32 {
+    return plotHeight(app) * @as(f32, @floatFromInt(plotCount(app))) + axisHeight() + c.igGetStyle().*.ItemSpacing.y + c.igGetFrameHeight();
 }
 
 /// Where the frames are on screen.
-const Axis = struct {
+pub const Axis = struct {
     window: Window,
     x0: f32,
     width: f32,
@@ -182,12 +202,14 @@ fn plot(app: *App, d: *App.Document) void {
     const inset = fs * 0.4;
     const outer0 = c.igGetCursorScreenPos();
     const outer_w = @max(c.igGetContentRegionAvail().x, 1);
-    const h = plotHeight();
+    // Of one plot; they are above each other.
+    const h = plotHeight(app);
+    const all_h = h * @as(f32, @floatFromInt(plotCount(app)));
     const p0 = ui.v2(outer0.x + inset, outer0.y);
     const w = @max(outer_w - 2 * inset, 1);
-    const p1 = ui.v2(p0.x + w, p0.y + h);
+    const p1 = ui.v2(p0.x + w, p0.y + all_h);
     const outer1 = ui.v2(outer0.x + outer_w, p1.y + axisHeight());
-    _ = c.igInvisibleButton("##energy", ui.v2(outer_w, h + axisHeight()), 0);
+    _ = c.igInvisibleButton("##energy", ui.v2(outer_w, all_h + axisHeight()), 0);
     const hovered = c.igIsItemHovered(0);
     const active = c.igIsItemActive();
     const mouse = c.igGetMousePos();
@@ -233,8 +255,13 @@ fn plot(app: *App, d: *App.Document) void {
     const env = &s.plot_env;
     env.update(app.gpa, .{ .values = scanned, .document = app.documents_opened, .n = n, .window = s.window, .cols = cols }, d.stream);
     const unit = d.format.energyUnit();
-    if (s.scale()) |scale| {
-        c.ImDrawList_PushClipRect(dl, outer0, ui.v2(outer1.x, p1.y), true);
+    const head = playhead(app, d);
+    const lanes_top = if (app.data.show_energy) p0.y + h else p0.y;
+    for (0..app.data.lanes.items.len) |i| lanes.draw(app, dl, i, axis, lanes_top + h * @as(f32, @floatFromInt(i)), h, head);
+    if (!app.data.show_energy) {
+        if (app.data.lanes.items.len == 0) c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, "nothing shown (see Data)", null);
+    } else if (s.scale()) |scale| {
+        c.ImDrawList_PushClipRect(dl, outer0, ui.v2(outer1.x, p0.y + h), true);
         curve(dl, d, env, scale, axis, p0.y, h, 4, accent);
         c.ImDrawList_PopClipRect(dl);
         var buf: [128]u8 = undefined;
@@ -244,7 +271,7 @@ fn plot(app: *App, d: *App.Document) void {
             ui.printZ(&buf, "E ({s})  {d:.6} to {d:.6}  (range {e:.3}{s})", .{ u, scale.lo, scale.hi, scale.hi - scale.lo, of })
         else
             ui.printZ(&buf, "E  {d:.6} to {d:.6}  (range {e:.3}{s})", .{ scale.lo, scale.hi, scale.hi - scale.lo, of })) catch "";
-        c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, label.ptr, null);
+        ui.plotLabel(dl, p0.x + 6, p0.y + 3, label_col, label);
     } else {
         const msg: [:0]const u8 = if (scanned < n) "scanning energies..." else "no energies in this file";
         c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, msg.ptr, null);
@@ -261,7 +288,6 @@ fn plot(app: *App, d: *App.Document) void {
             const label_x = if (x + label_w + 8 > p1.x) x - label_w - 4 else x + 4;
             c.ImDrawList_AddText_Vec2(dl, ui.v2(label_x, p1.y - fs - 3 * mark_size), c.igGetColorU32_Col(c.ImGuiCol_Text, 1), "ref", null);
         };
-        const head = playhead(app, d);
         if (s.window.containsAt(head)) {
             const x = s.window.toX(head, axis.x0, axis.width);
             c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), headColor(app, light), 2, 0);
@@ -289,6 +315,10 @@ fn plot(app: *App, d: *App.Document) void {
         const i = if (pointed) |m| m.index else axis.frameAt(mouse.x);
         if (c.igBeginTooltip()) {
             if (d.stream.energy(i)) |e| ui.text("frame {d}: E = {d:.8} {s}", .{ i + 1, e, unit orelse "" }) else ui.text("frame {d}", .{i + 1});
+            for (app.data.lanes.items) |lane| {
+                const name = lane.source.table.columns[lane.column].name;
+                if (lanes.valueAt(app, lane, @floatFromInt(i))) |v| ui.text("{s} = {d:.8}", .{ name, v }) else ui.text("{s} = -", .{name});
+            }
             for (marks) |m| if (m.index == i) ui.text("{s}", .{if (m.unsaved) "edited, not saved" else "edited, saved"});
             c.igEndTooltip();
         }
@@ -346,7 +376,7 @@ fn curve(dl: *c.ImDrawList, d: *App.Document, env: *const Envelope, scale: Scale
     }
 }
 
-fn yOf(e: f64, scale: Scale, top: f32, h: f32, pad: f32) f32 {
+pub fn yOf(e: f64, scale: Scale, top: f32, h: f32, pad: f32) f32 {
     return top + pad + (1 - scale.height(e)) * (h - 2 * pad);
 }
 
@@ -383,7 +413,7 @@ fn strip(app: *App, d: *App.Document) void {
     const slider_w = fs * 9;
     const inset = fs * 0.4;
     const outer0 = c.igGetCursorScreenPos();
-    const fit_w = c.igCalcTextSize("Reset E", null, false, -1).x + 2 * style.*.FramePadding.x;
+    const fit_w = c.igCalcTextSize("Reset scales", null, false, -1).x + 2 * style.*.FramePadding.x;
     const outer_w = @max(c.igGetContentRegionAvail().x - slider_w - fit_w - 2 * style.*.ItemSpacing.x, fs * 4);
     const h = c.igGetFrameHeight();
     const outer1 = ui.v2(outer0.x + outer_w, outer0.y + h);
@@ -469,11 +499,14 @@ fn strip(app: *App, d: *App.Document) void {
     }
     ui.tooltip("Zoom in around the playhead, or the middle if it is out of view.");
     c.igSameLine(0, -1);
-    if (s.fitted == null) {
-        if (c.igButton("Fit E##scale", ui.v2(fit_w, 0))) s.fitted = s.plot_env.scale();
-        ui.tooltip("Fit the energy scale to what is in view now. It stays so until you reset it.");
+    if (!isFitted(app)) {
+        if (c.igButton("Fit scales##scale", ui.v2(fit_w, 0))) {
+            s.fitted = s.plot_env.scale();
+            for (app.data.lanes.items) |*l| l.fitted = lanes.scaleInView(app, l.*);
+        }
+        ui.tooltip("Fit every plot's scale to what is in view now. They stay so until you reset them.");
     } else {
-        if (c.igButton("Reset E##scale", ui.v2(fit_w, 0))) s.fitted = null;
-        ui.tooltip("Back to the energy scale of the whole trajectory.");
+        if (c.igButton("Reset scales##scale", ui.v2(fit_w, 0))) resetScales(app);
+        ui.tooltip("Back to the scales of the whole trajectory.");
     }
 }

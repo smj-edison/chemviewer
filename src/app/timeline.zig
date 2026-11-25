@@ -7,9 +7,9 @@ const App = @import("App.zig");
 const measure = @import("measure.zig");
 const plot = @import("plot.zig");
 
-pub fn height() f32 {
+pub fn height(app: *const App) f32 {
     const style = c.igGetStyle();
-    return 2 * c.igGetFrameHeightWithSpacing() + plot.height() + style.*.WindowPadding.y * 2 + style.*.ItemSpacing.y;
+    return 2 * c.igGetFrameHeightWithSpacing() + plot.height(app) + style.*.WindowPadding.y * 2 + style.*.ItemSpacing.y;
 }
 
 pub fn draw(app: *App, h: f32) void {
@@ -73,6 +73,9 @@ pub fn draw(app: *App, h: f32) void {
     if (c.igCheckbox("Lock rotation", &lock)) app.setLockRotation(lock);
     ui.tooltip("Turn the view with each frame so the structure keeps its orientation: every frame is superposed onto the frame shown when this was switched on, or onto the reference of a diff. Your own rotations still apply. Editing the structure switches it off.");
     c.igEndDisabled();
+    c.igSameLine(0, -1);
+    if (c.igButton("+ Data", ui.v2(0, 0))) app.data.show_panel = !app.data.show_panel;
+    ui.tooltip("Plot data from other files: PLUMED, MD logs, or any table with named columns. Files can be dropped on the window, too.");
 
     plot.draw(app, d);
 }

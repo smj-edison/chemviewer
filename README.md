@@ -13,7 +13,8 @@ ImGui (via cimgui) doing the heavy lifting.
   could still be mistaken for each other, the rarer one is labelled with its
   symbol (View > Element labels). The inspector shows an element key.
 - **Instant scrubbing.** A timeline with an energy plot you can click or drag,
-  and zoom from the whole trajectory to single frames.
+  and zoom from the whole trajectory to single frames. Columns of PLUMED files, MD logs
+  and other tables ("+ Data", or drop a file or folder) get lanes on the same axis.
   Large trajectories are streamed from disk with background prefetch.
   **Lock rotation** (next to Loop) turns the view with each frame so a
   tumbling structure keeps its orientation: every frame is superposed onto

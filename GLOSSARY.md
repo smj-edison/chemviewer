@@ -39,6 +39,18 @@ Where the timeline is, as drawn: the timeline position, or between two frames wh
 The part of the timeline's axis that is visible.
 _Avoid_: Range, zoom (for the part)
 
+**Source**:
+An attached data file, as read. Never changed.
+
+**Series**:
+One column of a source: a value per row.
+
+**Alignment**:
+The rule that says where a source's rows are among the frames. Proposed, then confirmed by the user.
+
+**Lane**:
+One plot of the timeline below the energy, with a series.
+
 **Transaction**:
 One edit of one frame in the making. Nothing changes until it is committed as a geometry step, or it is aborted.
 
