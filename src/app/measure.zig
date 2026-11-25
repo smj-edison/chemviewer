@@ -96,12 +96,17 @@ pub fn bar(app: *App) void {
     if (hinted_len != sel.len) {
         short_hint = null;
         cramped_message = null;
+        bond_hint_cramped = false;
     }
     hinted_len = sel.len;
     if (app.messages.current(app.seconds())) |m| {
         // Not under the mouse, or while a value is typed.
         const in_use = c.igIsAnyItemActive() or c.igIsWindowHovered(0);
-        if (cramped_message == m.at and !in_use) return messageText(app, m);
+        if (cramped_message == m.at and !in_use) {
+            messageText(app, m);
+            if (app.doc) |d| if (d.display.real.frame) |f| gestureHint(app, f.numbers, false);
+            return;
+        }
     }
     const d = app.doc orelse {
         ui.textDisabled("No file open", .{});
@@ -121,9 +126,11 @@ pub fn bar(app: *App) void {
     }
     if (app.savingHint(&hint_buf)) |hint| {
         ui.text("{s}", .{hint});
+        rowTail(app, f.numbers);
         return;
     }
     if (hintReplacesRow()) return gestureHint(app, f.numbers, true);
+    if (bond_hint_cramped and !c.igIsAnyItemActive()) if (bondHint(app)) |hint| return ui.textDisabled("{s}", .{hint});
     if (sel.len == 0) {
         ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all.", .{});
         rowTail(app, f.numbers);
@@ -185,21 +192,32 @@ pub fn bar(app: *App) void {
     if (submitted) |edit| app.applyEdit(edit);
 }
 
-/// The end of the row: a message while there is one, else what the mouse can
-/// do here.
+/// The end of the row: a message while there is one, and what the mouse can do
+/// here.
 fn rowTail(app: *App, numbers: []const u8) void {
-    if (messageAfterRow(app)) return;
-    if (app.hover) |h| switch (h) {
-        .atom => {},
-        .bond => |pair| {
-            short_hint = null;
-            c.igSameLine(0, c.igGetFontSize() * 1.5);
-            c.igAlignTextToFramePadding();
-            ui.textDisabled("Double-click: {s} bond", .{if (app.isCut(pair[0], pair[1])) "restore" else "cut"});
-            return;
-        },
-    };
+    _ = messageAfterRow(app);
+    if (bondHint(app)) |hint| {
+        short_hint = null;
+        c.igSameLine(0, c.igGetFontSize() * 1.5);
+        c.igAlignTextToFramePadding();
+        bond_hint_cramped = c.igGetContentRegionAvail().x < c.igCalcTextSize(hint.ptr, null, false, -1).x;
+        ui.textDisabled("{s}", .{hint});
+        return;
+    }
     gestureHint(app, numbers, false);
+}
+
+/// The last hint about a bond didn't fit after the row.
+var bond_hint_cramped = false;
+
+/// What a double-click on the bond under the mouse does. With Alt held, bonds
+/// aren't used.
+fn bondHint(app: *const App) ?[:0]const u8 {
+    if ((c.SDL_GetModState() & c.SDL_KMOD_ALT) != 0) return null;
+    return switch (app.hover orelse return null) {
+        .atom => null,
+        .bond => |pair| if (app.isCut(pair[0], pair[1])) "Double-click: restore bond" else "Double-click: cut bond",
+    };
 }
 
 /// The message that didn't fit after the row (when it was given).
@@ -319,13 +337,19 @@ fn gestureHint(app: *App, numbers: []const u8, alone: bool) void {
     const Piece = struct { kind: drag.Kind, text: [:0]const u8 };
     var pieces: [3]Piece = undefined;
     var n: usize = 0;
+    // The base itself takes everything connected with it.
+    const grabbed: ?u32 = if (app.drag) |d| d.handle else if (app.hover) |h| switch (h) {
+        .atom => |a| a,
+        .bond => null,
+    } else null;
+    const on_base = sel.len == 1 and grabbed == sel[0];
     pieces[n] = .{ .kind = .translate, .text = switch (sel.len) {
         0 => "left: move molecule",
-        1 => "left: move branch",
+        1 => if (on_base) "left: move molecule" else "left: move branch",
         else => "left: move selection",
     } };
     n += 1;
-    if (sel.len == 1) {
+    if (sel.len == 1 and !on_base) {
         pieces[n] = .{ .kind = .twist, .text = "right: twist branch" };
         n += 1;
     }
@@ -350,8 +374,13 @@ fn gestureHint(app: *App, numbers: []const u8, alone: bool) void {
         c.igSameLine(0, fs * 1.5);
         c.igAlignTextToFramePadding();
         if (c.igGetContentRegionAvail().x < width) {
-            ui.textDisabled("Alt + drag (?)", .{});
-            short_hint = .{ c.igGetItemRectMin(), c.igGetItemRectMax() };
+            const kind = going_on orelse {
+                ui.textDisabled("Alt + drag (?)", .{});
+                short_hint = .{ c.igGetItemRectMin(), c.igGetItemRectMax() };
+                return;
+            };
+            // Just the gesture going on.
+            for (pieces[0..n]) |p| if (p.kind == kind) markedText(app, p.text);
             return;
         }
     }
@@ -359,18 +388,23 @@ fn gestureHint(app: *App, numbers: []const u8, alone: bool) void {
     for (pieces[0..n]) |p| {
         c.igSameLine(0, gap);
         if (going_on == p.kind) {
-            const ac = app.style.theme.accent();
-            const at = c.igGetCursorScreenPos();
-            const size = c.igCalcTextSize(p.text.ptr, null, false, -1);
-            const y = at.y + c.igGetStyle().*.FramePadding.y;
-            c.ImDrawList_AddRectFilled(c.igGetWindowDrawList(), ui.v2(at.x - 4, y - 1), ui.v2(at.x + size.x + 4, y + size.y + 1), ui.rgba(ac[0], ac[1], ac[2], 0.22), 3, 0);
-            ui.text("{s}", .{p.text});
+            markedText(app, p.text);
         } else if (going_on == null and alt and (!shift or p.kind == .rotate)) {
             ui.text("{s}", .{p.text});
         } else {
             ui.textDisabled("{s}", .{p.text});
         }
     }
+}
+
+/// Text with a muted tint of the accent behind it.
+fn markedText(app: *const App, text: [:0]const u8) void {
+    const ac = app.style.theme.accent();
+    const at = c.igGetCursorScreenPos();
+    const size = c.igCalcTextSize(text.ptr, null, false, -1);
+    const y = at.y + c.igGetStyle().*.FramePadding.y;
+    c.ImDrawList_AddRectFilled(c.igGetWindowDrawList(), ui.v2(at.x - 4, y - 1), ui.v2(at.x + size.x + 4, y + size.y + 1), ui.rgba(ac[0], ac[1], ac[2], 0.22), 3, 0);
+    ui.text("{s}", .{text});
 }
 
 /// Degree and radian fields for the same angle; either can be edited. Returns

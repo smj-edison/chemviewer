@@ -122,8 +122,7 @@ something is picked up.
   discoverability for others. Also make sure we avoid modes as much as
   reasonably possible.
   *Done: report and what was picked in `.scratch/ui-and-timeline/audit.md`.
-  Findings 2 (edited frames on the timeline), 17 and T1 to T6 go into the
-  timeline spec.*
+  Findings 17 and T1 to T6 go into the timeline spec.*
 - [x] Small visual glitch in Cel display style. If you look at the root where a bond
   joins with an atom, you can see a black halo around the bond, but it should appear
   to be a filled cylinder with the bond embedded inside of it.

@@ -1,7 +1,7 @@
 //! chemviewer entry point: window, Vulkan device, ImGui, and the main loop.
 //!
 //! Usage: chemviewer [FILE] [--frame N] [--diff-ref N]
-//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
+//!                   [--screenshot OUT.png] [--size WxH] [--ui-scale X] [--no-ui] [--light] [--dark] [--cel] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
 //!                   [--play] [--interpolate] [--fps N] [--atom-numbers]
 //!                   [--no-bg-pattern] [--backdrop none|cells|space] [--bg-blur K]
 //!                   [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
@@ -36,6 +36,8 @@ const Args = struct {
     ui_scale: ?f32 = null,
     no_ui: bool = false,
     dark: bool = false,
+    light: bool = false,
+    cel: bool = false,
     flat: bool = false,
     glass: bool = false,
     no_liquid: bool = false,
@@ -148,6 +150,10 @@ fn parseArgs(argv: []const []const u8) !Args {
             }
         } else if (eql(u8, arg, "--atom-numbers")) {
             a.atom_numbers = true;
+        } else if (eql(u8, arg, "--light")) {
+            a.light = true;
+        } else if (eql(u8, arg, "--cel")) {
+            a.cel = true;
         } else if (eql(u8, arg, "--dark")) {
             a.dark = true;
         } else if (eql(u8, arg, "--aero")) {
@@ -193,7 +199,7 @@ pub fn main(init: std.process.Init) !void {
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
             \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
-            \\                  [--ui-scale X] [--no-ui] [--dark] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
+            \\                  [--ui-scale X] [--no-ui] [--light] [--dark] [--cel] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
             \\                  [--play] [--interpolate] [--fps N] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop none|cells|space] [--bg-blur K]
             \\                  [--orbit DX,DY] [--zoom STEPS] [--pan DX,DY] [--profile FRAMES] [--profile-static] [--lock-rotation]
@@ -259,8 +265,14 @@ pub fn main(init: std.process.Init) !void {
         app.loadSettings(std.mem.span(dir));
     };
     if (args.ui_scale) |u| app.ui_scale = u;
+    if (args.light) app.style.theme = .light;
     if (args.dark) app.style.theme = .dark;
-    if (args.flat) app.style.shading = .flat;
+    // The flags say it all, whatever was remembered.
+    if (args.cel) app.style.shading = .cel;
+    if (args.flat) {
+        app.style.shading = .flat;
+        app.style.flat_pop = false;
+    }
     if (args.glass) app.style.shading = .glass;
     if (args.no_liquid) app.style.liquid = false;
     if (args.aero) app.style.shading = .aero;

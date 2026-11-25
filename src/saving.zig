@@ -228,6 +228,58 @@ test "a save that isn't finished leaves the old file, and the edits unsaved" {
     try t.expectUnsaved(&.{0});
 }
 
+test "frames that can't be read are left out, unless there are no others" {
+    var t: TestSaving = try .init();
+    defer t.deinit();
+    var dir_buf: [128]u8 = undefined;
+    const from = try std.fmt.bufPrint(&dir_buf, ".zig-cache/tmp/{s}/in.xyz", .{&t.tmp.sub_path});
+    // The middle one has a word for a coordinate.
+    try Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = from, .data = "1\na\nH 0 0 0\n1\nb\nH x 0 0\n1\nc\nH 2 0 0\n" });
+    const file = try Io.Dir.cwd().openFile(testing.io, from, .{});
+    t.source.deinit(testing.io, testing.allocator);
+    t.source = .{ .memory = &.{} };
+    t.source = .{ .xyz = try xyz.Indexed.open(testing.io, testing.allocator, file) };
+    const s = try t.start(.all);
+    defer s.deinit();
+    while (!try s.step()) {}
+    try testing.expectEqual(1, s.skipped);
+    try t.expectSaved(&.{ 0, 2 });
+    // The file that is there stays.
+    try testing.expectError(error.NothingToSave, t.save(.{ .frame = 1 }));
+    try t.expectSaved(&.{ 0, 2 });
+}
+
+test "nothing unsaved is nothing to save" {
+    var t: TestSaving = try .init();
+    defer t.deinit();
+    try testing.expectError(error.NothingToSave, t.save(.unsaved));
+}
+
+test "running out of memory leaves the old file, and the edits unsaved" {
+    var t: TestSaving = try .init();
+    defer t.deinit();
+    try t.save(.all);
+    try t.edit(0, 5);
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        var failing: testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = fail_index });
+        const s = Saving.start(failing.allocator(), testing.io, &t.source, &t.session, .all, t.path) catch |e| {
+            try testing.expectEqual(error.OutOfMemory, e);
+            continue;
+        };
+        defer s.deinit();
+        const failed = while (true) {
+            const done = s.step() catch break true;
+            if (done) break false;
+        };
+        if (!failed) break;
+        try t.expectSaved(&.{ 0, 1, 2 });
+        try t.expectUnsaved(&.{0});
+    }
+    try testing.expect(fail_index > 0);
+    try t.expectSaved(&.{ 5, 1, 2 });
+}
+
 test "an edit made while saving is still unsaved" {
     var t: TestSaving = try .init();
     defer t.deinit();

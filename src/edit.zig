@@ -61,8 +61,12 @@ pub const EditSession = struct {
         }
     };
 
+    /// What a geometry step did, as the user knows it.
+    pub const What = enum { change, move, twist, rotate, paste, delete, revert };
+
     const GeometryStep = struct {
         index: usize,
+        what: What,
         /// The atoms on its other side (null = the file frame): from before
         /// it, or, once it is undone, from after it.
         other: ?Edited,
@@ -178,14 +182,17 @@ pub const EditSession = struct {
         return lastEffective(s.undone.items, p, .after) != null;
     }
 
-    /// What a step changes.
-    pub const Next = union(enum) { geometry: usize, selection };
+    /// The step that undo or redo would cross.
+    pub const Upcoming = union(enum) {
+        geometry: struct { index: usize, what: What },
+        selection,
+    };
 
-    /// What undo (`before`) or redo (`after`) would do, if anything.
-    pub fn next(s: *const EditSession, p: *const picks.Picks, side: picks.Side) ?Next {
+    /// For undo (`before`) or redo (`after`); null if there is nothing to cross.
+    pub fn upcoming(s: *const EditSession, p: *const picks.Picks, side: picks.Side) ?Upcoming {
         const list = if (side == .before) s.steps.items else s.undone.items;
         return switch (list[lastEffective(list, p, side) orelse return null]) {
-            .geometry => |g| .{ .geometry = g.index },
+            .geometry => |g| .{ .geometry = .{ .index = g.index, .what = g.what } },
             .selection => .selection,
         };
     }
@@ -280,7 +287,7 @@ pub const EditSession = struct {
         const h = s.frames.getPtr(index) orelse return false;
         if (h.edited == null) return false;
         try s.reserve();
-        s.push(.{ .geometry = .{ .index = index, .other = h.edited, .kept = kept } });
+        s.push(.{ .geometry = .{ .index = index, .what = .revert, .other = h.edited, .kept = kept } });
         h.edited = null;
         return true;
     }
@@ -325,6 +332,8 @@ pub const Transaction = struct {
     /// See `EditSession.origins`.
     origins: ?[]u32,
     file: ?Frame,
+    /// For the step it becomes.
+    what: EditSession.What = .change,
     committed: bool = false,
 
     pub fn deinit(t: *Transaction) void {
@@ -338,6 +347,7 @@ pub const Transaction = struct {
     /// Delete the atoms flagged in `remove` (one flag per atom).
     pub fn delete(t: *Transaction, remove: []const bool) !void {
         const gpa = t.session.gpa;
+        t.what = .delete;
         var atoms = try t.atoms.without(gpa, remove);
         errdefer atoms.deinit(gpa);
         const origins = try gpa.alloc(u32, atoms.len());
@@ -352,6 +362,7 @@ pub const Transaction = struct {
     /// Append the atoms of `extra`, shifted by `offset`.
     pub fn append(t: *Transaction, extra: Frame, offset: Vec3) !void {
         if (extra.len() == 0) return;
+        t.what = .paste;
         const s = t.session;
         const n = t.atoms.len();
         const count = std.math.cast(u32, extra.len()) orelse return error.TooManyAtoms;
@@ -428,7 +439,7 @@ pub const Transaction = struct {
         if (!gop.found_existing) {
             gop.value_ptr.* = .{ .file = t.file.? };
         } else if (t.file) |*f| f.deinit(s.gpa);
-        s.push(.{ .geometry = .{ .index = t.index, .other = gop.value_ptr.edited, .kept = kept } });
+        s.push(.{ .geometry = .{ .index = t.index, .what = t.what, .other = gop.value_ptr.edited, .kept = kept } });
         gop.value_ptr.edited = .{ .frame = t.atoms, .origins = t.origins };
         t.committed = true;
         return true;
@@ -607,14 +618,23 @@ test "edited frames are marked, in order, until their edits are undone" {
 test "what undo and redo would do is known before" {
     var t: TestSession = try .init();
     defer t.deinit();
-    try testing.expectEqual(null, t.s.next(&t.p, .before));
+    const expectUpcoming = struct {
+        fn f(s: *TestSession, side: picks.Side, index: usize, what: EditSession.What) !void {
+            const g = s.s.upcoming(&s.p, side).?.geometry;
+            try testing.expectEqual(index, g.index);
+            try testing.expectEqual(what, g.what);
+        }
+    }.f;
+    try testing.expectEqual(null, t.s.upcoming(&t.p, .before));
     try t.moveTo(1, 1);
     try t.moveTo(4, 1);
-    try testing.expectEqual(EditSession.Next{ .geometry = 4 }, t.s.next(&t.p, .before).?);
-    try testing.expectEqual(null, t.s.next(&t.p, .after));
+    try expectUpcoming(&t, .before, 4, .change);
+    try testing.expectEqual(null, t.s.upcoming(&t.p, .after));
     _ = t.undo();
-    try testing.expectEqual(EditSession.Next{ .geometry = 1 }, t.s.next(&t.p, .before).?);
-    try testing.expectEqual(EditSession.Next{ .geometry = 4 }, t.s.next(&t.p, .after).?);
+    try expectUpcoming(&t, .before, 1, .change);
+    try expectUpcoming(&t, .after, 4, .change);
+    try t.revert(1);
+    try expectUpcoming(&t, .before, 1, .revert);
 }
 
 test "a frame whose first edit left the history stays edited until it is reverted" {

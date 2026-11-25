@@ -83,6 +83,8 @@ ui_scale_edit: ?f32 = null,
 settings: cv.settings.Settings = .{},
 /// Changed, but not saved yet.
 settings_changed: bool = false,
+/// The last attempt to save them failed.
+settings_unsaved: bool = false,
 /// The looks when `rememberLooks` was last there.
 looks_seen: ?cv.settings.Settings = null,
 /// Where they are kept (null = nowhere).
@@ -107,12 +109,12 @@ dialog_path: [4096]u8 = undefined,
 dialog_ready: std.atomic.Value(bool) = .init(false),
 save_path: [4096]u8 = undefined,
 save_ready: std.atomic.Value(bool) = .init(false),
+save_dialog_open: std.atomic.Value(bool) = .init(false),
 /// What the save dialog was opened for.
 save_what: struct { what: cv.saving.What, document: u64 } = .{ .what = .all, .document = 0 },
 saving: ?*cv.saving.Saving = null,
 /// What the user is being asked about (see `leave`).
 leaving: ?Leaving = null,
-leave_path: [4096]u8 = undefined,
 
 /// The selection and cuts of the shown frame.
 picks: cv.picks.Picks = .{},
@@ -148,6 +150,7 @@ pub fn deinit(app: *App) void {
 
 /// Everything but the renderer.
 fn deinitState(app: *App) void {
+    if (app.settings_changed or app.settings_unsaved) app.saveSettings();
     if (app.settings_path) |p| app.gpa.free(p);
     app.setHoverGroup(null, &.{});
     app.closeDocument();
@@ -493,6 +496,7 @@ pub fn update(app: *App) void {
         var copy: [4096]u8 = undefined;
         @memcpy(copy[0..p.len], p);
         app.save_ready.store(false, .release);
+        app.save_dialog_open.store(false, .release);
         // Another file may have been opened meanwhile.
         if (app.save_what.document == app.documents_opened) app.startSaving(app.save_what.what, copy[0..p.len]);
     }
@@ -930,11 +934,12 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
         c.SDL_EVENT_MOUSE_WHEEL => if (!want_mouse) app.camera.zoom(ev.wheel.y),
         c.SDL_EVENT_KEY_DOWN => {
             if (app.leaving != null) {
-                if (ev.key.key == c.SDLK_ESCAPE) app.leaving = null;
+                if (ev.key.key == c.SDLK_ESCAPE) app.leaveEsc();
                 return;
             }
             if (want_keyboard) return;
-            if (ev.key.key == c.SDLK_ESCAPE and app.saving != null) {
+            // A drag, which is in the hand, comes first.
+            if (ev.key.key == c.SDLK_ESCAPE and app.saving != null and app.drag == null) {
                 app.stopSaving();
                 return app.inform("Stopped saving", .{});
             }
@@ -1342,7 +1347,7 @@ fn altPress(app: *App, sdl_button: u8, shift: bool, x: f32, y: f32) void {
     app.drag_button = sdl_button;
     const kind = drag_mod.gesture(button, shift) orelse {
         app.aborted_button = sdl_button;
-        return;
+        return app.refuse("With Alt, Shift only goes with the left button: it rotates", .{});
     };
     app.beginDrag(kind, x, y);
 }
@@ -1372,6 +1377,11 @@ fn startDrag(app: *App, kind: drag_mod.Kind, handle: u32) !void {
     const v0 = f.positions[handle] - center;
     const axes = app.cameraAxes();
 
+    edit.what = switch (kind) {
+        .translate => .move,
+        .twist => .twist,
+        .rotate => .rotate,
+    };
     app.drag_edit = edit;
     app.drag = .{
         .kind = kind,
@@ -1436,8 +1446,8 @@ fn endDrag(app: *App, commit: bool) void {
     app.drag_edit = null;
     if (!commit) app.aborted_button = app.drag_button;
     if (commit and dr.moved) {
-        // Nothing to say if it worked, changed or not: it shows.
-        if (app.commitEdit(&edit)) |_| {} else |e| app.fail("Move failed: {t}", .{e});
+        // Whether it changed anything is seen, and isn't said (D17).
+        _ = app.commitEdit(&edit) catch |e| return app.fail("Move failed: {t}", .{e});
     }
 }
 
@@ -1712,6 +1722,8 @@ fn saveDialogFor(app: *App, what: cv.saving.What) void {
     const d = app.doc orelse return;
     app.endDrag(false);
     if (app.saving != null) return app.refuse("Already saving; Esc stops it", .{});
+    // One dialog at a time: its answer is for `save_what`.
+    if (app.save_dialog_open.swap(true, .acq_rel)) return app.refuse("A save dialog is already open", .{});
     app.save_what = .{ .what = what, .document = app.documents_opened };
     const filters = [_]c.SDL_DialogFileFilter{.{ .name = "XYZ", .pattern = "xyz" }};
     // Suggest <name>_frameN.xyz next to the source file.
@@ -1729,9 +1741,11 @@ fn saveDialogFor(app: *App, what: cv.saving.What) void {
 fn saveCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filter: c_int) callconv(.c) void {
     _ = filter;
     const app: *App = @ptrCast(@alignCast(userdata));
-    if (filelist == null or filelist[0] == null) return;
+    // Cancelled, or no answer that can be used. Otherwise it counts as open
+    // until `update` has taken the answer.
+    if (filelist == null or filelist[0] == null) return app.save_dialog_open.store(false, .release);
     const p = std.mem.span(filelist[0]);
-    if (p.len >= app.save_path.len) return;
+    if (p.len >= app.save_path.len) return app.save_dialog_open.store(false, .release);
     @memcpy(app.save_path[0..p.len], p);
     app.save_path[p.len] = 0;
     app.save_ready.store(true, .release);
@@ -1746,7 +1760,7 @@ pub fn saveFrame(app: *App, path: []const u8) void {
 
 fn startSaving(app: *App, what: cv.saving.What, path: []const u8) void {
     const d = app.doc orelse return;
-    app.stopSaving();
+    if (app.saving != null) return app.refuse("Already saving; Esc stops it", .{});
     app.saving = cv.saving.Saving.start(app.gpa, app.io, d.source, &app.session, what, path) catch |e|
         return app.fail("Could not save {s}: {t}", .{ std.fs.path.basename(path), e });
 }
@@ -1766,6 +1780,7 @@ fn saveSome(app: *App, budget: f64) void {
         const name = std.fs.path.basename(s.path);
         const done = s.step() catch |e| {
             app.fail("Could not save {s}: {t}", .{ name, e });
+            app.leaving = null; // it may have been waiting for this
             return app.stopSaving();
         };
         if (done) {
@@ -1790,24 +1805,35 @@ pub fn savingHint(app: *const App, buf: []u8) ?[]const u8 {
 pub const Leaving = union(enum) {
     quit,
     close,
-    /// Opens the file at `leave_path`.
-    open: usize,
+    /// Opens that file.
+    open: struct { buf: [4096]u8, len: usize },
     /// Pastes as a new structure.
     paste,
 };
 
-/// Do that, after asking if there are unsaved edits. While a question is up,
-/// the last one asked for counts.
+/// Do that, after asking if there are unsaved edits or a save isn't finished.
+/// While a question is up, the last one asked for counts.
 pub fn leave(app: *App, to: Leaving) void {
     app.endDrag(false);
     app.leaving = to;
-    if (!app.session.anyUnsaved()) app.leaveNow();
+    if (!app.session.anyUnsaved() and app.saving == null) app.leaveNow();
 }
 
 pub fn leaveToOpen(app: *App, path: []const u8) void {
-    if (path.len > app.leave_path.len) return app.fail("Could not open {s}: the path is too long", .{std.fs.path.basename(path)});
-    @memcpy(app.leave_path[0..path.len], path);
-    app.leave(.{ .open = path.len });
+    var to: Leaving = .{ .open = .{ .buf = undefined, .len = path.len } };
+    if (path.len > to.open.buf.len) return app.fail("Could not open {s}: the path is too long", .{std.fs.path.basename(path)});
+    @memcpy(to.open.buf[0..path.len], path);
+    app.leave(to);
+}
+
+/// Esc while the question is up: stops a save if there is one, else cancels.
+fn leaveEsc(app: *App) void {
+    if (app.saving != null) {
+        app.stopSaving();
+        // With nothing left to ask, going on would look like leaving by Esc.
+        if (app.session.anyUnsaved()) return;
+    }
+    app.leaving = null;
 }
 
 /// Without asking.
@@ -1817,14 +1843,14 @@ fn leaveNow(app: *App) void {
     switch (to) {
         .quit => app.quit_requested = true,
         .close => app.closeDocument(),
-        .open => |len| app.openFile(app.leave_path[0..len]),
+        .open => |path| app.openFile(path.buf[0..path.len]),
         .paste => app.pasteXyz(true),
     }
 }
 
 /// The question, in the middle: everything else would discard the edits.
 fn leaveQuestion(app: *App) void {
-    const title = "Unsaved edits";
+    const title = "Not saved yet";
     const open = c.igIsPopupOpen_Str(title, 0);
     if (app.leaving == null and !open) return;
     if (!open) _ = c.igOpenPopup_Str(title, 0);
@@ -1842,26 +1868,37 @@ fn leaveQuestion(app: *App) void {
         return app.leaveNow();
     }
     const fs = c.igGetFontSize();
-    ui.text("{d} frame{s} with edits that aren't saved", .{ list.len, if (list.len == 1) "" else "s" });
-    const rows: f32 = @floatFromInt(std.math.clamp(list.len, 1, 8));
-    if (c.igBeginChild_Str("##unsaved", ui.v2(fs * 24, rows * c.igGetFrameHeightWithSpacing() + fs), c.ImGuiChildFlags_Borders, 0)) {
-        for (list) |index| {
-            c.igPushID_Int(@intCast(index));
-            defer c.igPopID();
-            c.igAlignTextToFramePadding();
-            ui.text("Frame {d}", .{index + 1});
-            c.igSameLine(fs * 9, 0);
-            if (c.igSmallButton("Save as...")) app.saveDialogFor(.{ .frame = index });
+    var buf: [96]u8 = undefined;
+    if (list.len > 0) {
+        ui.text("{d} frame{s} with edits that aren't saved", .{ list.len, if (list.len == 1) "" else "s" });
+        const rows: f32 = @floatFromInt(@min(list.len, 8));
+        if (c.igBeginChild_Str("##unsaved", ui.v2(fs * 24, rows * c.igGetFrameHeightWithSpacing() + fs), c.ImGuiChildFlags_Borders, 0)) {
+            for (list) |index| {
+                c.igPushID_Int(@intCast(index));
+                defer c.igPopID();
+                c.igAlignTextToFramePadding();
+                ui.text("Frame {d}", .{index + 1});
+                c.igSameLine(fs * 9, 0);
+                if (c.igSmallButton("Save as...")) app.saveDialogFor(.{ .frame = index });
+            }
+        }
+        c.igEndChild();
+        if (list.len > 1) {
+            const label = ui.printZ(&buf, "Save the {d} edited frames...###edited", .{list.len}) catch "Save the edited frames...###edited";
+            if (c.igButton(label.ptr, ui.v2(0, 0))) app.saveDialogFor(.unsaved);
+            ui.tooltip("Only these frames, in one file.");
+        }
+        if (app.doc.?.frameCount() > 1) {
+            if (list.len > 1) c.igSameLine(0, -1);
+            if (c.igButton("Save the whole trajectory...", ui.v2(0, 0))) app.saveDialogFor(.all);
+            ui.tooltip("Every frame of the file, with the edits, in one file.");
         }
     }
-    c.igEndChild();
-    var buf: [96]u8 = undefined;
     if (app.savingHint(&buf)) |hint| ui.text("{s}", .{hint});
-    if (list.len > 1) {
-        if (c.igButton("Save all in one file...", ui.v2(0, 0))) app.saveDialogFor(.unsaved);
-        c.igSameLine(0, -1);
-    }
-    if (c.igButton(if (list.len > 1) "Discard all" else "Discard", ui.v2(0, 0))) {
+    // Problems are said here, too: the bar may be out of sight.
+    if (app.messages.current(app.seconds())) |m| if (m.kind != .info) ui.textWrapped("{s}", .{m.text()});
+    const discard: [:0]const u8 = if (list.len == 0) "Stop saving" else if (list.len > 1) "Discard all" else "Discard";
+    if (c.igButton(discard.ptr, ui.v2(0, 0))) {
         c.igCloseCurrentPopup();
         return app.leaveNow();
     }
@@ -1894,13 +1931,13 @@ pub fn drawUi(app: *App) void {
     if (app.show_help) app.helpWindow();
     if (app.doc == null) app.emptyView(timeline_h);
     app.leaveQuestion();
-    app.rememberLooks();
+    app.rememberLooks(c.igIsAnyItemActive());
 }
 
-/// "Undo edit of frame 12", with an id that doesn't change with it.
-fn historyLabel(buf: []u8, comptime verb: []const u8, step: ?cv.edit.EditSession.Next) [*:0]const u8 {
+/// "Undo move (frame 12)", with an id that doesn't change with it.
+fn historyLabel(buf: []u8, comptime verb: []const u8, step: ?cv.edit.EditSession.Upcoming) [*:0]const u8 {
     const label = switch (step orelse return verb ++ "###" ++ verb) {
-        .geometry => |index| ui.printZ(buf, verb ++ " edit of frame {d}###" ++ verb, .{index + 1}),
+        .geometry => |g| ui.printZ(buf, verb ++ " {t} (frame {d})###" ++ verb, .{ g.what, g.index + 1 }),
         .selection => return verb ++ " selection or cut###" ++ verb,
     } catch return verb ++ "###" ++ verb;
     return label.ptr;
@@ -1913,8 +1950,8 @@ fn menuBar(app: *App) void {
         if (c.igMenuItem_Bool("Open...", "Ctrl+O", false, true)) app.openDialog();
         const has_frame = app.doc != null and app.doc.?.display.real.frame != null;
         if (c.igMenuItem_Bool("Save frame as XYZ...", "Ctrl+S", false, has_frame)) app.saveDialog();
-        if (c.igMenuItem_Bool("Save unsaved edits as XYZ...", null, false, app.session.anyUnsaved())) app.saveDialogFor(.unsaved);
-        ui.tooltip("The frames with edits that aren't saved, in one file.");
+        if (c.igMenuItem_Bool("Save edited frames as XYZ...", null, false, app.session.anyUnsaved())) app.saveDialogFor(.unsaved);
+        ui.tooltip("Only the frames with edits that aren't saved yet, in one file.");
         if (c.igMenuItem_Bool("Save trajectory as XYZ...", null, false, has_frame and app.doc.?.frameCount() > 1)) app.saveDialogFor(.all);
         ui.tooltip("Every frame, with its edits.");
         if (c.igMenuItem_Bool("Close", null, false, app.doc != null)) app.leave(.close);
@@ -1924,9 +1961,9 @@ fn menuBar(app: *App) void {
     }
     if (c.igBeginMenu("Edit", true)) {
         var label_buf: [64]u8 = undefined;
-        const undo_step = app.session.next(&app.picks, .before);
+        const undo_step = app.session.upcoming(&app.picks, .before);
         if (c.igMenuItem_Bool(historyLabel(&label_buf, "Undo", undo_step), "Ctrl+Z", false, undo_step != null)) app.undo();
-        const redo_step = app.session.next(&app.picks, .after);
+        const redo_step = app.session.upcoming(&app.picks, .after);
         if (c.igMenuItem_Bool(historyLabel(&label_buf, "Redo", redo_step), "Ctrl+Shift+Z", false, redo_step != null)) app.redo();
         const edited = if (app.doc) |d| app.session.isEdited(d.display.real.index) else false;
         if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.picks.selection.items.len > 0)) app.deleteSelection();
@@ -2232,8 +2269,16 @@ fn applyLooks(app: *App, s: cv.settings.Settings) void {
 }
 
 fn styleValue(comptime name: []const u8, v: anytype) @FieldType(Renderer.Style, name) {
-    const T = @FieldType(Renderer.Style, name);
-    return if (@typeInfo(T) == .@"enum") std.meta.stringToEnum(T, @tagName(v)).? else v;
+    return convert(@FieldType(Renderer.Style, name), v);
+}
+
+/// `v` as a `T`, which has the same values. Enums are matched by name.
+fn convert(comptime T: type, v: anytype) T {
+    if (@typeInfo(T) != .@"enum") return v;
+    return switch (v) {
+        // A value that only one of them has doesn't compile.
+        inline else => |tag| @field(T, @tagName(tag)),
+    };
 }
 
 /// The looks in use now.
@@ -2241,9 +2286,7 @@ fn looks(app: *const App) cv.settings.Settings {
     var s: cv.settings.Settings = .{};
     inline for (@typeInfo(cv.settings.Settings).@"struct".field_names) |name| {
         if (@hasField(Renderer.Style, name)) {
-            const T = @FieldType(cv.settings.Settings, name);
-            const v = @field(app.style, name);
-            @field(s, name) = if (@typeInfo(T) == .@"enum") std.meta.stringToEnum(T, @tagName(v)).? else v;
+            @field(s, name) = convert(@FieldType(cv.settings.Settings, name), @field(app.style, name));
         }
     }
     s.cutoff_factor = app.bond_params.cutoff_factor;
@@ -2252,8 +2295,8 @@ fn looks(app: *const App) cv.settings.Settings {
 }
 
 /// Remember the looks the user changed. What the command line set for this
-/// run isn't a change.
-fn rememberLooks(app: *App) void {
+/// run isn't a change. Saved once nothing is `held` any more (a slider).
+fn rememberLooks(app: *App, held: bool) void {
     const now = app.looks();
     defer app.looks_seen = now;
     const seen = app.looks_seen orelse return;
@@ -2263,8 +2306,7 @@ fn rememberLooks(app: *App) void {
             app.settings_changed = true;
         }
     }
-    // Not at every step of a slider.
-    if (app.settings_changed and !c.igIsAnyItemActive()) {
+    if (app.settings_changed and !held) {
         app.settings_changed = false;
         app.saveSettings();
     }
@@ -2283,8 +2325,13 @@ fn saveSettings(app: *App) void {
     var buf: [4096]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     app.settings.write(&w) catch return;
-    Io.Dir.cwd().writeFile(app.io, .{ .sub_path = path, .data = w.buffered() }) catch |e|
+    if (Io.Dir.cwd().writeFile(app.io, .{ .sub_path = path, .data = w.buffered() })) {
+        app.settings_unsaved = false;
+    } else |e| {
+        // Tried again with the next change, and at the end.
+        app.settings_unsaved = true;
         app.fail("Could not save settings: {t}", .{e});
+    }
 }
 
 /// Element key: a colour swatch and count per element present, in Hill
@@ -4348,7 +4395,7 @@ test "after a completed drag, the button turns the camera as usual" {
 }
 
 test "a refused Alt-drag says so and does nothing, not even turn the camera" {
-    const Case = struct { sel: []const u32, button: u8, shift: bool = false, said: bool = true };
+    const Case = struct { sel: []const u32, button: u8, shift: bool = false };
     for ([_]Case{
         .{ .sel = &.{ 0, 2 }, .button = c.SDL_BUTTON_LEFT },
         .{ .sel = &.{ 0, 2 }, .button = c.SDL_BUTTON_MIDDLE },
@@ -4357,8 +4404,8 @@ test "a refused Alt-drag says so and does nothing, not even turn the camera" {
         .{ .sel = &.{1}, .button = c.SDL_BUTTON_RIGHT },
         .{ .sel = &.{}, .button = c.SDL_BUTTON_RIGHT },
         // Not gestures.
-        .{ .sel = &.{1}, .button = c.SDL_BUTTON_RIGHT, .shift = true, .said = false },
-        .{ .sel = &.{1}, .button = c.SDL_BUTTON_MIDDLE, .shift = true, .said = false },
+        .{ .sel = &.{1}, .button = c.SDL_BUTTON_RIGHT, .shift = true },
+        .{ .sel = &.{1}, .button = c.SDL_BUTTON_MIDDLE, .shift = true },
     }) |case| {
         var t: TestApp = try .init(1);
         defer t.deinit();
@@ -4371,8 +4418,7 @@ test "a refused Alt-drag says so and does nothing, not even turn the camera" {
         try expect(t.app.drag == null);
         try expect(t.app.playing);
         try expectEqual(case.button, t.app.aborted_button.?);
-        try expectEqual(case.said, t.app.messages.last != null);
-        if (t.app.messages.last) |m| try expectEqual(.refusal, m.kind);
+        try expectEqual(.refusal, t.app.messages.last.?.kind);
     }
 }
 
@@ -4417,6 +4463,114 @@ test "leaving asks only about unsaved edits, and cancelling keeps them" {
         try expect(t.app.leaving == null);
         try expect(if (to == .quit) t.app.quit_requested else t.app.doc == null);
     }
+}
+
+test "leaving waits for a save; Esc stops the save and stays" {
+    for ([_]bool{ false, true }) |edited| {
+        var t: TestApp = try .init(3);
+        defer t.deinit();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var buf: [128]u8 = undefined;
+        const path = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}/out.xyz", .{&tmp.sub_path});
+        try t.show(0);
+        if (edited) t.setDistance(3);
+        t.app.startSaving(.all, path);
+        t.app.leave(.quit);
+        try expect(t.app.leaving != null and !t.app.quit_requested);
+        t.esc();
+        try expect(t.app.saving == null);
+        try expect(!t.app.quit_requested);
+        // Still asking, if there is something to ask.
+        try expectEqual(edited, t.app.leaving != null);
+    }
+}
+
+test "Esc during a drag cancels the drag, and a save goes on" {
+    var t: TestApp = try .init(3);
+    defer t.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}/out.xyz", .{&tmp.sub_path});
+    try t.show(0);
+    t.app.startSaving(.all, path);
+    try t.dragSome();
+    t.esc();
+    try t.expectAborted();
+    try expect(t.app.saving != null);
+    // A second save doesn't end the first.
+    const first = t.app.saving.?;
+    t.app.startSaving(.{ .frame = 0 }, "other.xyz");
+    try expectEqual(first, t.app.saving.?);
+    t.esc();
+    try expect(t.app.saving == null);
+}
+
+test "a save that fails keeps the app from leaving" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.show(0);
+    t.app.startSaving(.unsaved, ".zig-cache/nothing-unsaved.xyz");
+    t.app.leave(.quit);
+    t.app.saveSome(1);
+    try expect(t.app.leaving == null);
+    try expect(!t.app.quit_requested);
+    try expectEqual(.failure, t.app.messages.last.?.kind);
+}
+
+test "only looks the user changes are remembered, and a failed save is tried again" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [128]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    t.app.loadSettings(dir);
+    t.app.style.theme = .dark; // as by the command line
+    t.app.rememberLooks(false);
+    t.app.style.snap = 0.2;
+    t.app.rememberLooks(true);
+    try expect(t.app.settings_changed); // a slider is held
+    t.app.rememberLooks(false);
+    try expect(!t.app.settings_changed);
+    try expectEqual(0.2, t.app.settings.snap);
+    try expectEqual(.light, t.app.settings.theme);
+    var text_buf: [256]u8 = undefined;
+    const text = try tmp.dir.readFile(TestApp.io, "settings", &text_buf);
+    try expectEqual(t.app.settings, cv.settings.Settings.parse(text));
+
+    TestApp.gpa.free(t.app.settings_path.?);
+    t.app.settings_path = try TestApp.gpa.dupe(u8, "no/such/dir/settings");
+    t.app.style.snap = 0.3;
+    t.app.rememberLooks(false);
+    try expect(t.app.settings_unsaved);
+    try expectEqual(.failure, t.app.messages.last.?.kind);
+    TestApp.gpa.free(t.app.settings_path.?);
+    t.app.settings_path = try std.fs.path.join(TestApp.gpa, &.{ dir, "settings" });
+    t.app.style.snap = 0.4;
+    t.app.rememberLooks(false);
+    try expect(!t.app.settings_unsaved);
+}
+
+test "the atoms an Alt-drag would move follow the selection and the frame" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try t.openText("3\n\nC 0 0 0\nC 1.5 0 0\nC 3 0 0\n");
+    try t.show(0);
+    t.app.hover = .{ .atom = 2 };
+    try expectEqual(3, t.app.hoverGroup().len);
+    t.select(&.{1});
+    try std.testing.expectEqualSlices(u32, &.{2}, t.app.hoverGroup());
+    t.select(&.{ 0, 1 });
+    try expectEqual(0, t.app.hoverGroup().len); // refused
+    t.app.clearSelection();
+    t.app.toggleCutPair(1, 2);
+    try expectEqual(1, t.app.hoverGroup().len);
+    t.app.hover = .{ .bond = .{ 0, 1 } };
+    try expectEqual(0, t.app.hoverGroup().len);
+    t.app.hover = null;
+    try expectEqual(0, t.app.hoverGroup().len);
 }
 
 test "discarding edits leaves; a file that can't be opened keeps them" {

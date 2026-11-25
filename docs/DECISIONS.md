@@ -150,7 +150,7 @@ molecule, around the base. With nothing selected, the grabbed atom's molecule
 moves about its centre. Twisting needs a base and another atom, for the axis.
 Only atoms can be grabbed: which end of a bond would move wasn't clear.
 A gesture without meaning is refused with a message, and doesn't turn the
-camera instead. An earlier rule made the first selected atom the base
+camera instead. A drag that worked says nothing, changed or not: it is seen. An earlier rule made the first selected atom the base
 of any multi-selection. It was dropped because it left that atom behind when
 moving a pasted (fully selected) fragment. Groups that bonds can't separate can
 get an explicit pivot later if needed.
@@ -324,6 +324,9 @@ edited.
   The timeline position stays at the bad frame (the last good one stays on
   screen), so stepping on from it works; playback that ends there returns to the shown
   frame. Holding the button or a key there isn't a retry.
+  Saving (`saving.zig`) reads file frames from the source itself, so that a long
+  save doesn't displace what the stream has ready. It leaves out frames that can't
+  be read, and says how many.
 - **Edit session:** an edit is a transaction tied to its frame. A frame change,
   undo, redo, paste, revert, close or open aborts one in progress and restores the
   atoms. Starting an edit pauses playback. A frame is edited only while an edit
