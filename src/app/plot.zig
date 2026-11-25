@@ -365,11 +365,6 @@ fn plot(app: *App, d: *App.Document) void {
             const x = s.window.toX(head, axis.x0, axis.width);
             c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), headColor(app, light), 2, 0);
         }
-        if (scanned < n) {
-            // Thin progress bar for the background energy scan.
-            const t = @as(f32, @floatFromInt(scanned)) / @as(f32, @floatFromInt(n));
-            c.ImDrawList_AddLine(dl, ui.v2(p0.x, p0.y + h - 1), ui.v2(p0.x + t * w, p0.y + h - 1), accent, 2, 0);
-        }
     }
     c.igEndChild();
 
