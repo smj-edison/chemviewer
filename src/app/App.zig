@@ -81,6 +81,10 @@ ui_scale: f32 = 1.0,
 /// What the View menu slider shows while it is dragged.
 ui_scale_edit: ?f32 = null,
 settings: cv.settings.Settings = .{},
+/// Changed, but not saved yet.
+settings_changed: bool = false,
+/// The looks when `rememberLooks` was last there.
+looks_seen: ?cv.settings.Settings = null,
 /// Where they are kept (null = nowhere).
 settings_path: ?[]u8 = null,
 /// Font size the panel layout was last placed for; when it changes the
@@ -1890,6 +1894,7 @@ pub fn drawUi(app: *App) void {
     if (app.show_help) app.helpWindow();
     if (app.doc == null) app.emptyView(timeline_h);
     app.leaveQuestion();
+    app.rememberLooks();
 }
 
 /// "Undo edit of frame 12", with an id that doesn't change with it.
@@ -2069,6 +2074,7 @@ fn bondsSection(app: *App) void {
     ui.tooltip("Pairs closer than this multiple of their single-bond length are bonded.");
     _ = c.igSliderFloat("Hide weaker", &app.style.min_character, 0, 3, "%.2f", 0);
     ui.tooltip("Hide bonds whose character is below this value (1 = single). Only drawn bonds connect atoms when moving groups or selecting molecules.");
+    if (c.igButton("Reset to defaults##bonds", ui.v2(0, 0))) app.resetLooks(&.{ "bond_coloring", "snap", "cutoff_factor", "min_character" });
 }
 
 fn displaySection(app: *App) void {
@@ -2122,6 +2128,11 @@ fn displaySection(app: *App) void {
     _ = c.igSliderFloat("Atom scale", &app.style.atom_scale, 0.2, 3.0, "%.2f", 0);
     _ = c.igSliderFloat("Bond radius", &app.style.bond_radius, 0.03, 0.3, "%.2f Å", 0);
     if (c.igButton("Fit to view (F)", ui.v2(0, 0))) app.fitCamera();
+    c.igSameLine(0, -1);
+    if (c.igButton("Reset to defaults##display", ui.v2(0, 0))) app.resetLooks(&.{
+        "theme",              "shading",  "liquid",   "outline_px",      "atom_scale", "bond_radius",
+        "background_pattern", "backdrop", "flat_pop", "background_blur",
+    });
 }
 
 const help = .{
@@ -2208,6 +2219,63 @@ pub fn loadSettings(app: *App, dir: []const u8) void {
     var buf: [4096]u8 = undefined;
     const text = Io.Dir.cwd().readFile(app.io, app.settings_path.?, &buf) catch return;
     app.settings = .parse(text);
+    app.applyLooks(app.settings);
+}
+
+/// Copy the remembered looks to where they are used.
+fn applyLooks(app: *App, s: cv.settings.Settings) void {
+    inline for (@typeInfo(cv.settings.Settings).@"struct".field_names) |name| {
+        if (@hasField(Renderer.Style, name)) @field(app.style, name) = styleValue(name, @field(s, name));
+    }
+    app.bond_params.cutoff_factor = s.cutoff_factor;
+    app.ui_scale = s.ui_scale;
+}
+
+fn styleValue(comptime name: []const u8, v: anytype) @FieldType(Renderer.Style, name) {
+    const T = @FieldType(Renderer.Style, name);
+    return if (@typeInfo(T) == .@"enum") std.meta.stringToEnum(T, @tagName(v)).? else v;
+}
+
+/// The looks in use now.
+fn looks(app: *const App) cv.settings.Settings {
+    var s: cv.settings.Settings = .{};
+    inline for (@typeInfo(cv.settings.Settings).@"struct".field_names) |name| {
+        if (@hasField(Renderer.Style, name)) {
+            const T = @FieldType(cv.settings.Settings, name);
+            const v = @field(app.style, name);
+            @field(s, name) = if (@typeInfo(T) == .@"enum") std.meta.stringToEnum(T, @tagName(v)).? else v;
+        }
+    }
+    s.cutoff_factor = app.bond_params.cutoff_factor;
+    s.ui_scale = app.ui_scale;
+    return s;
+}
+
+/// Remember the looks the user changed. What the command line set for this
+/// run isn't a change.
+fn rememberLooks(app: *App) void {
+    const now = app.looks();
+    defer app.looks_seen = now;
+    const seen = app.looks_seen orelse return;
+    inline for (@typeInfo(cv.settings.Settings).@"struct".field_names) |name| {
+        if (@field(now, name) != @field(seen, name)) {
+            @field(app.settings, name) = @field(now, name);
+            app.settings_changed = true;
+        }
+    }
+    // Not at every step of a slider.
+    if (app.settings_changed and !c.igIsAnyItemActive()) {
+        app.settings_changed = false;
+        app.saveSettings();
+    }
+}
+
+/// The named looks as they were at first.
+fn resetLooks(app: *App, comptime names: []const []const u8) void {
+    var s = app.looks();
+    const default: cv.settings.Settings = .{};
+    inline for (names) |name| @field(s, name) = @field(default, name);
+    app.applyLooks(s);
 }
 
 fn saveSettings(app: *App) void {
@@ -4306,6 +4374,19 @@ test "a refused Alt-drag says so and does nothing, not even turn the camera" {
         try expectEqual(case.said, t.app.messages.last != null);
         if (t.app.messages.last) |m| try expectEqual(.refusal, m.kind);
     }
+}
+
+test "the looks remembered by default are the defaults, and come back when applied" {
+    var t: TestApp = try .init(1);
+    defer t.deinit();
+    try std.testing.expectEqualDeep(cv.settings.Settings{}, t.app.looks());
+    const s: cv.settings.Settings = .{ .theme = .dark, .shading = .aero, .backdrop = .cells, .snap = 0.2, .cutoff_factor = 1.3, .ui_scale = 1.25 };
+    t.app.applyLooks(s);
+    try std.testing.expectEqualDeep(s, t.app.looks());
+    t.app.resetLooks(&.{ "snap", "cutoff_factor" });
+    try expectEqual(.dark, t.app.style.theme);
+    try expectEqual((Renderer.Style{}).snap, t.app.style.snap);
+    try expectEqual((cv.bonds.Params{}).cutoff_factor, t.app.bond_params.cutoff_factor);
 }
 
 test "leaving asks only about unsaved edits, and cancelling keeps them" {

@@ -117,11 +117,13 @@ something is picked up.
   remembered, "Unit cell box" says when there is none (it draws the periodic box),
   UI scale applies on release, Mouse & keys is a table. Agreed in
   `.scratch/ui-and-timeline/decisions.md`.*
-- [ ] Audit current UI design based on the principles in "The Design of Everyday
+- [x] Audit current UI design based on the principles in "The Design of Everyday
   Things." Make sure we have signifiers for standard things and progressive
   discoverability for others. Also make sure we avoid modes as much as
   reasonably possible.
-  *Report in `.scratch/ui-and-timeline/audit.md`; waiting for a pick.*
+  *Done: report and what was picked in `.scratch/ui-and-timeline/audit.md`.
+  Findings 2 (edited frames on the timeline), 17 and T1 to T6 go into the
+  timeline spec.*
 - [x] Small visual glitch in Cel display style. If you look at the root where a bond
   joins with an atom, you can see a black halo around the bond, but it should appear
   to be a filled cylinder with the bond embedded inside of it.
@@ -131,8 +133,8 @@ something is picked up.
   rotate along the bond axis, and Alt + Center should rotate around the center atom.
   Also, when a single atom is selected, it should have a tooltip in the bar above
   the timeline where it describes what mouse button does what operation.
-  *Done (D17): the bar shows the hint for every selection. Messages are at the
-  bottom right and fade; refusals and errors are marked and last longer.*
+  *Done (D17): the bar shows the hint for every selection. Messages are inline
+  in that bar and fade; refusals and errors are marked and last longer.*
 - [ ] Design discussion: I'd like to be able to have multiple values plotted in
   the timeline, both overlayed on one timeline, and with multiple timelines. I'd
   like to be able to ingest data from PLUMED log files, ASE dynamics logs, and
