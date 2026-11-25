@@ -378,6 +378,7 @@ fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
     // read-only field the user clicked to copy the energy): ImGui handles
     // Ctrl+C there, and handling it here too would overwrite its copy.
     const widget_active = typing or c.igIsAnyItemActive();
+    if (ev.type == c.SDL_EVENT_KEY_DOWN and ev.key.key == c.SDLK_F1 and !ev.key.repeat) app.show_help = !app.show_help;
     if (ev.type == c.SDL_EVENT_KEY_DOWN and (ev.key.mod & c.SDL_KMOD_CTRL) != 0 and !typing) {
         switch (ev.key.key) {
             c.SDLK_C => if (!widget_active) return app.copyXyz(),

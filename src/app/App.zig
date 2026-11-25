@@ -89,6 +89,14 @@ layout_font_size: f32 = 0,
 quit_requested: bool = false,
 
 messages: messages_mod.Messages = .{},
+/// What the mouse is on in the view.
+hover: ?Target = null,
+/// What `hoverGroup` found last, and for what.
+hover_group: []u32 = &.{},
+hover_key: ?HoverKey = null,
+/// When an edit switched Lock rotation off (see `seconds`).
+unlocked_at: ?f64 = null,
+show_help: bool = false,
 
 /// Path delivered by the (possibly off-thread) SDL file dialog callback.
 dialog_path: [4096]u8 = undefined,
@@ -131,6 +139,7 @@ pub fn deinit(app: *App) void {
 /// Everything but the renderer.
 fn deinitState(app: *App) void {
     if (app.settings_path) |p| app.gpa.free(p);
+    app.setHoverGroup(null, &.{});
     app.closeDocument();
     app.session.deinit();
     app.picks.deinit(app.gpa);
@@ -485,6 +494,11 @@ pub fn update(app: *App) void {
     app.refresh();
 }
 
+/// The frames of a diff overlay: told apart with any colour vision, and not
+/// the red of cut bonds and oxygen.
+pub const reference_color: [3]f32 = .{ 1.0, 0.50, 0.0 };
+pub const current_color: [3]f32 = .{ 0.10, 0.45, 1.0 };
+
 /// Everything the scene is drawn from. It is built again when this differs.
 const SceneKey = struct {
     document: u64 = 0,
@@ -692,8 +706,8 @@ fn rebuildScene(app: *App) !void {
         const df = &app.diff.?;
         // Unlocked, it may be far off; don't clip it.
         for (reference) |p| app.scene_radius = @max(app.scene_radius, cv.math.length(p - app.camera.target));
-        _ = try r.addStructure(reference, df.numbering().numbers, app.bondsOf(&df.reference), app.style, .{ .color = .{ 1.0, 0.25, 0.25 } }, null);
-        const start = try r.addStructure(app.drawnPositions().?, f.numbers, app.bonds(), app.style, .{ .color = .{ 0.25, 1.0, 0.35 } }, &app.picks.cuts);
+        _ = try r.addStructure(reference, df.numbering().numbers, app.bondsOf(&df.reference), app.style, .{ .color = reference_color }, null);
+        const start = try r.addStructure(app.drawnPositions().?, f.numbers, app.bonds(), app.style, .{ .color = current_color }, &app.picks.cuts);
         r.highlight(start, app.selected());
         return r.upload();
     }
@@ -758,6 +772,7 @@ fn dropRotationLock(app: *App) void {
 
 /// A geometry edit unlocks. That only stops the updates, so nothing jumps.
 fn unlockRotation(app: *App) void {
+    if (app.lock_rotation) app.unlocked_at = app.seconds();
     app.lock_rotation = false;
     app.dropRotationLock();
 }
@@ -1177,7 +1192,8 @@ fn windowSize(app: *const App) [2]f32 {
     return .{ @floatFromInt(@max(w, 1)), @floatFromInt(@max(h, 1)) };
 }
 
-const Hit = struct { t: f32, target: union(enum) { atom: u32, bond: [2]u32 } };
+const Target = union(enum) { atom: u32, bond: [2]u32 };
+const Hit = struct { t: f32, target: Target };
 
 /// The nearest atom or drawn bond under window point (x, y), if any.
 fn hitAt(app: *App, x: f32, y: f32) ?Hit {
@@ -1716,15 +1732,27 @@ fn layoutCond(app: *App) c_int {
 
 pub fn drawUi(app: *App) void {
     defer app.layout_font_size = c.igGetFontSize();
+    app.updateHover();
     measure.atomLabels(app);
     measure.overlay(app);
+    measure.hoverOutline(app);
     app.drawLasso();
     app.menuBar();
     const timeline_h = timeline.height();
     timeline.draw(app, timeline_h);
     if (app.show_inspector) app.inspector(timeline_h);
     if (app.show_diff) app.diffPanel();
-    app.drawMessages(timeline_h);
+    if (app.show_help) app.helpWindow();
+    if (app.doc == null) app.emptyView(timeline_h);
+}
+
+/// "Undo edit of frame 12", with an id that doesn't change with it.
+fn historyLabel(buf: []u8, comptime verb: []const u8, step: ?cv.edit.EditSession.Next) [*:0]const u8 {
+    const label = switch (step orelse return verb ++ "###" ++ verb) {
+        .geometry => |index| ui.printZ(buf, verb ++ " edit of frame {d}###" ++ verb, .{index + 1}),
+        .selection => return verb ++ " selection or cut###" ++ verb,
+    } catch return verb ++ "###" ++ verb;
+    return label.ptr;
 }
 
 fn menuBar(app: *App) void {
@@ -1740,8 +1768,11 @@ fn menuBar(app: *App) void {
         c.igEndMenu();
     }
     if (c.igBeginMenu("Edit", true)) {
-        if (c.igMenuItem_Bool("Undo", "Ctrl+Z", false, app.canUndo())) app.undo();
-        if (c.igMenuItem_Bool("Redo", "Ctrl+Shift+Z", false, app.canRedo())) app.redo();
+        var label_buf: [64]u8 = undefined;
+        const undo_step = app.session.next(&app.picks, .before);
+        if (c.igMenuItem_Bool(historyLabel(&label_buf, "Undo", undo_step), "Ctrl+Z", false, undo_step != null)) app.undo();
+        const redo_step = app.session.next(&app.picks, .after);
+        if (c.igMenuItem_Bool(historyLabel(&label_buf, "Redo", redo_step), "Ctrl+Shift+Z", false, redo_step != null)) app.redo();
         const edited = if (app.doc) |d| app.session.isEdited(d.display.real.index) else false;
         if (c.igMenuItem_Bool("Delete selected atoms", "Del", false, app.picks.selection.items.len > 0)) app.deleteSelection();
         if (c.igMenuItem_Bool("Revert frame to file", null, false, edited)) app.revertFrame();
@@ -1783,53 +1814,51 @@ fn menuBar(app: *App) void {
         }
         c.igEndMenu();
     }
+    if (c.igBeginMenu("Help", true)) {
+        _ = c.igMenuItem_BoolPtr("Mouse & keys", "F1", &app.show_help, true);
+        c.igEndMenu();
+    }
 }
 
-/// Messages, newest at the bottom, at the view's bottom right. They take no
-/// clicks.
-fn drawMessages(app: *App, timeline_h: f32) void {
-    const now = app.seconds();
-    app.messages.expire(now);
-    const vp = c.igGetMainViewport();
-    const fs = c.igGetFontSize();
-    const pad = fs * 0.6;
-    const mark = fs * 1.4; // room for the mark of a problem
-    const dl = c.igGetForegroundDrawList_Nil();
-    const right = vp.*.WorkPos.x + vp.*.WorkSize.x - pad;
-    var bottom = vp.*.WorkPos.y + vp.*.WorkSize.y - timeline_h - pad;
-    const wrap = @max(@min(fs * 32, vp.*.WorkSize.x - 4 * pad - mark), fs * 8);
-    const light = app.style.theme == .light;
-    var i = app.messages.items().len;
-    while (i > 0) {
-        i -= 1;
-        const m = &app.messages.items()[i];
-        const alpha = m.opacity(now);
-        const text = m.text();
-        const end = text.ptr + text.len;
-        const size = c.igCalcTextSize(text.ptr, end, false, wrap);
-        const indent: f32 = if (m.kind == .info) 0 else mark;
-        const p0 = ui.v2(right - size.x - 2 * pad - indent, bottom - size.y - 2 * pad);
-        const p1 = ui.v2(right, bottom);
-        var bg = c.igGetStyle().*.Colors[c.ImGuiCol_PopupBg];
-        bg.w = alpha;
-        c.ImDrawList_AddRectFilled(dl, p0, p1, c.igGetColorU32_Vec4(bg), pad / 2, 0);
-        const col = switch (m.kind) {
-            .info => c.igGetColorU32_Col(c.ImGuiCol_Border, alpha),
-            .refusal => if (light) ui.rgba(0.60, 0.36, 0.0, alpha) else ui.rgba(1.0, 0.75, 0.25, alpha),
-            .failure => if (light) ui.rgba(0.75, 0.10, 0.10, alpha) else ui.rgba(1.0, 0.50, 0.45, alpha),
-        };
-        c.ImDrawList_AddRect(dl, p0, p1, col, pad / 2, if (m.kind == .info) 1 else 2, 0);
-        if (m.kind != .info) {
-            const at = ui.v2(p0.x + pad + fs * 0.45, p0.y + pad + fs * 0.5);
-            c.ImDrawList_AddCircleFilled(dl, at, fs * 0.5, col, 0);
-            const sign: [:0]const u8 = if (m.kind == .failure) "x" else "!";
-            const ss = c.igCalcTextSize(sign.ptr, null, false, -1);
-            c.ImDrawList_AddText_Vec2(dl, ui.v2(at.x - ss.x / 2, at.y - ss.y / 2), c.igGetColorU32_Vec4(bg), sign.ptr, null);
-        }
-        const text_col = c.igGetColorU32_Col(c.ImGuiCol_Text, alpha);
-        c.ImDrawList_AddText_FontPtr(dl, c.igGetFont(), fs, ui.v2(p0.x + pad + indent, p0.y + pad), text_col, text.ptr, end, wrap, null);
-        bottom = p0.y - pad / 2;
-    }
+/// What the mouse is on: nothing while it does something else.
+fn updateHover(app: *App) void {
+    app.hover = null;
+    if (app.playing or app.drag != null or app.lasso_active or app.doc == null) return;
+    if (c.cvImGuiWantCaptureMouse() or c.igIsAnyMouseDown()) return;
+    const at = c.igGetMousePos();
+    const ws = app.windowSize();
+    if (at.x < 0 or at.y < 0 or at.x >= ws[0] or at.y >= ws[1]) return;
+    const h = app.hitAt(at.x, at.y) orelse return;
+    app.hover = h.target;
+    c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+}
+
+/// The atoms an Alt-drag of the atom under the mouse would move. Empty if it
+/// would be refused, or without memory. Valid until the next call.
+pub fn hoverGroup(app: *App) []const u32 {
+    const handle = switch (app.hover orelse return &.{}) {
+        .atom => |a| a,
+        .bond => return &.{},
+    };
+    const key: HoverKey = .{ .handle = handle, .scene = app.sceneKey() };
+    if (app.hover_key) |k| if (std.meta.eql(k, key)) return app.hover_group;
+    var graph = app.drawnGraph() catch return &.{};
+    defer graph.deinit(app.gpa);
+    const choice = drag_mod.chooseGroup(app.gpa, graph, .translate, app.selected(), handle) catch |e| {
+        if (e == error.OutOfMemory) return &.{};
+        app.setHoverGroup(key, &.{});
+        return &.{};
+    };
+    app.setHoverGroup(key, choice.group);
+    return app.hover_group;
+}
+
+const HoverKey = struct { handle: u32, scene: SceneKey };
+
+fn setHoverGroup(app: *App, key: ?HoverKey, group: []u32) void {
+    app.gpa.free(app.hover_group);
+    app.hover_group = group;
+    app.hover_key = key;
 }
 
 fn inspector(app: *App, timeline_h: f32) void {
@@ -1849,11 +1878,10 @@ fn inspector(app: *App, timeline_h: f32) void {
     if (app.doc) |d| {
         if (ui.section("File", &app.settings.file_open)) app.fileSection(d);
     } else {
-        ui.textWrapped("No file open. Use File > Open, drop a file on the window, or pass a path on the command line.", .{});
+        ui.textDisabled("No file open", .{});
     }
     if (ui.section("Bonds", &app.settings.bonds_open)) app.bondsSection();
     if (ui.section("Display", &app.settings.display_open)) app.displaySection();
-    if (c.igCollapsingHeader_TreeNodeFlags("Mouse & keys", 0)) mouseAndKeys();
     if (!std.meta.eql(before, app.settings)) app.saveSettings();
 }
 
@@ -1863,7 +1891,9 @@ fn fileSection(app: *App, d: Document) void {
         ui.textDisabled("{s}{s}", .{ d.format.label(), if (d.source.isStreamed()) ", streamed" else "" });
         if (d.display.real.frame) |f| {
             ui.text("Frame {d} / {d}{s}", .{ d.display.real.index + 1, d.frameCount(), if (app.session.isEdited(d.display.real.index)) "  (edited)" else "" });
-            ui.text("{d} atoms, {d} links", .{ f.len(), app.bonds().len });
+            var drawn: usize = 0;
+            for (app.bonds()) |b| drawn += @intFromBool(Renderer.isDrawn(app.style, b.character));
+            ui.text("{d} atoms, {d} bonds", .{ f.len(), drawn });
             if (f.energy) |e| {
                 c.igAlignTextToFramePadding();
                 ui.text("E =", .{});
@@ -1883,12 +1913,12 @@ fn bondsSection(app: *App) void {
     _ = c.igRadioButton_IntPtr("Element", &coloring, 1);
     app.style.bond_coloring = @fromBackingInt(@intCast(coloring));
     ui.gradientLegend(app.style.theme, app.style.snap);
-    _ = c.igSliderFloat("Snap", &app.style.snap, 0, 1, "%.2f", 0);
+    _ = c.igSliderFloat("Colour steps", &app.style.snap, 0, 1, "%.2f", 0);
     ui.tooltip("How strongly colours settle on whole bond orders. 0 = linear in bond character, 1 = flat plateaus at single/double/triple.");
-    _ = c.igSliderFloat("Cut-off x r1", &app.bond_params.cutoff_factor, 1.0, 1.8, "%.2f", 0);
-    ui.tooltip("Pairs closer than this multiple of their single-bond length get a link.");
-    _ = c.igSliderFloat("Hide below", &app.style.min_character, 0, 3, "%.2f", 0);
-    ui.tooltip("Hide links whose bond character is below this value (1 = single). Only drawn links connect atoms when moving groups or selecting molecules.");
+    _ = c.igSliderFloat("Longest bond", &app.bond_params.cutoff_factor, 1.0, 1.8, "%.2f x single", 0);
+    ui.tooltip("Pairs closer than this multiple of their single-bond length are bonded.");
+    _ = c.igSliderFloat("Hide weaker", &app.style.min_character, 0, 3, "%.2f", 0);
+    ui.tooltip("Hide bonds whose character is below this value (1 = single). Only drawn bonds connect atoms when moving groups or selecting molecules.");
 }
 
 fn displaySection(app: *App) void {
@@ -1986,6 +2016,30 @@ const help = .{
     } },
 };
 
+fn helpWindow(app: *App) void {
+    const vp = c.igGetMainViewport();
+    const fs = c.igGetFontSize();
+    const cond = app.layoutCond();
+    c.igSetNextWindowPos(ui.v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), cond, ui.v2(0.5, 0.5));
+    c.igSetNextWindowSize(ui.v2(@min(fs * 45, vp.*.Size.x - fs), @min(fs * 45, vp.*.Size.y - 4 * fs)), cond);
+    defer c.igEnd();
+    if (c.igBegin("Mouse & keys", &app.show_help, 0)) mouseAndKeys();
+}
+
+/// What to do when no file is open, in the middle of the view.
+fn emptyView(app: *App, timeline_h: f32) void {
+    const vp = c.igGetMainViewport();
+    c.igSetNextWindowPos(ui.v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + (vp.*.Size.y - timeline_h) / 2), c.ImGuiCond_Always, ui.v2(0.5, 0.5));
+    const flags = c.ImGuiWindowFlags_NoDecoration | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize |
+        c.ImGuiWindowFlags_NoSavedSettings | c.ImGuiWindowFlags_NoFocusOnAppearing | c.ImGuiWindowFlags_NoBringToFrontOnFocus;
+    defer c.igEnd();
+    if (!c.igBegin("##empty", null, flags)) return;
+    if (c.igButton("Open...", ui.v2(0, 0))) app.openDialog();
+    c.igSameLine(0, -1);
+    c.igAlignTextToFramePadding();
+    ui.text("or drop a file here", .{});
+}
+
 fn mouseAndKeys() void {
     inline for (help) |group| {
         c.igSeparatorText(group[0]);
@@ -2039,10 +2093,8 @@ fn composition(app: *App, f: Frame) void {
     }.lt);
 
     const fs = c.igGetFontSize();
-    const dl = c.igGetWindowDrawList();
     const swatch = fs * 0.75;
     const right = c.igGetCursorScreenPos().x + c.igGetContentRegionAvail().x;
-    const outline = c.igGetColorU32_Col(c.ImGuiCol_Border, 1);
     for (order[0..n], 0..) |z, i| {
         var buf: [24]u8 = undefined;
         const t = ui.printZ(&buf, "{d} {s}", .{ counts[z], cv.elements.symbol(z) }) catch continue;
@@ -2052,12 +2104,7 @@ fn composition(app: *App, f: Frame) void {
             if (c.igGetCursorScreenPos().x + w > right) c.igNewLine();
         }
         c.igAlignTextToFramePadding();
-        const p = c.igGetCursorScreenPos();
-        const rgb = cv.elements.displayColor(z);
-        const centre = ui.v2(p.x + swatch / 2, p.y + c.igGetFrameHeight() / 2);
-        c.ImDrawList_AddCircleFilled(dl, centre, swatch / 2, ui.rgba(rgb[0], rgb[1], rgb[2], 1), 0);
-        c.ImDrawList_AddCircle(dl, centre, swatch / 2, outline, 0, 1, 0);
-        c.igDummy(ui.v2(swatch, c.igGetFrameHeight()));
+        ui.swatch(cv.elements.displayColor(z), swatch);
         c.igSameLine(0, fs * 0.3);
         ui.text("{s}", .{t});
     }
@@ -2086,8 +2133,14 @@ fn diffPanel(app: *App) void {
         return;
     }
     if (c.igSmallButton("Jump to reference")) app.setFrame(df.reference.index);
-    _ = c.igCheckbox("Overlay (reference red, current green)", &df.overlay);
-    if (c.igSmallButton("Reset")) app.resetPlacement();
+    _ = c.igCheckbox("Overlay", &df.overlay);
+    inline for (.{ .{ "reference", reference_color }, .{ "current", current_color } }) |o| {
+        c.igSameLine(0, fs);
+        ui.swatch(o[1], fs * 0.75);
+        c.igSameLine(0, fs * 0.3);
+        ui.text(o[0], .{});
+    }
+    if (c.igSmallButton("Show file positions")) app.resetPlacement();
     ui.tooltip("Show both frames at their file positions, and switch Lock rotation off. Lock rotation lines them up again.");
     const res = df.result orelse {
         if (df.followed == null) ui.textWrapped("Out of memory.", .{}) else ui.textWrapped("Current frame has different atoms than the reference, or numbers them differently, so they can't be compared.", .{});
@@ -4100,9 +4153,8 @@ test "a refused Alt-drag says so and does nothing, not even turn the camera" {
         try expect(t.app.drag == null);
         try expect(t.app.playing);
         try expectEqual(case.button, t.app.aborted_button.?);
-        const said = t.app.messages.items();
-        try expectEqual(@as(usize, if (case.said) 1 else 0), said.len);
-        if (case.said) try expectEqual(.refusal, said[0].kind);
+        try expectEqual(case.said, t.app.messages.last != null);
+        if (t.app.messages.last) |m| try expectEqual(.refusal, m.kind);
     }
 }
 
@@ -4120,8 +4172,7 @@ test "Alt-dragging a bond is refused" {
             t.app.altPress(button, false, at.x, at.y);
             try expect(t.app.drag == null);
             try expectEqual(button, t.app.aborted_button.?);
-            try expectEqual(1, t.app.messages.items().len);
-            try std.testing.expectEqualStrings("Drag an atom, not a bond", t.app.messages.items()[0].text());
+            try std.testing.expectEqualStrings("Drag an atom, not a bond", t.app.messages.last.?.text());
         }
     }
 }

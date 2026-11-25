@@ -19,9 +19,9 @@ ImGui (via cimgui) doing the heavy lifting.
   the frame shown when the lock was switched on, or onto the reference of a
   diff. Editing switches it off.
 - **Diffing.** Line up a reference frame with the current one (Horn/Kabsch),
-  with a red/green overlay, RMSD and max deviation. Alt+drag works in the
+  with an orange/blue overlay, RMSD and max deviation. Alt+drag works in the
   overlay: Lock rotation switches off, the reference stays put, and the numbers
-  update live. Lock again to refit, or Reset to see both at their file positions.
+  update live. Lock again to refit, or show both at their file positions.
 - **Measure and edit.** Click two to four atoms to get a distance, angle or
   dihedral in the bottom bar. Type a new value (degrees or radians for
   angles) and the attached group moves with it, Chemcraft-style. Edits are per
@@ -137,6 +137,7 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 
 | Input | Action |
 |---|---|
+| F1 | show / hide this list |
 | Left click | select / deselect an atom; empty space: clear selection |
 | Double-click a bond | cut / restore it (until you leave the frame) |
 | Alt + left drag | move the selection; with one base atom selected, the branch beyond it; with nothing selected, a molecule |

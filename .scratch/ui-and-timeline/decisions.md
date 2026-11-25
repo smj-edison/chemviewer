@@ -34,7 +34,8 @@ reviews before any code).
   warns.
 - The bar always shows the hint for the current selection, dimmer, right of the
   coordinates; the active gesture is highlighted while Alt is held.
-- All transient messages go bottom-right and fade. Refusals and errors look
+- All transient messages are inline in the bar above the timeline, as in Blender
+  (revised 2026-11-24, after trying them bottom-right). Refusals and errors look
   different and last longer.
 
 ## 3. Audit (Design of Everyday Things)

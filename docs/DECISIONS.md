@@ -94,9 +94,9 @@ see D18.
 ### D14 — Editing internal coordinates moves groups
 Setting a distance, angle or dihedral moves the moving atom's whole group:
 everything attached to it once the mover–pivot bond is cut. Connectivity is
-exactly the set of *drawn* bonds (`Renderer.isDrawn`: "Hide below" and
-"Cut-off"), minus bonds the user cut (X), so what moves together is what
-looks connected. "Hide below"
+exactly the set of *drawn* bonds (`Renderer.isDrawn`: "Hide weaker" and
+"Longest bond"), minus bonds the user cut (X), so what moves together is what
+looks connected. "Hide weaker"
 defaults to 0.25 so near-invisible contacts don't tie groups together. If the two atoms aren't bonded, the mover's whole molecule
 moves, so pulling two fragments apart is one edit. If the group can't be split
 off (rings, or non-bonded atoms in the same molecule), only the atom moves.

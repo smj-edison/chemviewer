@@ -64,6 +64,16 @@ pub fn draw(app: *App, h: f32) void {
     ui.tooltip("Play smoothly at the screen's frame rate: atoms follow a smooth curve through every real step (never overshooting between steps); the fps sets steps per second. Pausing stops on the nearest real step.");
     c.igSameLine(0, -1);
     var lock = app.lock_rotation;
+    const at = c.igGetCursorScreenPos();
+    if (app.unlocked_at) |t| {
+        // It changed by itself: a tint that fades.
+        const left: f32 = @floatCast(1 - (app.seconds() - t) / 2);
+        if (left > 0) {
+            const ac = app.style.theme.accent();
+            const w = c.igGetFrameHeight() + c.igGetStyle().*.ItemInnerSpacing.x + c.igCalcTextSize("Lock rotation", null, false, -1).x;
+            c.ImDrawList_AddRectFilled(c.igGetWindowDrawList(), ui.v2(at.x - 2, at.y), ui.v2(at.x + w + 2, at.y + c.igGetFrameHeight()), ui.rgba(ac[0], ac[1], ac[2], 0.3 * left), 3, 0);
+        } else app.unlocked_at = null;
+    }
     if (c.igCheckbox("Lock rotation", &lock)) app.setLockRotation(lock);
     ui.tooltip("Turn the view with each frame so the structure keeps its orientation: every frame is superposed onto the frame shown when this was switched on, or onto the reference of a diff. Your own rotations still apply. Editing the structure switches it off.");
     c.igEndDisabled();
@@ -87,11 +97,15 @@ fn frameAt(x: f32, n: usize, x0: f32, w: f32) usize {
 fn energyPlot(app: *App, d: *App.Document) void {
     const n = d.frameCount();
     const dl = c.igGetWindowDrawList();
-    const p0 = c.igGetCursorScreenPos();
-    const w = c.igGetContentRegionAvail().x;
+    // The frames keep off the edges, so that the first and last can be seen.
+    const inset = c.igGetFontSize() * 0.4;
+    const outer0 = c.igGetCursorScreenPos();
+    const outer_w = @max(c.igGetContentRegionAvail().x, 1);
     const h = plotHeight();
+    const p0 = ui.v2(outer0.x + inset, outer0.y);
+    const w = @max(outer_w - 2 * inset, 1);
     const p1 = ui.v2(p0.x + w, p0.y + h);
-    _ = c.igInvisibleButton("##energy", ui.v2(w, h), 0);
+    _ = c.igInvisibleButton("##energy", ui.v2(outer_w, h), 0);
     const hovered = c.igIsItemHovered(0);
     if (c.igIsItemActive() and n > 0) {
         // Holding the button still isn't asking for the frame again (playback
@@ -107,7 +121,7 @@ fn energyPlot(app: *App, d: *App.Document) void {
     const light = app.style.theme == .light;
     const accent = if (light) ui.rgba(0.12, 0.35, 0.80, 0.95) else ui.rgba(0.45, 0.75, 1.0, 0.9);
     const label_col = c.igGetColorU32_Col(c.ImGuiCol_TextDisabled, 1);
-    c.ImDrawList_AddRectFilled(dl, p0, p1, c.igGetColorU32_Col(c.ImGuiCol_FrameBg, 1), 3, 0);
+    c.ImDrawList_AddRectFilled(dl, outer0, ui.v2(outer0.x + outer_w, p1.y), c.igGetColorU32_Col(c.ImGuiCol_FrameBg, 1), 3, 0);
 
     // Known energies: a line through the frames, or with more frames than
     // pixel columns, a min/max envelope per column.
@@ -166,10 +180,17 @@ fn energyPlot(app: *App, d: *App.Document) void {
     if (n > 1) {
         if (app.diff) |df| {
             const x = frameX(df.reference.index, n, p0.x, w);
-            c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), ui.rgba(0.90, 0.20, 0.20, 0.9), 2, 0);
+            const rc = App.reference_color;
+            c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), ui.rgba(rc[0], rc[1], rc[2], 1), 2, 0);
+            const label_w = c.igCalcTextSize("ref", null, false, -1).x;
+            const label_x = if (x + label_w + 8 > p1.x) x - label_w - 4 else x + 4;
+            c.ImDrawList_AddText_Vec2(dl, ui.v2(label_x, p1.y - c.igGetFontSize() - 2), c.igGetColorU32_Col(c.ImGuiCol_Text, 1), "ref", null);
         }
         const x = frameX(d.current, n, p0.x, w);
-        c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), if (light) ui.rgba(0.85, 0.45, 0.0, 1) else ui.rgba(1, 0.85, 0.3, 1), 2, 0);
+        // In a diff, the colours of the two frames.
+        const cc = App.current_color;
+        const head = if (app.diff != null) ui.rgba(cc[0], cc[1], cc[2], 1) else if (light) ui.rgba(0.85, 0.45, 0.0, 1) else ui.rgba(1, 0.85, 0.3, 1);
+        c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), head, 2, 0);
         if (scanned < n) {
             // Thin progress bar for the background energy scan.
             const t = @as(f32, @floatFromInt(scanned)) / @as(f32, @floatFromInt(n));

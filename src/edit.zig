@@ -123,6 +123,18 @@ pub const EditSession = struct {
         return lastEffective(s.undone.items, p, .after) != null;
     }
 
+    /// What a step changes.
+    pub const Next = union(enum) { geometry: usize, selection };
+
+    /// What undo (`before`) or redo (`after`) would do, if anything.
+    pub fn next(s: *const EditSession, p: *const picks.Picks, side: picks.Side) ?Next {
+        const list = if (side == .before) s.steps.items else s.undone.items;
+        return switch (list[lastEffective(list, p, side) orelse return null]) {
+            .geometry => |g| .{ .geometry = g.index },
+            .selection => .selection,
+        };
+    }
+
     /// The last of `list` that isn't a selection step without effect here.
     fn lastEffective(list: []const Step, p: *const picks.Picks, side: picks.Side) ?usize {
         var i = list.len;
@@ -520,6 +532,19 @@ test "undo is one history across frames" {
     try t.expectEdited(4, 1);
     try testing.expectEqual(4, t.undo());
     try t.expectFileFrame(4);
+}
+
+test "what undo and redo would do is known before" {
+    var t: TestSession = try .init();
+    defer t.deinit();
+    try testing.expectEqual(null, t.s.next(&t.p, .before));
+    try t.moveTo(1, 1);
+    try t.moveTo(4, 1);
+    try testing.expectEqual(EditSession.Next{ .geometry = 4 }, t.s.next(&t.p, .before).?);
+    try testing.expectEqual(null, t.s.next(&t.p, .after));
+    _ = t.undo();
+    try testing.expectEqual(EditSession.Next{ .geometry = 1 }, t.s.next(&t.p, .before).?);
+    try testing.expectEqual(EditSession.Next{ .geometry = 4 }, t.s.next(&t.p, .after).?);
 }
 
 test "a frame whose first edit left the history stays edited until it is reverted" {

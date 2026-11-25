@@ -6,6 +6,7 @@ const cv = @import("chemviewer");
 const ui = @import("ui.zig");
 const App = @import("App.zig");
 const drag = @import("drag.zig");
+const messages = @import("messages.zig");
 const geom = cv.geometry;
 const occlusion = @import("occlusion.zig");
 
@@ -74,7 +75,7 @@ test "only a number that was typed is applied" {
 fn modeSelector(app: *App, last_label: []const u8) void {
     c.igSameLine(0, c.igGetFontSize() * 1.5);
     c.igAlignTextToFramePadding();
-    ui.textDisabled("move", .{});
+    ui.textDisabled("typing a value moves", .{});
     c.igSameLine(0, -1);
     var mode: c_int = @backingInt(app.edit_mode);
     _ = c.igRadioButton_IntPtr("both sides", &mode, @backingInt(geom.Mode.both));
@@ -83,37 +84,45 @@ fn modeSelector(app: *App, last_label: []const u8) void {
     const lbl = ui.printZ(&buf, "{s} side", .{last_label}) catch "last side";
     _ = c.igRadioButton_IntPtr(lbl.ptr, &mode, @backingInt(geom.Mode.last));
     app.edit_mode = @fromBackingInt(@intCast(mode));
-    ui.tooltip("Everything bonded to the moved atom, through the bonds that are drawn, moves with it (adjust with \"Hide below\" / \"Cut-off\"). Inside rings only the atom itself moves.");
+    ui.tooltip("Everything bonded to the moved atom, through the bonds that are drawn, moves with it (adjust with \"Hide weaker\" / \"Longest bond\"). Inside rings only the atom itself moves.");
 }
 
 /// One row: what is selected and its measurement, editable.
 pub fn bar(app: *App) void {
-    const d = app.doc orelse {
-        c.igAlignTextToFramePadding();
-        ui.textDisabled("No file open", .{});
-        return;
-    };
-    const f = d.display.real.frame orelse {
-        c.igAlignTextToFramePadding();
-        ui.textDisabled("loading...", .{});
-        return;
-    };
     const sel = app.selected();
     const fs = c.igGetFontSize();
     c.igAlignTextToFramePadding();
+    // The room differs between selections.
+    if (hinted_len != sel.len) {
+        short_hint = null;
+        cramped_message = null;
+    }
+    hinted_len = sel.len;
+    if (app.messages.current(app.seconds())) |m| {
+        // Not under the mouse, or while a value is typed.
+        const in_use = c.igIsAnyItemActive() or c.igIsWindowHovered(0);
+        if (cramped_message == m.at and !in_use) return messageText(app, m);
+    }
+    const d = app.doc orelse {
+        ui.textDisabled("No file open", .{});
+        _ = messageAfterRow(app);
+        return;
+    };
+    const f = d.display.real.frame orelse {
+        ui.textDisabled("loading...", .{});
+        _ = messageAfterRow(app);
+        return;
+    };
     var hint_buf: [160]u8 = undefined;
     if (app.dragHint(&hint_buf)) |hint| {
         ui.text("{s}", .{hint});
-        gestureHint(app, f.numbers, false);
+        rowTail(app, f.numbers);
         return;
     }
-    // The room differs between selections.
-    if (hinted_len != sel.len) short_hint = null;
-    hinted_len = sel.len;
     if (hintReplacesRow()) return gestureHint(app, f.numbers, true);
     if (sel.len == 0) {
         ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all.", .{});
-        gestureHint(app, f.numbers, false);
+        rowTail(app, f.numbers);
         return;
     }
     if (sel.len > 4) {
@@ -122,7 +131,7 @@ pub fn bar(app: *App) void {
         ui.textDisabled("Ctrl+C copies them as XYZ", .{});
         c.igSameLine(0, fs * 1.5);
         const clear = c.igSmallButton("Clear");
-        gestureHint(app, f.numbers, false);
+        rowTail(app, f.numbers);
         if (clear) app.deselect();
         return;
     }
@@ -167,9 +176,116 @@ pub fn bar(app: *App) void {
     }
     c.igSameLine(0, fs * 1.5);
     const clear = c.igSmallButton("Clear");
-    gestureHint(app, f.numbers, false);
+    rowTail(app, f.numbers);
     if (clear) app.deselect();
     if (submitted) |edit| app.applyEdit(edit);
+}
+
+/// The end of the row: a message while there is one, else what the mouse can
+/// do here.
+fn rowTail(app: *App, numbers: []const u8) void {
+    if (messageAfterRow(app)) return;
+    if (app.hover) |h| switch (h) {
+        .atom => {},
+        .bond => |pair| {
+            short_hint = null;
+            c.igSameLine(0, c.igGetFontSize() * 1.5);
+            c.igAlignTextToFramePadding();
+            ui.textDisabled("Double-click: {s} bond", .{if (app.isCut(pair[0], pair[1])) "restore" else "cut"});
+            return;
+        },
+    };
+    gestureHint(app, numbers, false);
+}
+
+/// The message that didn't fit after the row (when it was given).
+var cramped_message: ?f64 = null;
+
+/// Whether there was one. If it doesn't fit, it takes the row's place next.
+fn messageAfterRow(app: *App) bool {
+    const m = app.messages.current(app.seconds()) orelse return false;
+    // Where the short hint would be isn't known now.
+    short_hint = null;
+    c.igSameLine(0, c.igGetFontSize() * 1.5);
+    c.igAlignTextToFramePadding();
+    const text = m.text();
+    const mark: f32 = if (m.kind == .info) 0 else c.igGetFontSize() * 1.4;
+    const width = mark + c.igCalcTextSize(text.ptr, text.ptr + text.len, false, -1).x;
+    if (c.igGetContentRegionAvail().x < width) cramped_message = m.at;
+    messageText(app, m);
+    return true;
+}
+
+/// Problems have a mark, not only a colour.
+fn messageText(app: *App, m: *const messages.Message) void {
+    const fs = c.igGetFontSize();
+    c.igPushStyleVar_Float(c.ImGuiStyleVar_Alpha, @max(m.opacity(app.seconds()), 0.01));
+    defer c.igPopStyleVar(1);
+    if (m.kind != .info) {
+        const light = app.style.theme == .light;
+        const col = if (m.kind == .refusal)
+            (if (light) ui.rgba(0.60, 0.36, 0.0, 1) else ui.rgba(1.0, 0.75, 0.25, 1))
+        else
+            (if (light) ui.rgba(0.75, 0.10, 0.10, 1) else ui.rgba(1.0, 0.50, 0.45, 1));
+        const p = c.igGetCursorScreenPos();
+        const at = ui.v2(p.x + fs * 0.5, p.y + c.igGetFrameHeight() / 2);
+        const dl = c.igGetWindowDrawList();
+        c.ImDrawList_AddCircleFilled(dl, at, fs * 0.5, col, 0);
+        const sign: [:0]const u8 = if (m.kind == .failure) "x" else "!";
+        const size = c.igCalcTextSize(sign.ptr, null, false, -1);
+        c.ImDrawList_AddText_Vec2(dl, ui.v2(at.x - size.x / 2, at.y - size.y / 2), if (light) ui.rgba(1, 1, 1, 1) else ui.rgba(0, 0, 0, 1), sign.ptr, null);
+        c.igDummy(ui.v2(fs, c.igGetFrameHeight()));
+        c.igSameLine(0, fs * 0.4);
+        c.igAlignTextToFramePadding();
+    }
+    ui.text("{s}", .{m.text()});
+}
+
+/// What a click or Alt-drag would act on, outlined over the 3D view.
+pub fn hoverOutline(app: *App) void {
+    const hover = app.hover orelse return;
+    const pos = app.drawnPositions() orelse return;
+    const f = app.doc.?.display.real.frame.?;
+    const proj = app.screenProjector();
+    const ac = app.style.theme.accent();
+    const col = ui.rgba(ac[0], ac[1], ac[2], 0.6);
+    const alt = (c.SDL_GetModState() & c.SDL_KMOD_ALT) != 0;
+    switch (hover) {
+        .atom => |a| {
+            if (!alt) return atomCircle(app, proj, pos[a], f.numbers[a], col);
+            const group = app.hoverGroup();
+            // Beyond this it is a blur, and slow.
+            for (group[0..@min(group.len, 2000)]) |i| {
+                if (i < pos.len) atomCircle(app, proj, pos[i], f.numbers[i], col);
+            }
+        },
+        .bond => |pair| {
+            if (alt) return; // only atoms are dragged
+            const a = pos[pair[0]];
+            const b = pos[pair[1]];
+            const eye = app.camera.ray(0, 0, 1).origin;
+            const axis = cv.math.normalize(b - a);
+            const side = cv.math.cross(axis, eye - a);
+            if (cv.math.length2(side) < 1e-8) return;
+            const out = cv.math.normalize(side) * cv.math.splat(app.style.bondRadius() * 1.15);
+            const from = a + axis * cv.math.splat(app.style.atomRadius(f.numbers[pair[0]]) * 0.95);
+            const to = b - axis * cv.math.splat(app.style.atomRadius(f.numbers[pair[1]]) * 0.95);
+            if (cv.math.dot(to - from, axis) <= 0) return;
+            var pts: [4]c.ImVec2_c = undefined;
+            for ([_]cv.math.Vec3{ from + out, to + out, to - out, from - out }, &pts) |p, *q| q.* = proj.toScreen(p) orelse return;
+            c.ImDrawList_AddPolyline(c.igGetBackgroundDrawList_Nil(), &pts, pts.len, col, 2, c.ImDrawFlags_Closed);
+        },
+    }
+}
+
+fn atomCircle(app: *App, proj: App.ScreenProjector, p: cv.math.Vec3, z: u8, col: u32) void {
+    const eye = app.camera.ray(0, 0, 1).origin;
+    const depth = cv.math.dot(eye - p, app.cameraAxes()[2]);
+    const at = proj.toScreen(p) orelse return;
+    if (depth < 1e-3) return;
+    const focal = (proj.h / 2) / @tan(app.camera.fovy / 2);
+    const r = app.style.atomRadius(z) * focal / depth;
+    c.ImDrawList_AddCircle(c.igGetBackgroundDrawList_Nil(), at, r + 2, col, 0, 2, 0);
 }
 
 /// Where the hint was drawn shortened (null = it fitted), and for how many

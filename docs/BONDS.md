@@ -95,7 +95,7 @@ orders. The default `k = 0.7` gives a gentle slope near each integer (0.3× the
 linear slope) and a steeper one in between. Bonds near a whole order read as
 that order, while genuinely intermediate bonds (aromatic C–C ≈ 1.7, stretched
 TS bonds) still look different. The same snapped value drives opacity and
-thinning below single-bond character. `k` is the "Snap" slider in the inspector.
+thinning below single-bond character. `k` is the "Colour steps" slider in the inspector.
 
 With cel shading, each bond's outline is weighted by
 `smoothstep((s − 0.3) / 0.7)` of its snapped character `s`. The weight scales

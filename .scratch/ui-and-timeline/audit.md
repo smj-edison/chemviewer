@@ -6,6 +6,17 @@ design. Screenshots are in `renders/audit/` (not in git). Pick by number.
 Evidence: **seen** = in a screenshot, **code** = read in the source. Nothing was
 tried by hand, so cursor, hover and feel are judged from the code.
 
+## What was picked (2026-11-24)
+
+All but 9 (usual for panels over a view) and 16. Changes to the proposals:
+- 1: leaving without saving is common, so "Discard all" is one click, beside saving
+  edited frames one by one. Asked only when there are unsaved edits.
+- No pop-ups for mistakes. Messages are inline in the bar above the timeline, as in
+  Blender. This replaces "bottom-right and fade" in `decisions.md`, step 2.
+- 11: no standing indicator. A bond is outlined while the mouse is over it, and the
+  bar says that a double-click cuts (or restores) it.
+- 17 and T1 to T6 go into the timeline spec.
+
 ## Severe: work can be lost, or the app misleads
 
 **1. Edits are dropped without asking.** *(error prevention; code)*

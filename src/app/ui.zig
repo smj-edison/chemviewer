@@ -58,6 +58,17 @@ pub fn tooltip(s: [:0]const u8) void {
     }
 }
 
+/// A dot of a colour, on the line of framed widgets.
+pub fn swatch(rgb: [3]f32, size: f32) void {
+    const p = c.igGetCursorScreenPos();
+    const h = c.igGetFrameHeight();
+    const centre = v2(p.x + size / 2, p.y + h / 2);
+    const dl = c.igGetWindowDrawList();
+    c.ImDrawList_AddCircleFilled(dl, centre, size / 2, rgba(rgb[0], rgb[1], rgb[2], 1), 0);
+    c.ImDrawList_AddCircle(dl, centre, size / 2, c.igGetColorU32_Col(c.ImGuiCol_Border, 1), 0, 1, 0);
+    c.igDummy(v2(size, h));
+}
+
 /// A section that can be collapsed, starting as `open` says and keeping it up
 /// to date. Whether to draw its contents.
 pub fn section(label: [:0]const u8, open: *bool) bool {
