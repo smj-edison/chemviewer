@@ -416,7 +416,8 @@ const UiScale = struct {
 };
 
 fn handleEvent(app: *App, ev: *const c.SDL_Event) void {
-    _ = c.ImGui_ImplSDL3_ProcessEvent(ev);
+    // Scrubbing finely, the mouse stays where it is for the UI.
+    if (ev.type != c.SDL_EVENT_MOUSE_MOTION or app.fine_scrub == null) _ = c.ImGui_ImplSDL3_ProcessEvent(ev);
     // Shortcuts yield only while a text field is being edited.
     const typing = c.cvImGuiWantTextInput();
     // Clipboard / select-all keys also belong to any active widget (e.g. a

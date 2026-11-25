@@ -285,6 +285,8 @@ fn plot(app: *App, d: *App.Document) void {
     const dl = c.igGetWindowDrawList();
     const p0 = ui.v2(left, c.igGetCursorScreenPos().y);
     const p1 = ui.v2(p0.x + w, p0.y + all_h);
+    // The value boxes are on it.
+    c.igSetNextItemAllowOverlap();
     _ = c.igInvisibleButton("##values", ui.v2(outer_w - bar_w, all_h), 0);
     const hovered = c.igIsItemHovered(0) or on_axis;
     const active = c.igIsItemActive() or axis_active;
@@ -339,7 +341,10 @@ fn plot(app: *App, d: *App.Document) void {
         c.ImDrawList_PopClipRect(dl);
         var buf: [64]u8 = undefined;
         const of = if (s.fitted != null) "  fitted" else "";
-        const label = (if (unit) |u| ui.printZ(&buf, "E ({s}){s}", .{ u, of }) else ui.printZ(&buf, "E{s}", .{of})) catch "";
+        // The energy at the playhead is the file's; an edited frame has none.
+        const stale = if (app.session.isEdited(d.current)) "  stale: this frame is edited" else "";
+        const label = (if (unit) |u| ui.printZ(&buf, "E ({s}){s}{s}", .{ u, of, stale }) else ui.printZ(&buf, "E{s}{s}", .{ of, stale })) catch "";
+        ui.valueBox("##energy", p1.x - 4, p0.y + 2, d.stream.energy(d.current));
         ui.plotLabel(dl, p0.x + 6, p0.y + 3, label_col, label);
     } else {
         const msg: [:0]const u8 = if (scanned < n) "scanning energies..." else "no energies in this file";
@@ -385,7 +390,8 @@ fn plot(app: *App, d: *App.Document) void {
     // On to what is below, wherever the items above left off.
     c.igSetCursorScreenPos(ui.v2(outer0.x, outer1.y + c.igGetStyle().*.ItemSpacing.y));
     if (hovered and n > 0 and s.pan_x == null) {
-        const i = if (pointed) |m| m.index else axis.frameAt(mouse.x);
+        // Scrubbing finely, the mouse stays and the playhead moves.
+        const i = if (app.fine_scrub != null) d.current else if (pointed) |m| m.index else axis.frameAt(mouse.x);
         if (c.igBeginTooltip()) {
             if (d.stream.energy(i)) |e| ui.text("frame {d}: E = {d:.8} {s}", .{ i + 1, e, unit orelse "" }) else ui.text("frame {d}", .{i + 1});
             for (app.data.lanes.items) |lane| {

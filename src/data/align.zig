@@ -58,7 +58,7 @@ pub const Alignment = struct {
                 std.fmt.bufPrint(buf, "{d} frame{s} per row", .{ a.frames_per_row, if (a.frames_per_row == 1) "" else "s" })
             else
                 std.fmt.bufPrint(buf, "{d} rows per frame", .{@round(1 / a.frames_per_row)}),
-            .equal_spans => std.fmt.bufPrint(buf, "guess: equal spans", .{}),
+            .equal_spans => std.fmt.bufPrint(buf, "same start and end as the trajectory", .{}),
         } catch "";
     }
 };
@@ -130,5 +130,5 @@ test "the evidence in words" {
     try testing.expectEqualStrings("10 frames per row", Alignment.propose(11, 101).evidence(&buf));
     try testing.expectEqualStrings("1 frame per row", Alignment.propose(100, 100).evidence(&buf));
     try testing.expectEqualStrings("10 rows per frame", Alignment.propose(991, 100).evidence(&buf));
-    try testing.expectEqualStrings("guess: equal spans", Alignment.propose(68, 101).evidence(&buf));
+    try testing.expectEqualStrings("same start and end as the trajectory", Alignment.propose(68, 101).evidence(&buf));
 }

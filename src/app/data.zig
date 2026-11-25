@@ -333,7 +333,7 @@ fn sourceTree(app: *App, a: *Attached) bool {
     const frames = app.doc.?.frameCount();
     const al = a.aligned(frames);
     var words: [64]u8 = undefined;
-    ui.textWrapped("{s}{s}", .{ al.evidence(&words), if (al.confirmed) "" else " (unconfirmed)" });
+    ui.textWrapped("Position: {s}{s}", .{ al.evidence(&words), if (al.confirmed) "" else " (guessed from the number of rows)" });
     const after = al.rowsAfter(t.rows, frames);
     if (after > 0 and a.state != .reading) ui.textDisabled("{d} row{s} after the last frame", .{ after, if (after == 1) "" else "s" });
 

@@ -65,6 +65,28 @@ pub fn plotLabel(dl: *c.ImDrawList, x: f32, y: f32, col: u32, s: [:0]const u8) v
     c.ImDrawList_AddText_Vec2(dl, v2(x, y), col, s.ptr, null);
 }
 
+/// A value exactly as it is, that can be selected and copied, ending at `right`.
+/// Over another item, which must allow overlap.
+pub fn valueBox(id: [:0]const u8, right: f32, y: f32, value: ?f64) void {
+    var buf: [64]u8 = undefined;
+    const s: [:0]const u8 = if (value) |v| blk: {
+        const a = @abs(v);
+        const plain = v == 0 or (a >= 1e-4 and a < 1e12);
+        break :blk (if (plain) printZ(&buf, "{d}", .{v}) else printZ(&buf, "{e}", .{v})) catch "?";
+    } else "-";
+    const pad = c.igGetFontSize() * 0.25;
+    const w = c.igCalcTextSize(s.ptr, null, false, -1).x + 2 * pad;
+    c.igSetCursorScreenPos(v2(right - w, y));
+    c.igSetNextItemWidth(w);
+    c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(pad, 0));
+    c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, c.igGetColorU32_Col(c.ImGuiCol_WindowBg, 0.8));
+    var text_buf: [64]u8 = undefined;
+    @memcpy(text_buf[0 .. s.len + 1], s[0 .. s.len + 1]);
+    _ = c.igInputText(id.ptr, &text_buf, s.len + 1, c.ImGuiInputTextFlags_ReadOnly | c.ImGuiInputTextFlags_AutoSelectAll, null, null);
+    c.igPopStyleColor(1);
+    c.igPopStyleVar(1);
+}
+
 /// A dot of a colour, on the line of framed widgets.
 pub fn swatch(rgb: [3]f32, size: f32) void {
     const p = c.igGetCursorScreenPos();

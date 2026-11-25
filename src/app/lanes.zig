@@ -74,10 +74,10 @@ pub fn draw(app: *App, dl: *c.ImDrawList, i: usize, axis: plot.Axis, top: f32, h
         curve(dl, lane, values, pyramid, al, scale, axis, n, top, h, color(app, i));
         c.ImDrawList_PopClipRect(dl);
         const label = ui.printZ(&buf, "{s}: {s}{s}{s}{s}{s}  {s}{s}", .{
-            name,                                       col.name,
-            if (col.unit != null) " (" else "",         col.unit orelse "",
-            if (col.unit != null) ")" else "",          if (lane.fitted != null) "  fitted" else "",
-            if (doubt.len > 0) "unconfirmed: " else "", doubt,
+            name,                                            col.name,
+            if (col.unit != null) " (" else "",              col.unit orelse "",
+            if (col.unit != null) ")" else "",               if (lane.fitted != null) "  fitted" else "",
+            if (doubt.len > 0) "position guessed: " else "", doubt,
         }) catch "";
         ui.plotLabel(dl, axis.x0 + 6, top + 3, label_col, label);
     } else {
@@ -86,9 +86,9 @@ pub fn draw(app: *App, dl: *c.ImDrawList, i: usize, axis: plot.Axis, top: f32, h
     }
 
     // At the playhead, at the right end.
-    const value = if (al.rowAt(head, t.rows)) |row| ui.printZ(&buf, "{d:.6}", .{values[row]}) catch "" else "-";
-    const size = c.igCalcTextSize(value.ptr, null, false, -1);
-    ui.plotLabel(dl, axis.x0 + axis.width - size.x - 4, top + 3, c.igGetColorU32_Col(c.ImGuiCol_Text, 1), value);
+    c.igPushID_Int(@intCast(i));
+    defer c.igPopID();
+    ui.valueBox("##value", axis.x0 + axis.width - 4, top + 2, if (al.rowAt(head, t.rows)) |row| values[row] else null);
 }
 
 /// Steps, each value until the next row, or dots. With more rows than pixel columns,
