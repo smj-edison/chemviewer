@@ -29,6 +29,16 @@ Atoms drawn between two frames during interpolated playback. The frame it starts
 **Shown frame**:
 Which frame is on screen. It lags behind the timeline position while a frame loads, and stays at the last good one if that frame can't be read. Its atoms on screen are the displayed geometry.
 
+**Timeline position**:
+The frame asked for. The shown frame follows it.
+
+**Playhead**:
+Where the timeline is, as drawn: the timeline position, or between two frames while a blend plays.
+
+**View window**:
+The part of the timeline's axis that is visible.
+_Avoid_: Range, zoom (for the part)
+
 **Transaction**:
 One edit of one frame in the making. Nothing changes until it is committed as a geometry step, or it is aborted.
 

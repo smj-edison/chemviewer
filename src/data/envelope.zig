@@ -28,6 +28,16 @@ pub const Envelope = struct {
         e.* = .{};
     }
 
+    /// Whether any value is.
+    pub fn known(e: Envelope) bool {
+        return e.lo <= e.hi;
+    }
+
+    /// Where `v` is between the lowest (0) and the highest (1).
+    pub fn height(e: Envelope, v: f64) f32 {
+        return if (e.hi > e.lo) @floatCast((v - e.lo) / (e.hi - e.lo)) else 0.5;
+    }
+
     /// Out of memory, it is empty.
     pub fn update(e: *Envelope, gpa: Allocator, key: Key, values: anytype) void {
         if (e.key) |k| if (std.meta.eql(k, key)) return;
@@ -108,6 +118,22 @@ test "a single spike among half a million frames is seen" {
     e.update(testing.allocator, .{ .values = 0, .document = 0, .n = values.n, .window = .all(values.n), .cols = 1000 }, &values);
     try testing.expectEqual(1000, e.max[2]);
     try testing.expectEqual(1, e.max[3]);
+}
+
+test "equal values are a flat line, and no values none" {
+    const Flat = struct {
+        pub fn energy(_: *@This(), i: usize) ?f64 {
+            return if (i < 50) -7 else null;
+        }
+    };
+    var flat: Flat = .{};
+    var e: Envelope = .{};
+    defer e.deinit(testing.allocator);
+    e.update(testing.allocator, .{ .values = 0, .document = 0, .n = 100, .window = .between(10, 40, 100), .cols = 10 }, &flat);
+    try testing.expect(e.known());
+    try testing.expectEqual(0.5, e.height(-7));
+    e.update(testing.allocator, .{ .values = 0, .document = 0, .n = 100, .window = .between(60, 90, 100), .cols = 10 }, &flat);
+    try testing.expect(!e.known());
 }
 
 test "it is worked out again only when something changed" {

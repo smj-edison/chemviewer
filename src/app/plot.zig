@@ -17,16 +17,16 @@ pub const State = struct {
     initial: ?[2]f64 = null,
     /// Where the playhead was, to follow it.
     last_head: f64 = 0,
+    was_playing: bool = false,
     /// Middle button pan: where the mouse was.
     pan_x: ?f32 = null,
-    /// What of the strip is being dragged, and where the mouse was.
-    grab: ?struct { part: Part, x: f32 } = null,
+    /// What of the strip is being dragged, where the mouse was, and how far
+    /// from it that is.
+    grab: ?struct { part: Part, x: f32, off: f32 } = null,
     /// The mouse was on the plot or the strip.
     hovered: bool = false,
     /// Wheel movement over the UI since the last frame.
-    wheel: [2]f32 = .{ 0, 0 },
-    /// Its vertical part, up positive even if scrolling is set to be natural.
-    zoom: f32 = 0,
+    wheel: cv.window.Wheel = .{},
     plot_env: Envelope = .{},
     strip_env: Envelope = .{},
 
@@ -37,8 +37,9 @@ pub const State = struct {
         s.strip_env.deinit(gpa);
     }
 
-    /// A new file starts with everything in view.
-    fn follow(s: *State, app: *const App, d: *const App.Document) void {
+    /// Keep the playhead in view. A new file starts with everything in view, or
+    /// `initial`.
+    pub fn follow(s: *State, app: *const App, d: *const App.Document) void {
         const n = d.frameCount();
         if (s.document != app.documents_opened) {
             s.document = app.documents_opened;
@@ -46,18 +47,23 @@ pub const State = struct {
             s.initial = null;
             s.pan_x = null;
             s.grab = null;
-        } else if (app.plot_drag == null) {
-            // Not while scrubbing: the plot would run away under the mouse.
-            s.window = s.window.following(s.last_head, playhead(app, d), app.playing, n);
+        } else if (app.plot_drag == null and s.grab == null) {
+            // Not while dragging: it would run away under the mouse. Pausing
+            // moves the playhead too, as part of playing.
+            s.window = s.window.following(s.last_head, playhead(app, d), app.playing or s.was_playing, n);
         }
+        s.was_playing = app.playing;
         s.last_head = playhead(app, d);
     }
 };
 
-/// Where the playhead is, in frames: between two while a blend plays.
+/// Where the playhead is, in frames: between two while a blend plays, which
+/// aren't next to each other if one that can't be read is between them.
 fn playhead(app: *const App, d: *const App.Document) f64 {
+    const from: f64 = @floatFromInt(d.current);
     const t: f64 = if (app.playing) app.blendTime() else 0;
-    return @as(f64, @floatFromInt(d.current)) + t;
+    const next = d.display.next orelse return from;
+    return if (t > 0) from + t * (@as(f64, @floatFromInt(next.index)) - from) else from;
 }
 
 pub const hint: [:0]const u8 = "drag: scrub   right drag: finely   wheel: zoom   Shift+wheel or middle drag: pan   Z: fit";
@@ -136,19 +142,13 @@ pub fn draw(app: *App, d: *App.Document) void {
     strip(app, d);
 }
 
-/// Zoom and pan with the wheel over an item whose axis this is.
+/// The wheel over an item whose axis this is.
 fn wheel(s: *State, axis: Axis, n: usize) void {
     const mods = c.SDL_GetModState();
-    const ctrl = (mods & c.SDL_KMOD_CTRL) != 0;
-    const shift = (mods & c.SDL_KMOD_SHIFT) != 0;
-    const at = axis.window.fromX(c.igGetMousePos().x, axis.x0, axis.width);
-    // Up zooms in, by the way the fingers or the wheel went.
-    if (!shift and @abs(s.wheel[1]) >= @abs(s.wheel[0]) and s.zoom != 0) s.window = s.window.zoomed(at, std.math.pow(f64, 1.25, s.zoom), n);
-    // Sideways, as touchpads do, pans without Shift.
-    const sideways = if (shift and s.wheel[0] == 0) -s.wheel[1] else s.wheel[0];
-    // Swiping up and down is never quite straight.
-    const straight = shift or @abs(s.wheel[0]) > @abs(s.wheel[1]);
-    if (!ctrl and straight and sideways != 0) s.window = s.window.panned(0.1 * s.window.span() * @as(f64, sideways), n);
+    var moved = s.wheel;
+    moved.ctrl = (mods & c.SDL_KMOD_CTRL) != 0;
+    moved.shift = (mods & c.SDL_KMOD_SHIFT) != 0;
+    s.window = s.window.wheeled(axis.window.fromX(c.igGetMousePos().x, axis.x0, axis.width), moved, n);
 }
 
 fn plot(app: *App, d: *App.Document) void {
@@ -181,7 +181,7 @@ fn plot(app: *App, d: *App.Document) void {
     }
     if (s.pan_x) |x| {
         if (c.igIsMouseDown_Nil(c.ImGuiMouseButton_Middle)) {
-            s.window = s.window.panned(@as(f64, x - mouse.x) / @max(w - 1, 1) * s.window.span(), n);
+            s.window = s.window.dragged(mouse.x - x, w, n);
             s.pan_x = mouse.x;
         } else s.pan_x = null;
     }
@@ -213,7 +213,7 @@ fn plot(app: *App, d: *App.Document) void {
     const env = &s.plot_env;
     env.update(app.gpa, .{ .values = scanned, .document = app.documents_opened, .n = n, .window = s.window, .cols = cols }, d.stream);
     const unit = d.format.energyUnit();
-    if (env.hi > env.lo) {
+    if (env.known()) {
         curve(dl, d, env, axis, p0.y, h, 4, accent);
         var buf: [128]u8 = undefined;
         const label = (if (unit) |u|
@@ -222,7 +222,7 @@ fn plot(app: *App, d: *App.Document) void {
             ui.printZ(&buf, "E  {d:.6} to {d:.6}  (range {e:.3})", .{ env.lo, env.hi, env.hi - env.lo })) catch "";
         c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, label.ptr, null);
     } else {
-        const msg: [:0]const u8 = if (scanned < n) "scanning energies..." else if (env.hi == env.lo) "a single energy here" else if (s.window.isAll(n)) "no energies in this file" else "no energies here";
+        const msg: [:0]const u8 = if (scanned < n) "scanning energies..." else if (s.window.isAll(n)) "no energies in this file" else "no energies here";
         c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, msg.ptr, null);
     }
     ticks(dl, axis, n, p1.y, label_col);
@@ -317,8 +317,7 @@ fn curve(dl: *c.ImDrawList, d: *App.Document, env: *const Envelope, axis: Axis, 
 }
 
 fn yOf(e: f64, env: *const Envelope, top: f32, h: f32, pad: f32) f32 {
-    const t: f32 = @floatCast((e - env.lo) / (env.hi - env.lo));
-    return top + pad + (1 - t) * (h - 2 * pad);
+    return top + pad + (1 - env.height(e)) * (h - 2 * pad);
 }
 
 /// Frame numbers (1-based) at round places.
@@ -386,22 +385,26 @@ fn strip(app: *App, d: *App.Document) void {
         if (c.igIsItemActivated()) {
             // Beside the window, it comes to the mouse.
             if (part == null) {
-                const at = whole.window.fromX(mouse.x, whole.x0, whole.width);
-                s.window = s.window.panned(at - (s.window.lo + s.window.hi) / 2, n);
+                s.window = s.window.centred(whole.window.fromX(mouse.x, whole.x0, whole.width), n);
             }
-            s.grab = .{ .part = part orelse .window, .x = mouse.x };
+            const grabbed = part orelse .window;
+            // Where that really is: it is drawn wider if it is narrow.
+            const edge_x = whole.window.toX(if (grabbed == .hi) s.window.hi else s.window.lo, whole.x0, whole.width);
+            s.grab = .{ .part = grabbed, .x = mouse.x, .off = mouse.x - edge_x };
         }
     }
     if (s.grab) |*g| {
-        if (c.igIsItemActive()) {
-            const at = whole.window.fromX(mouse.x, whole.x0, whole.width);
-            switch (g.part) {
-                .lo => s.window = s.window.withLo(at, n),
-                .hi => s.window = s.window.withHi(at, n),
-                .window => s.window = s.window.panned(@as(f64, mouse.x - g.x) / @max(whole.width - 1, 1) * whole.window.span(), n),
-            }
+        if (!c.igIsItemActive()) {
+            s.grab = null;
+        } else if (mouse.x != g.x) {
+            const at = whole.window.fromX(mouse.x - g.off, whole.x0, whole.width);
+            s.window = switch (g.part) {
+                .lo => s.window.withLo(at, n),
+                .hi => s.window.withHi(at, n),
+                .window => s.window.panned(at - s.window.lo, n),
+            };
             g.x = mouse.x;
-        } else s.grab = null;
+        }
     }
 
     const dl = c.igGetWindowDrawList();
@@ -410,7 +413,7 @@ fn strip(app: *App, d: *App.Document) void {
     c.ImDrawList_PushClipRect(dl, outer0, outer1, true);
     const env = &s.strip_env;
     env.update(app.gpa, .{ .values = d.stream.energiesScanned(), .document = app.documents_opened, .n = n, .window = whole.window, .cols = @intFromFloat(@max(whole.width, 2)) }, d.stream);
-    if (env.hi > env.lo) curve(dl, d, env, whole, outer0.y, h, 3, lineColor(app));
+    if (env.known()) curve(dl, d, env, whole, outer0.y, h, 3, lineColor(app));
     const cover = c.igGetColorU32_Col(c.ImGuiCol_WindowBg, 0.65);
     c.ImDrawList_AddRectFilled(dl, outer0, ui.v2(x_lo, outer1.y), cover, 0, 0);
     c.ImDrawList_AddRectFilled(dl, ui.v2(x_hi, outer0.y), outer1, cover, 0, 0);
@@ -431,7 +434,7 @@ fn strip(app: *App, d: *App.Document) void {
     if (c.igSliderFloat("##zoom", &level, 0, 1, "zoom", c.ImGuiSliderFlags_NoInput)) {
         // Around the playhead if it is in view.
         const current: f64 = @floatFromInt(d.current);
-        const at = if (s.window.contains(d.current)) current else (s.window.lo + s.window.hi) / 2;
+        const at = if (s.window.contains(d.current)) current else s.window.middle();
         s.window = s.window.atLevel(level, at, n);
     }
     ui.tooltip("Zoom in around the playhead, or the middle if it is out of view.");

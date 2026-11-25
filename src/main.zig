@@ -107,6 +107,7 @@ fn parseArgs(argv: []const []const u8) !Args {
                 var it = std.mem.splitScalar(u8, v, ',');
                 var ends: [2]f64 = undefined;
                 for (&ends) |*e| e.* = try std.fmt.parseFloat(f64, it.next() orelse return error.BadWindow) - 1;
+                for (ends) |e| if (!std.math.isFinite(e)) return error.BadWindow;
                 a.window = ends;
             } else if (eql(u8, arg, "--zoom")) {
                 a.zoom = try std.fmt.parseFloat(f32, v);

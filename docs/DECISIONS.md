@@ -374,5 +374,15 @@ relocking refits. The current structure is drawn at its own coordinates, so
 Alt-drag works in the overlay. The reference has a placement applied only when
 drawing. Camera and placement move together, so on screen the reference and the
 background stay still. A frame with another numbering leaves both as they are
-while diffing, instead of restarting the lock there (D21). The diff panel has a Reset to see both frames at their
+while diffing, instead of restarting the lock there (D21). The diff panel can show both frames at their
 file positions.
+
+### D27 — The timeline zooms like Blender's
+*Decided and implemented 2026-11-24.* The wheel alone zooms the plot at the mouse;
+Shift, a sideways swipe or a middle drag pans. Video editors differ here, so it
+follows Blender. Zooming, there and in the 3D view, goes by the hand (up is in) even
+if scrolling is set to be natural; panning follows the setting. A strip, a slider and
+a button do everything without modifiers. While playing, the playhead runs to
+the middle and the plot then moves steadily under it, unless the user panned away.
+By hand, the plot moves only as far as needed. The window's arithmetic, including
+the wheel, is in `data/window.zig`.

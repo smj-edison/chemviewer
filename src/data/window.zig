@@ -32,10 +32,15 @@ pub const Window = struct {
         return w.lo <= 0 and w.hi >= last(n);
     }
 
+    /// The least that always has two frames in it, wherever it starts.
+    fn leastSpan(n: usize) f64 {
+        return @min(2, last(n));
+    }
+
     /// Within the trajectory; keeps the span where it can.
     fn fitted(w: Window, n: usize) Window {
         const end = last(n);
-        const s = std.math.clamp(w.span(), @min(1, end), end);
+        const s = std.math.clamp(w.span(), leastSpan(n), end);
         const lo = std.math.clamp(w.lo, 0, end - s);
         return .{ .lo = lo, .hi = @min(lo + s, end) };
     }
@@ -48,7 +53,7 @@ pub const Window = struct {
     /// Show `factor` times less, with `at` staying where it is.
     pub fn zoomed(w: Window, at: f64, factor: f64, n: usize) Window {
         const end = last(n);
-        const s = std.math.clamp(w.span() / factor, @min(1, end), end);
+        const s = std.math.clamp(w.span() / factor, leastSpan(n), end);
         const t = if (w.span() > 0) std.math.clamp((at - w.lo) / w.span(), 0, 1) else 0.5;
         const lo = w.lo + t * w.span() - t * s;
         return (Window{ .lo = lo, .hi = lo + s }).fitted(n);
@@ -81,33 +86,56 @@ pub const Window = struct {
         return w;
     }
 
-    fn centred(w: Window, at: f64, n: usize) Window {
-        return w.panned(at - (w.lo + w.hi) / 2, n);
+    pub fn middle(w: Window) f64 {
+        return (w.lo + w.hi) / 2;
+    }
+
+    pub fn centred(w: Window, at: f64, n: usize) Window {
+        return w.panned(at - w.middle(), n);
     }
 
     /// Move one end; the other stays.
     pub fn withLo(w: Window, lo: f64, n: usize) Window {
-        return .{ .lo = std.math.clamp(lo, 0, @max(w.hi - @min(1, last(n)), 0)), .hi = w.hi };
+        return .{ .lo = std.math.clamp(lo, 0, @max(w.hi - leastSpan(n), 0)), .hi = w.hi };
     }
 
     pub fn withHi(w: Window, hi: f64, n: usize) Window {
-        return .{ .lo = w.lo, .hi = std.math.clamp(hi, @min(w.lo + @min(1, last(n)), last(n)), last(n)) };
+        return .{ .lo = w.lo, .hi = std.math.clamp(hi, @min(w.lo + leastSpan(n), last(n)), last(n)) };
     }
 
-    /// How far it is zoomed in: 0 = everything, 1 = two frames. Each step
-    /// shows the same fraction less.
+    /// How far it is zoomed in: 0 = everything, 1 = as far as it goes. Each
+    /// step shows the same fraction less.
     pub fn zoomLevel(w: Window, n: usize) f64 {
-        const end = last(n);
-        if (end <= 1) return 0;
-        return std.math.clamp(@log(end / @max(w.span(), 1)) / @log(end), 0, 1);
+        const most = last(n) / @max(leastSpan(n), 1);
+        if (most <= 1) return 0;
+        return std.math.clamp(@log(last(n) / @max(w.span(), leastSpan(n))) / @log(most), 0, 1);
     }
 
     /// Zoomed to that level around `at`.
     pub fn atLevel(w: Window, level: f64, at: f64, n: usize) Window {
-        const end = last(n);
-        if (end <= 1) return all(n);
-        const s = end / @exp(std.math.clamp(level, 0, 1) * @log(end));
+        const most = last(n) / @max(leastSpan(n), 1);
+        if (most <= 1) return all(n);
+        const s = last(n) / @exp(std.math.clamp(level, 0, 1) * @log(most));
         return w.zoomed(at, w.span() / s, n);
+    }
+
+    /// What the wheel does over the axis, with the mouse at `at`: zooms, up
+    /// being in, or with Shift or sideways pans.
+    pub fn wheeled(w: Window, at: f64, wheel: Wheel, n: usize) Window {
+        // Swipes are never quite straight: the larger part counts.
+        const sideways = @abs(wheel.x) > @abs(wheel.y);
+        if (wheel.shift or sideways) {
+            if (wheel.ctrl) return w;
+            const by: f64 = if (sideways) wheel.x else -wheel.y;
+            return w.panned(0.1 * w.span() * by, n);
+        }
+        if (wheel.up == 0) return w;
+        return w.zoomed(at, std.math.pow(f64, 1.25, wheel.up), n);
+    }
+
+    /// Dragged by `dx` pixels of `width`, so that it stays under the mouse.
+    pub fn dragged(w: Window, dx: f32, width: f32, n: usize) Window {
+        return w.panned(-@as(f64, dx) / @max(width - 1, 1) * w.span(), n);
     }
 
     /// Where frame `f` is on a stretch of `width` pixels from `x0`. The window's
@@ -130,13 +158,23 @@ pub const Window = struct {
         return @intFromFloat(@max(in, 0));
     }
 
-    /// The frames in the window, and one more on either side for lines that go
-    /// out of it: [first, end).
+    /// The frames in the window, and those that lines going out of it lead to:
+    /// [first, end).
     pub fn frames(w: Window, n: usize) [2]usize {
         const first: usize = @intFromFloat(@max(@floor(w.lo), 0));
         const end: usize = @intFromFloat(@max(@ceil(w.hi), 0));
         return .{ @min(first, n), @min(end + 1, n) };
     }
+};
+
+/// Wheel movement, as it scrolls: positive x is right, y is up.
+pub const Wheel = struct {
+    x: f32 = 0,
+    y: f32 = 0,
+    /// y by the hand: positive is up even if scrolling is set to be natural.
+    up: f32 = 0,
+    shift: bool = false,
+    ctrl: bool = false,
 };
 
 /// The smallest 1, 2 or 5 times a power of ten that is at least `least`, and at
@@ -156,7 +194,9 @@ fn expectSound(w: Window, n: usize) !void {
     const end: f64 = @floatFromInt(n -| 1);
     errdefer std.debug.print("n={d} {any}\n", .{ n, w });
     try testing.expect(w.lo >= 0 and w.hi <= end and w.lo <= w.hi);
-    try testing.expect(w.span() >= @min(1, end) - 1e-6);
+    // Two frames in it, wherever it starts.
+    const seen = @floor(w.hi + 1e-6) - @ceil(w.lo - 1e-6) + 1;
+    try testing.expect(seen >= @as(f64, @floatFromInt(@min(n, 2))));
 }
 
 test "whatever is done to a window, it stays within the trajectory and shows two frames" {
@@ -198,7 +238,7 @@ test "zooming keeps what is under the cursor there" {
         }
         // All the way in and out again.
         for (0..200) |_| w = w.zoomed(at, 1.25, n);
-        try testing.expectApproxEqAbs(1, w.span(), 1e-6);
+        try testing.expectApproxEqAbs(2, w.span(), 1e-6);
         for (0..200) |_| w = w.zoomed(at, 0.8, n);
         try testing.expect(w.isAll(n));
     }
@@ -214,8 +254,8 @@ test "panning keeps the span and stops at the ends" {
 test "the ends can be moved, but not through each other" {
     const w: Window = .between(100, 200, 1000);
     try testing.expectEqual(Window{ .lo = 50, .hi = 200 }, w.withLo(50, 1000));
-    try testing.expectEqual(Window{ .lo = 199, .hi = 200 }, w.withLo(500, 1000));
-    try testing.expectEqual(Window{ .lo = 100, .hi = 101 }, w.withHi(3, 1000));
+    try testing.expectEqual(Window{ .lo = 198, .hi = 200 }, w.withLo(500, 1000));
+    try testing.expectEqual(Window{ .lo = 100, .hi = 102 }, w.withHi(3, 1000));
     try testing.expectEqual(Window{ .lo = 100, .hi = 999 }, w.withHi(3000, 1000));
 }
 
@@ -253,6 +293,34 @@ test "while playing, the playhead runs to the middle, and then the window moves 
     try testing.expectApproxEqAbs(999.5, x, 0.01);
 }
 
+test "the wheel zooms, pans with Shift or sideways, and never does both" {
+    const n = 1000;
+    const w: Window = .between(400, 600, n);
+    const at = 450;
+    // Up is in, whichever way scrolling is set.
+    try testing.expect(w.wheeled(at, .{ .y = 1, .up = 1 }, n).span() < w.span());
+    try testing.expect(w.wheeled(at, .{ .y = -1, .up = 1 }, n).span() < w.span());
+    try testing.expect(w.wheeled(at, .{ .y = -1, .up = -1 }, n).span() > w.span());
+    try testing.expect(w.wheeled(at, .{ .y = 1, .up = 1, .ctrl = true }, n).span() < w.span());
+    const Case = struct { Wheel, f64 };
+    for ([_]Case{
+        .{ .{ .y = -1, .up = -1, .shift = true }, 20 }, // on with the wheel down
+        .{ .{ .x = 1 }, 20 },
+        .{ .{ .x = 1, .y = 0.2, .up = 0.2 }, 20 }, // a swipe that isn't straight
+        .{ .{ .x = -1, .shift = true }, -20 },
+        .{ .{ .x = 0.1, .y = -1, .up = -1, .shift = true }, 20 }, // drift doesn't count
+        .{ .{ .x = -0.1, .y = -1, .up = -1, .shift = true }, 20 },
+        .{ .{ .x = 1, .ctrl = true }, 0 },
+        .{ .{}, 0 },
+    }) |case| {
+        const got = w.wheeled(at, case[0], n);
+        try testing.expectApproxEqAbs(w.span(), got.span(), 1e-9);
+        try testing.expectApproxEqAbs(w.lo + case[1], got.lo, 1e-9);
+    }
+    const drifting = w.wheeled(at, .{ .x = 0.3, .y = 1, .up = 1 }, n);
+    try testing.expectApproxEqAbs(at, drifting.lo + 0.25 * drifting.span(), 1e-9);
+}
+
 test "a playhead past the middle stays at its place on screen" {
     const w: Window = .between(100, 200, 1000);
     const next = w.following(180, 181, true, 1000);
@@ -288,7 +356,7 @@ test "steps at rest scroll only as far as needed, and jumps go there" {
 test "the zoom level goes from everything to two frames, and back to the same window" {
     for ([_]usize{ 10, 1000, 492_963 }) |n| {
         const end: f64 = @floatFromInt(n - 1);
-        try testing.expectEqual(0, Window.all(n).zoomLevel(n));
+        try testing.expectApproxEqAbs(0, Window.all(n).zoomLevel(n), 1e-12);
         for ([_]f64{ 0, 0.25, 0.5, 0.9, 1 }) |level| {
             const w = Window.all(n).atLevel(level, end / 2, n);
             try testing.expectApproxEqAbs(level, w.zoomLevel(n), 1e-6);

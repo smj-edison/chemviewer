@@ -938,9 +938,9 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             // Zooming goes by the hand: up is in, natural scrolling or not.
             const up = if (ev.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -ev.wheel.y else ev.wheel.y;
             if (!want_mouse) return app.camera.zoom(up);
-            app.timeline.wheel[0] += ev.wheel.x;
-            app.timeline.wheel[1] += ev.wheel.y;
-            app.timeline.zoom += up;
+            app.timeline.wheel.x += ev.wheel.x;
+            app.timeline.wheel.y += ev.wheel.y;
+            app.timeline.wheel.up += up;
         },
         c.SDL_EVENT_KEY_DOWN => {
             if (app.leaving != null) {
@@ -1607,8 +1607,6 @@ fn deleteSelectionInner(app: *App) !void {
     defer edit.deinit();
     const sel = app.selected();
     const n = sel.len;
-    // Landing on another step may have run out of memory and dropped it.
-    if (n == 0) return app.refuse("Select atoms to delete", .{});
     if (n >= edit.atoms.len()) return app.refuse("Can't delete every atom", .{});
 
     const remove = try gpa.alloc(bool, edit.atoms.len());
@@ -1925,8 +1923,7 @@ pub fn drawUi(app: *App) void {
     app.menuBar();
     const timeline_h = timeline_mod.height();
     timeline_mod.draw(app, timeline_h);
-    app.timeline.wheel = .{ 0, 0 };
-    app.timeline.zoom = 0;
+    app.timeline.wheel = .{};
     if (app.show_inspector) app.inspector(timeline_h);
     if (app.show_diff) app.diffPanel();
     if (app.show_help) app.helpWindow();
@@ -3651,6 +3648,42 @@ test "pausing floors, however near the next step is, and playing goes on from th
         try expectEqual(0, t.app.doc.?.current);
         try expectEqual(0, t.app.interp_t);
     }
+}
+
+test "the timeline's window: a new file's, following, and pans that hold" {
+    const Window = cv.window.Window;
+    var t: TestApp = try .init(100);
+    defer t.deinit();
+    const s = &t.app.timeline;
+    s.initial = .{ 20, 30 };
+    try t.show(0);
+    s.follow(&t.app, &t.app.doc.?);
+    try expectEqual(Window{ .lo = 20, .hi = 30 }, s.window);
+    // Steps and jumps bring the playhead into view; scrubbing doesn't scroll.
+    try t.show(60);
+    s.follow(&t.app, &t.app.doc.?);
+    try expect(s.window.contains(60));
+    t.app.plot_drag = 64;
+    const held = s.window;
+    try t.show(64);
+    s.follow(&t.app, &t.app.doc.?);
+    try expectEqual(held, s.window);
+    t.app.plot_drag = null;
+    // Panned away while playing between two frames, then paused.
+    t.app.interpolate = true;
+    t.app.playing = true;
+    t.app.interp_t = 0.7;
+    try t.waitForNext();
+    s.follow(&t.app, &t.app.doc.?);
+    s.window = .between(0, 10, 100);
+    t.app.togglePlay();
+    s.follow(&t.app, &t.app.doc.?);
+    try expectEqual(Window{ .lo = 0, .hi = 10 }, s.window);
+    // Another file has its own.
+    try t.open(50);
+    try t.show(0);
+    s.follow(&t.app, &t.app.doc.?);
+    try expectEqual(Window.all(50), s.window);
 }
 
 test "saving during a blend saves the step it plays from" {

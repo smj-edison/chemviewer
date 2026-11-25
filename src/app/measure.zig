@@ -100,6 +100,7 @@ pub fn bar(app: *App) void {
         cramped_hint = null;
     }
     hinted_len = sel.len;
+    row_width = c.igGetContentRegionAvail().x;
     if (app.messages.current(app.seconds())) |m| {
         // Not under the mouse, or while a value is typed.
         const in_use = c.igIsAnyItemActive() or c.igIsWindowHovered(0);
@@ -131,7 +132,7 @@ pub fn bar(app: *App) void {
         return;
     }
     if (hintReplacesRow()) return gestureHint(app, f.numbers, true);
-    if (cramped_hint) |cramped| if (!c.igIsAnyItemActive()) if (mouseHint(app)) |hint| if (hint.ptr == cramped.ptr) return ui.textDisabled("{s}", .{hint});
+    if (mouseHintReplacesRow(app)) |hint| return ui.textDisabled("{s}", .{hint});
     if (sel.len == 0) {
         ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all.", .{});
         rowTail(app, f.numbers);
@@ -201,15 +202,29 @@ fn rowTail(app: *App, numbers: []const u8) void {
         short_hint = null;
         c.igSameLine(0, c.igGetFontSize() * 1.5);
         c.igAlignTextToFramePadding();
-        cramped_hint = if (c.igGetContentRegionAvail().x < c.igCalcTextSize(hint.ptr, null, false, -1).x) hint else null;
+        const fits = c.igGetContentRegionAvail().x >= c.igCalcTextSize(hint.ptr, null, false, -1).x;
+        // With a message in the row it isn't known whether it would fit.
+        if (app.messages.current(app.seconds()) == null) cramped_hint = if (fits) null else .{ .text = hint, .width = row_width };
         ui.textDisabled("{s}", .{hint});
         return;
     }
     gestureHint(app, numbers, false);
 }
 
-/// The mouse hint that didn't fit after the row.
-var cramped_hint: ?[:0]const u8 = null;
+/// The mouse hint that didn't fit after the row, and how wide that was.
+var cramped_hint: ?struct { text: [:0]const u8, width: f32 } = null;
+
+/// The mouse hint, if it takes the row's place: there was no room for it, and
+/// nothing else in the row is wanted. Dragging on the timeline keeps it up.
+fn mouseHintReplacesRow(app: *const App) ?[:0]const u8 {
+    const cramped = cramped_hint orelse return null;
+    if (cramped.width != c.igGetContentRegionAvail().x) return null;
+    if (app.messages.current(app.seconds()) != null) return null;
+    const on_timeline = app.plot_drag != null or app.timeline.grab != null;
+    if (c.igIsAnyItemActive() and !on_timeline) return null;
+    const hint = mouseHint(app) orelse return null;
+    return if (hint.ptr == cramped.text.ptr) hint else null;
+}
 
 /// What the mouse can do on the timeline it is on, or what a double-click on
 /// the bond under it does. With Alt held, bonds aren't used.
@@ -316,6 +331,8 @@ fn atomCircle(app: *App, proj: App.ScreenProjector, p: cv.math.Vec3, z: u8, col:
 /// selected atoms.
 var short_hint: ?[2]c.ImVec2_c = null;
 var hinted_len: usize = 0;
+/// How wide the whole row is.
+var row_width: f32 = 0;
 
 /// Whether the hint takes the row's place: it had no room after it, and Alt
 /// is held or the mouse is on its short form. Not while a value is typed or
