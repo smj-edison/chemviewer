@@ -122,15 +122,6 @@ pub const DisplayedGeometry = struct {
         for (std.enums.values(Slot)) |s| if (g.holds(s, index)) g.keep(gpa, s, null);
     }
 
-    /// The step blended towards, which is no longer held. Owned by the caller.
-    pub fn takeNext(g: *DisplayedGeometry) ?Step {
-        const next = g.next orelse return null;
-        g.next = null;
-        g.held_changes += 1;
-        g.blended_for = null;
-        return next;
-    }
-
     /// Which steps have the same numbering as the shown one, so that they may
     /// shape the curve.
     pub const Shape = struct { prev: bool, next2: bool };
@@ -284,7 +275,7 @@ test "a blend follows its time, its steps and the real atoms" {
     try testing.expect(blendedX(&g, 0.5) < 1.2);
     g.forget(test_gpa, 2);
     try testing.expectEqual(0.5, blendedX(&g, 0.5));
-    try testing.expect(g.takeNext() == null);
+    try testing.expect(g.next == null);
 }
 
 test "changes to the steps held are counted" {
@@ -299,8 +290,7 @@ test "changes to the steps held are counted" {
     g.keep(test_gpa, .prev, try testStep(0, 0));
     try testing.expect(g.held_changes != last);
     last = g.held_changes;
-    var next = g.takeNext().?;
-    next.atoms.deinit(test_gpa);
+    g.forget(test_gpa, g.next.?.index);
     try testing.expect(g.held_changes != last);
 }
 

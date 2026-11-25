@@ -61,7 +61,7 @@ rotation_lock: ?cv.lock.RotationLock = null,
 lock_followed: ?LockFollowed = null,
 last_advance: Io.Timestamp = .zero,
 /// Interpolated playback: render at the display's frame rate, blending atom
-/// positions between steps; pausing snaps to the nearest step.
+/// positions between steps; pausing goes back to the step played from.
 interpolate: bool = false,
 /// Fraction of the way from the shown step to the next (0 when not blending).
 interp_t: f32 = 0,
@@ -971,11 +971,8 @@ pub fn togglePlay(app: *App) void {
     app.endDrag(false);
     app.playing = !app.playing;
     app.last_advance = Io.Timestamp.now(app.io, .awake);
-    // Pausing an interpolated playback stops on the nearest real step.
-    if (!app.playing and app.interp_t > 0 and !app.showNearerNext()) {
-        const next = if (app.interp_t >= 0.5) d.stream.nextPlayable(d.current, false) else null;
-        app.moveTo(next orelse d.current);
-    }
+    // Pausing an interpolated playback floors (D24).
+    if (!app.playing and app.interp_t > 0) app.moveTo(d.current);
 }
 
 pub fn openDialog(app: *App) void {
@@ -1500,26 +1497,16 @@ fn applyEditInner(app: *App, edit: Edit) !void {
 }
 
 /// Get ready to change or save the shown frame: abort a drag, and pause playback on
-/// the nearest real step. With interpolation that may be the step after.
+/// the step it plays from.
 fn stopForEdit(app: *App) void {
     const d = &(app.doc orelse return);
     app.endDrag(false);
     const was_playing = app.playing;
     app.playing = false;
     // Never a step that is still loading.
-    if (was_playing and !app.showNearerNext() and d.display.real.frame != null) app.moveTo(d.display.real.index);
+    if (was_playing and d.display.real.frame != null) app.moveTo(d.display.real.index);
     // The edit may unlock, and the frame it is on should be in place by then.
     app.followRotationLock();
-}
-
-/// Stopping a blend: if it is nearer to the next step, show that one.
-fn showNearerNext(app: *App) bool {
-    if (app.interp_t < 0.5 or !app.nextReady()) return false;
-    const d = &app.doc.?;
-    const next = d.display.takeNext().?;
-    app.moveTo(next.index);
-    app.showFrame(next.index, next.atoms);
-    return true;
 }
 
 /// Every transaction on the shown frame starts here.
@@ -1687,7 +1674,6 @@ pub fn historyKey(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?HistoryKey {
 pub fn revertFrame(app: *App) void {
     const d = &(app.doc orelse return);
     app.endDrag(false);
-    // The frame it is offered for, even if a blend is nearer to the next step.
     if (!app.session.isEdited(d.display.real.index)) return;
     app.playing = false;
     app.revertShown() catch |e| return app.fail("Revert failed: {t}", .{e});
@@ -2697,13 +2683,13 @@ test "cuts end when the frame is left, and don't come back" {
     }
 }
 
-test "landing on the next step of a blend leaves the frame and its cuts" {
+test "pausing a blend stays on the frame and keeps its cuts" {
     var t: TestApp = try .init(1);
     defer t.deinit();
     try t.playBlend(0.7);
     t.app.toggleCutPair(0, 1);
     t.app.togglePlay();
-    try t.expectCuts(&.{});
+    try t.expectCuts(&.{.{ 0, 1 }});
 }
 
 test "cuts stay while the frame is shown, whatever is edited" {
@@ -3548,7 +3534,7 @@ test "a completed drag is one geometry step, a cancelled one none" {
     try t.expectAborted();
 }
 
-test "an edit during interpolated playback pauses it and applies to the nearest step" {
+test "an edit during interpolated playback pauses it and applies to the step it plays from" {
     const Kind = enum { drag, set, paste, delete };
     for ([_]Kind{ .drag, .set, .paste, .delete }) |kind| for ([_]f32{ 0.3, 0.7 }) |at| {
         errdefer std.debug.print("{t} at {d}\n", .{ kind, at });
@@ -3573,17 +3559,15 @@ test "an edit during interpolated playback pauses it and applies to the nearest 
                 t.app.deleteSelection();
             },
         }
-        const want: usize = if (at < 0.5) 0 else 1;
         const d = &t.app.doc.?;
         try expect(!t.app.playing);
         try expectEqual(0, t.app.interp_t);
-        try expectEqual(want, d.current);
-        try expectEqual(want, d.display.real.index);
-        try expect(t.app.session.isEdited(want));
-        try expect(!t.app.session.isEdited(1 - want));
+        try expectEqual(0, d.current);
+        try expectEqual(0, d.display.real.index);
+        try expect(t.app.session.isEdited(0));
+        try expect(!t.app.session.isEdited(1));
         // Atom 0 is where that step has it (none of these move it).
-        const y: f32 = if (want == 0) 0 else 2;
-        try expectEqual(Vec3{ 0, y, 0 }, d.display.real.frame.?.positions[0]);
+        try expectEqual(Vec3{ 0, 0, 0 }, d.display.real.frame.?.positions[0]);
     };
 }
 
@@ -3635,22 +3619,38 @@ test "revert during a blend reverts the frame it is offered for" {
     try expect(!t.app.playing);
 }
 
-test "pausing shows the nearest step at once" {
+test "pausing floors, however near the next step is, and playing goes on from there" {
+    for ([_]f32{ 0.3, 0.7, 0.99 }) |at| {
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.playBlend(at);
+        t.app.togglePlay();
+        try expectEqual(0, t.app.doc.?.current);
+        try expectEqual(0, t.app.doc.?.display.real.index);
+        try expectEqual(0, t.app.interp_t);
+        try expectEqual(0, t.app.drawnPositions().?[0][1]);
+        t.app.togglePlay();
+        try expectEqual(0, t.app.doc.?.current);
+        try expectEqual(0, t.app.interp_t);
+    }
+}
+
+test "saving during a blend saves the step it plays from" {
     var t: TestApp = try .init(1);
     defer t.deinit();
     try t.playBlend(0.7);
-    t.app.togglePlay();
-    try expectEqual(1, t.app.doc.?.current);
-    try expectEqual(1, t.app.doc.?.display.real.index);
+    t.app.stopForEdit(); // as `saveDialog` does
+    try expectEqual(0, t.app.doc.?.display.real.index);
+    try expectEqual(0, t.app.doc.?.current);
 }
 
-test "an edit that lands on another step uses its bonds" {
+test "an edit during a blend uses the bonds of the step it plays from" {
     var t: TestApp = try .init(1);
     defer t.deinit();
     try t.playBlendOf("3\n\nH 0 0 0\nH 0.74 0 0\nH 2.7 0 0\n" ++ "3\n\nH 0 0 0\nH 2 0 0\nH 2.74 0 0\n", 0.7);
     t.setDistance(3);
-    // Atom 2 is bonded to atom 1 in this step, and moves with it.
-    try std.testing.expectApproxEqAbs(3.74, t.app.doc.?.display.real.frame.?.positions[2][0], 1e-4);
+    // Atom 2 is bonded to atom 1 in the next step only, and stays.
+    try std.testing.expectApproxEqAbs(2.7, t.app.doc.?.display.real.frame.?.positions[2][0], 1e-4);
 }
 
 test "delete with nothing selected and pasting as new abort a drag" {
@@ -3805,7 +3805,7 @@ test "measured values during a blend are those of what is drawn" {
     const value = t.app.measured().?.distance;
     try expect(value > 3.5 and value < 4.5);
     t.app.togglePlay();
-    try std.testing.expectApproxEqAbs(5, t.app.measured().?.distance, 1e-6);
+    try std.testing.expectApproxEqAbs(3, t.app.measured().?.distance, 1e-6);
 }
 
 test "copying during a blend takes the real step being played from" {
@@ -4692,7 +4692,7 @@ test "an edit that changes nothing, a click and a selection step keep the lock" 
     try expect(t.app.lock_rotation);
 }
 
-test "an edit that lands on the next step follows it there before unlocking" {
+test "an edit during a blend turns back to the step it plays from before unlocking" {
     var t = try lockedTest(2);
     defer t.deinit();
     t.app.setLockRotation(true);
@@ -4703,7 +4703,7 @@ test "an edit that lands on the next step follows it there before unlocking" {
     try t.waitForNext();
     t.app.followRotationLock();
     t.setDistance(3.5); // moves atom 1
-    try expectEqual(1, t.app.doc.?.display.real.index);
+    try expectEqual(0, t.app.doc.?.display.real.index);
     try expect(!t.app.lock_rotation);
     const now = onScreen(&t);
     for ([_]usize{ 0, 2, 3, 4, 5 }) |i| try expect(cv.math.length(first[i] - now[i]) < 2e-3);
@@ -4755,7 +4755,7 @@ test "a drag grabs the atom that was drawn under the cursor" {
     try expect(p[1] > 1 and p[1] < 1.9);
     const at = t.app.screenProjector().toScreen(p).?;
     t.app.beginDrag(.translate, at.x, at.y);
-    try expectEqual(1, t.app.doc.?.display.real.index);
+    try expectEqual(0, t.app.doc.?.display.real.index);
     const drag = t.app.drag orelse return error.TestUnexpectedResult;
     try expectEqual(1, drag.handle);
 }

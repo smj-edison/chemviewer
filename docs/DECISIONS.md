@@ -329,7 +329,9 @@ edited.
   be read, and says how many.
 - **Edit session:** an edit is a transaction tied to its frame. A frame change,
   undo, redo, paste, revert, close or open aborts one in progress and restores the
-  atoms. Starting an edit pauses playback. A frame is edited only while an edit
+  atoms. Starting an edit pauses playback. Pausing floors: it shows the step played
+  from, however near the next one is (until 2026-11-24, the nearer), as will every
+  value on the timeline. A frame is edited only while an edit
   is in effect (or its first edit has left the history). Revert is undoable.
   Opening or closing a file resets everything, including drag and playback.
   The session keeps a copy of the file frame of each frame that was ever edited,
