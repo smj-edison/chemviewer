@@ -1,27 +1,22 @@
-//! The timeline docked at the bottom: transport controls, a frame number and
-//! an energy plot you can click or drag to scrub (right drag: one frame per pixel).
+//! The timeline docked at the bottom: the bar, transport controls, a frame number
+//! and the plot (plot.zig).
 const std = @import("std");
 const c = @import("c");
-const cv = @import("chemviewer");
 const ui = @import("ui.zig");
 const App = @import("App.zig");
 const measure = @import("measure.zig");
-
-/// Energy plot height, in multiples of the font size.
-fn plotHeight() f32 {
-    return c.igGetFontSize() * 4.3;
-}
+const plot = @import("plot.zig");
 
 pub fn height() f32 {
     const style = c.igGetStyle();
-    return 2 * c.igGetFrameHeightWithSpacing() + plotHeight() + style.*.WindowPadding.y * 2 + style.*.ItemSpacing.y;
+    return 2 * c.igGetFrameHeightWithSpacing() + plot.height() + style.*.WindowPadding.y * 2 + style.*.ItemSpacing.y;
 }
 
 pub fn draw(app: *App, h: f32) void {
     const vp = c.igGetMainViewport();
     c.igSetNextWindowPos(ui.v2(vp.*.WorkPos.x, vp.*.WorkPos.y + vp.*.WorkSize.y - h), c.ImGuiCond_Always, ui.v2(0, 0));
     c.igSetNextWindowSize(ui.v2(vp.*.WorkSize.x, h), c.ImGuiCond_Always);
-    const flags = c.ImGuiWindowFlags_NoDecoration | c.ImGuiWindowFlags_NoMove |
+    const flags = c.ImGuiWindowFlags_NoDecoration | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_NoScrollWithMouse |
         c.ImGuiWindowFlags_NoSavedSettings | c.ImGuiWindowFlags_NoBringToFrontOnFocus;
     defer c.igEnd();
     if (!c.igBegin("##timeline", null, flags)) return;
@@ -79,181 +74,5 @@ pub fn draw(app: *App, h: f32) void {
     ui.tooltip("Turn the view with each frame so the structure keeps its orientation: every frame is superposed onto the frame shown when this was switched on, or onto the reference of a diff. Your own rotations still apply. Editing the structure switches it off.");
     c.igEndDisabled();
 
-    energyPlot(app, d);
-}
-
-/// Where frame `i` of `n` sits on the plot's x axis (first and last at the
-/// edges). The energy line, playhead, markers and mouse all use this mapping.
-fn frameX(i: usize, n: usize, x0: f32, w: f32) f32 {
-    if (n < 2) return x0 + 0.5;
-    return x0 + @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(n - 1)) * (w - 1) + 0.5;
-}
-
-/// The frame nearest to x: the inverse of `frameX`.
-fn frameAt(x: f32, n: usize, x0: f32, w: f32) usize {
-    const t = std.math.clamp((x - x0 - 0.5) / @max(w - 1, 1), 0, 1);
-    return @intFromFloat(@round(t * @as(f32, @floatFromInt(n - 1))));
-}
-
-const Mark = cv.edit.EditSession.Mark;
-
-/// The mark within `reach` of x, the nearest one. Many frames can share a pixel,
-/// so only this gets to an edited frame for sure.
-fn markAt(marks: []const Mark, x: f32, reach: f32, n: usize, x0: f32, w: f32) ?Mark {
-    var best: ?Mark = null;
-    var best_d = reach;
-    for (marks) |m| {
-        const dist = @abs(frameX(m.index, n, x0, w) - x);
-        if (dist < best_d or (best == null and dist == best_d)) {
-            best = m;
-            best_d = dist;
-        }
-    }
-    return best;
-}
-
-test "the mouse gets to the mark it is on, however many frames share a pixel" {
-    const marks = [_]Mark{ .{ .index = 0, .unsaved = true }, .{ .index = 250_123, .unsaved = true }, .{ .index = 499_999, .unsaved = false } };
-    const n = 500_000;
-    const x = frameX(250_123, n, 10, 1000);
-    try std.testing.expectEqual(250_123, markAt(&marks, x + 4, 5, n, 10, 1000).?.index);
-    try std.testing.expectEqual(null, markAt(&marks, x + 6, 5, n, 10, 1000));
-    try std.testing.expectEqual(0, markAt(&marks, 8, 5, n, 10, 1000).?.index);
-    try std.testing.expectEqual(499_999, markAt(&marks, 1010, 5, n, 10, 1000).?.index);
-    try std.testing.expectEqual(null, markAt(&.{}, x, 5, n, 10, 1000));
-    // A single frame.
-    try std.testing.expectEqual(0, markAt(marks[0..1], 10.5, 5, 1, 10, 1000).?.index);
-}
-
-fn energyPlot(app: *App, d: *App.Document) void {
-    const n = d.frameCount();
-    const marks = app.session.marks(app.gpa) catch &.{};
-    defer app.gpa.free(marks);
-    const dl = c.igGetWindowDrawList();
-    // The frames keep off the edges, so that the first and last can be seen.
-    const inset = c.igGetFontSize() * 0.4;
-    const outer0 = c.igGetCursorScreenPos();
-    const outer_w = @max(c.igGetContentRegionAvail().x, 1);
-    const h = plotHeight();
-    const p0 = ui.v2(outer0.x + inset, outer0.y);
-    const w = @max(outer_w - 2 * inset, 1);
-    const p1 = ui.v2(p0.x + w, p0.y + h);
-    _ = c.igInvisibleButton("##energy", ui.v2(outer_w, h), 0);
-    const hovered = c.igIsItemHovered(0);
-    // Marks of edited frames are along the bottom.
-    const mark_size = c.igGetFontSize() * 0.4;
-    const mouse = c.igGetMousePos();
-    const in_marks = mouse.y >= p1.y - 2.5 * mark_size and mouse.y <= p1.y;
-    const pointed: ?Mark = if (in_marks) markAt(marks, mouse.x, mark_size + 2, n, p0.x, w) else null;
-    if (c.igIsItemActive() and n > 0) {
-        // Holding the button still isn't asking for the frame again (playback
-        // may have moved on from it meanwhile).
-        const i = if (pointed) |m| m.index else frameAt(mouse.x, n, p0.x, w);
-        if (app.plot_drag == i) app.moveTo(i) else app.setFrame(i);
-        app.plot_drag = i;
-    } else {
-        app.plot_drag = null;
-    }
-    if (hovered and c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Right, false)) app.beginFineScrub();
-
-    const light = app.style.theme == .light;
-    const accent = if (light) ui.rgba(0.12, 0.35, 0.80, 0.95) else ui.rgba(0.45, 0.75, 1.0, 0.9);
-    const label_col = c.igGetColorU32_Col(c.ImGuiCol_TextDisabled, 1);
-    c.ImDrawList_AddRectFilled(dl, outer0, ui.v2(outer0.x + outer_w, p1.y), c.igGetColorU32_Col(c.ImGuiCol_FrameBg, 1), 3, 0);
-
-    // Known energies: a line through the frames, or with more frames than
-    // pixel columns, a min/max envelope per column.
-    const scanned = if (d.source.isStreamed()) d.stream.energiesScanned() else n;
-    var lo: f64 = std.math.inf(f64);
-    var hi: f64 = -std.math.inf(f64);
-    var known: usize = 0;
-    for (0..n) |i| if (d.stream.energy(i)) |e| {
-        lo = @min(lo, e);
-        hi = @max(hi, e);
-        known += 1;
-    };
-    const cols: usize = @max(2, @as(usize, @intFromFloat(@max(w, 2))));
-    const buckets = @min(n, cols);
-    if (known >= 2 and hi > lo) {
-        const line_col = accent;
-        const pad: f32 = 4;
-        var prev: ?c.ImVec2_c = null;
-        for (0..buckets) |col| {
-            // Frames whose place on the axis (`frameX`) falls in this column.
-            const a = if (n <= cols) col else std.math.divCeil(usize, col * (n - 1), cols - 1) catch unreachable;
-            const b = if (n <= cols) col + 1 else std.math.divCeil(usize, (col + 1) * (n - 1), cols - 1) catch unreachable;
-            var cmin: f64 = std.math.inf(f64);
-            var cmax: f64 = -std.math.inf(f64);
-            for (a..@min(b, n)) |i| if (d.stream.energy(i)) |e| {
-                cmin = @min(cmin, e);
-                cmax = @max(cmax, e);
-            };
-            if (cmin > cmax) {
-                prev = null;
-                continue;
-            }
-            const x = if (n <= cols) frameX(col, n, p0.x, w) else p0.x + @as(f32, @floatFromInt(col)) + 0.5;
-            const y_of = struct {
-                fn f(e: f64, l: f64, hh: f64, top: f32, height_: f32, pd: f32) f32 {
-                    const t: f32 = @floatCast((e - l) / (hh - l));
-                    return top + pd + (1 - t) * (height_ - 2 * pd);
-                }
-            }.f;
-            const ya = y_of(cmax, lo, hi, p0.y, h, pad);
-            const yb = y_of(cmin, lo, hi, p0.y, h, pad);
-            c.ImDrawList_AddLine(dl, ui.v2(x, ya), ui.v2(x, yb + 1), line_col, 1, 0);
-            const mid = ui.v2(x, (ya + yb) / 2);
-            if (prev) |pv| c.ImDrawList_AddLine(dl, pv, mid, line_col, 1, 0);
-            prev = mid;
-        }
-        var buf: [96]u8 = undefined;
-        const label = ui.printZ(&buf, "E  {d:.6} to {d:.6}  (range {e:.3})", .{ lo, hi, hi - lo }) catch "";
-        c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, label.ptr, null);
-    } else {
-        const msg: [:0]const u8 = if (scanned < n) "scanning energies..." else "no energies in this file";
-        c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, msg.ptr, null);
-    }
-
-    // Diff reference marker and playhead.
-    if (n > 1) {
-        if (app.diff) |df| {
-            const x = frameX(df.reference.index, n, p0.x, w);
-            const rc = App.reference_color;
-            c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), ui.rgba(rc[0], rc[1], rc[2], 1), 2, 0);
-            const label_w = c.igCalcTextSize("ref", null, false, -1).x;
-            const label_x = if (x + label_w + 8 > p1.x) x - label_w - 4 else x + 4;
-            c.ImDrawList_AddText_Vec2(dl, ui.v2(label_x, p1.y - c.igGetFontSize() - 3 * mark_size), c.igGetColorU32_Col(c.ImGuiCol_Text, 1), "ref", null);
-        }
-        const x = frameX(d.current, n, p0.x, w);
-        // In a diff, the colours of the two frames.
-        const cc = App.current_color;
-        const head = if (app.diff != null) ui.rgba(cc[0], cc[1], cc[2], 1) else if (light) ui.rgba(0.85, 0.45, 0.0, 1) else ui.rgba(1, 0.85, 0.3, 1);
-        c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), head, 2, 0);
-        if (scanned < n) {
-            // Thin progress bar for the background energy scan.
-            const t = @as(f32, @floatFromInt(scanned)) / @as(f32, @floatFromInt(n));
-            c.ImDrawList_AddLine(dl, ui.v2(p0.x, p1.y - 1), ui.v2(p0.x + t * w, p1.y - 1), accent, 2, 0);
-        }
-    }
-    const mark_col = c.igGetColorU32_Col(c.ImGuiCol_Text, 1);
-    for (marks) |m| {
-        if (m.index >= n) continue;
-        const x = frameX(m.index, n, p0.x, w);
-        const base = p1.y - 2;
-        const top = ui.v2(x, base - 2 * mark_size);
-        const left = ui.v2(x - mark_size, base);
-        const right = ui.v2(x + mark_size, base);
-        // Hollow once saved.
-        if (m.unsaved) {
-            c.ImDrawList_AddTriangleFilled(dl, top, left, right, mark_col);
-        } else c.ImDrawList_AddTriangle(dl, top, left, right, mark_col, 1.5, 0);
-    }
-    if (hovered and n > 0) {
-        const i = if (pointed) |m| m.index else frameAt(mouse.x, n, p0.x, w);
-        if (c.igBeginTooltip()) {
-            if (d.stream.energy(i)) |e| ui.text("frame {d}: E = {d:.8}", .{ i + 1, e }) else ui.text("frame {d}", .{i + 1});
-            for (marks) |m| if (m.index == i) ui.text("{s}", .{if (m.unsaved) "edited, not saved" else "edited, saved"});
-            c.igEndTooltip();
-        }
-    }
+    plot.draw(app, d);
 }

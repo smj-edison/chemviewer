@@ -12,7 +12,8 @@ ImGui (via cimgui) doing the heavy lifting.
   distinct under simulated colour blindness; when two elements in a structure
   could still be mistaken for each other, the rarer one is labelled with its
   symbol (View > Element labels). The inspector shows an element key.
-- **Instant scrubbing.** A timeline with an energy plot you can click or drag.
+- **Instant scrubbing.** A timeline with an energy plot you can click or drag,
+  and zoom from the whole trajectory to single frames.
   Large trajectories are streamed from disk with background prefetch.
   **Lock rotation** (next to Loop) turns the view with each frame so a
   tumbling structure keeps its orientation: every frame is superposed onto
@@ -151,6 +152,9 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Middle drag / Shift + left or right drag | translate |
 | Wheel | zoom |
 | Right drag on the timeline | scrub one frame per pixel |
+| Ctrl + wheel on the timeline | zoom at the mouse |
+| Shift + wheel / middle drag on the timeline | pan |
+| Z | show every frame on the timeline |
 | Space | play / pause |
 | ← → keys or , . | previous / next frame |
 | PgUp / PgDn | jump 5% |

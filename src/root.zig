@@ -27,6 +27,8 @@ pub const lock = @import("lock.zig");
 pub const picks = @import("picks.zig");
 pub const playback = @import("playback.zig");
 pub const saving = @import("saving.zig");
+pub const window = @import("data/window.zig");
+pub const envelope = @import("data/envelope.zig");
 
 pub const Frame = structure.Frame;
 pub const Vec3 = math.Vec3;

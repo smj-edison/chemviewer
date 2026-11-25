@@ -26,6 +26,15 @@ pub const Format = enum {
             .ase_traj => "ASE trajectory",
         };
     }
+
+    /// Of `Frame.energy`, where the format says (XYZ comments don't).
+    pub fn energyUnit(f: Format) ?[]const u8 {
+        return switch (f) {
+            .gaussian_input, .gaussian_output, .orca_input, .orca_output => "Eh",
+            .ase_traj => "eV",
+            .xyz => null,
+        };
+    }
 };
 
 /// XYZ files smaller than this are parsed fully (so energies from comment

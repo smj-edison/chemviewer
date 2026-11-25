@@ -8,7 +8,8 @@ const Renderer = @import("../render/Renderer.zig");
 const Gpu = @import("../render/Gpu.zig");
 const Camera = @import("../render/Camera.zig");
 const ui = @import("ui.zig");
-const timeline = @import("timeline.zig");
+const timeline_mod = @import("timeline.zig");
+const plot_mod = @import("plot.zig");
 const measure = @import("measure.zig");
 const lasso = @import("lasso.zig");
 const drag_mod = @import("drag.zig");
@@ -54,6 +55,7 @@ loop_playback: bool = true,
 fine_scrub: ?f32 = null,
 /// Frame last scrubbed to by the current drag on the energy plot.
 plot_drag: ?usize = null,
+timeline: plot_mod.State = .{},
 /// Keep the structure's orientation steady across frames (see `cv.lock`).
 lock_rotation: bool = false,
 rotation_lock: ?cv.lock.RotationLock = null,
@@ -153,6 +155,7 @@ fn deinitState(app: *App) void {
     if (app.settings_changed or app.settings_unsaved) app.saveSettings();
     if (app.settings_path) |p| app.gpa.free(p);
     app.setHoverGroup(null, &.{});
+    app.timeline.deinit(app.gpa);
     app.closeDocument();
     app.session.deinit();
     app.picks.deinit(app.gpa);
@@ -931,7 +934,10 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
                 app.camera.dragZoom(m.yrel);
             }
         },
-        c.SDL_EVENT_MOUSE_WHEEL => if (!want_mouse) app.camera.zoom(ev.wheel.y),
+        c.SDL_EVENT_MOUSE_WHEEL => if (!want_mouse) app.camera.zoom(ev.wheel.y) else {
+            app.timeline.wheel[0] += ev.wheel.x;
+            app.timeline.wheel[1] += ev.wheel.y;
+        },
         c.SDL_EVENT_KEY_DOWN => {
             if (app.leaving != null) {
                 if (ev.key.key == c.SDLK_ESCAPE) app.leaveEsc();
@@ -958,6 +964,9 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
                 c.SDLK_HOME => app.keyFrame(0, held),
                 c.SDLK_END => app.keyFrame(n - 1, held),
                 c.SDLK_F => app.fitCamera(),
+                c.SDLK_Z => if ((ev.key.mod & c.SDL_KMOD_CTRL) == 0) {
+                    app.timeline.window = .all(n);
+                },
                 else => {},
             }
         },
@@ -1910,8 +1919,9 @@ pub fn drawUi(app: *App) void {
     measure.hoverOutline(app);
     app.drawLasso();
     app.menuBar();
-    const timeline_h = timeline.height();
-    timeline.draw(app, timeline_h);
+    const timeline_h = timeline_mod.height();
+    timeline_mod.draw(app, timeline_h);
+    app.timeline.wheel = .{ 0, 0 };
     if (app.show_inspector) app.inspector(timeline_h);
     if (app.show_diff) app.diffPanel();
     if (app.show_help) app.helpWindow();
@@ -2190,6 +2200,9 @@ const help = .{
         .{ "PgUp / PgDn", "jump 5%" },
         .{ "Home / End", "first / last frame" },
         .{ "Right drag on the timeline", "scrub one frame per pixel" },
+        .{ "Ctrl + wheel on the timeline", "zoom at the mouse" },
+        .{ "Shift + wheel, or middle drag, on the timeline", "pan" },
+        .{ "Z", "show every frame on the timeline" },
     } },
     .{ "Files", .{
         .{ "Ctrl+C", "copy selection (or whole frame) as XYZ" },

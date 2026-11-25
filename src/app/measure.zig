@@ -7,6 +7,7 @@ const ui = @import("ui.zig");
 const App = @import("App.zig");
 const drag = @import("drag.zig");
 const messages = @import("messages.zig");
+const plot = @import("plot.zig");
 const geom = cv.geometry;
 const occlusion = @import("occlusion.zig");
 
@@ -96,7 +97,7 @@ pub fn bar(app: *App) void {
     if (hinted_len != sel.len) {
         short_hint = null;
         cramped_message = null;
-        bond_hint_cramped = false;
+        cramped_hint = null;
     }
     hinted_len = sel.len;
     if (app.messages.current(app.seconds())) |m| {
@@ -130,7 +131,7 @@ pub fn bar(app: *App) void {
         return;
     }
     if (hintReplacesRow()) return gestureHint(app, f.numbers, true);
-    if (bond_hint_cramped and !c.igIsAnyItemActive()) if (bondHint(app)) |hint| return ui.textDisabled("{s}", .{hint});
+    if (cramped_hint) |cramped| if (!c.igIsAnyItemActive()) if (mouseHint(app)) |hint| if (hint.ptr == cramped.ptr) return ui.textDisabled("{s}", .{hint});
     if (sel.len == 0) {
         ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all.", .{});
         rowTail(app, f.numbers);
@@ -196,23 +197,24 @@ pub fn bar(app: *App) void {
 /// here.
 fn rowTail(app: *App, numbers: []const u8) void {
     _ = messageAfterRow(app);
-    if (bondHint(app)) |hint| {
+    if (mouseHint(app)) |hint| {
         short_hint = null;
         c.igSameLine(0, c.igGetFontSize() * 1.5);
         c.igAlignTextToFramePadding();
-        bond_hint_cramped = c.igGetContentRegionAvail().x < c.igCalcTextSize(hint.ptr, null, false, -1).x;
+        cramped_hint = if (c.igGetContentRegionAvail().x < c.igCalcTextSize(hint.ptr, null, false, -1).x) hint else null;
         ui.textDisabled("{s}", .{hint});
         return;
     }
     gestureHint(app, numbers, false);
 }
 
-/// The last hint about a bond didn't fit after the row.
-var bond_hint_cramped = false;
+/// The mouse hint that didn't fit after the row.
+var cramped_hint: ?[:0]const u8 = null;
 
-/// What a double-click on the bond under the mouse does. With Alt held, bonds
-/// aren't used.
-fn bondHint(app: *const App) ?[:0]const u8 {
+/// What the mouse can do on the timeline it is on, or what a double-click on
+/// the bond under it does. With Alt held, bonds aren't used.
+fn mouseHint(app: *const App) ?[:0]const u8 {
+    if (app.timeline.hovered) return plot.hint;
     if ((c.SDL_GetModState() & c.SDL_KMOD_ALT) != 0) return null;
     return switch (app.hover orelse return null) {
         .atom => null,

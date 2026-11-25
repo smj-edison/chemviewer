@@ -36,6 +36,8 @@ const Args = struct {
     ui_scale: ?f32 = null,
     no_ui: bool = false,
     dark: bool = false,
+    /// First and last visible frame of the timeline, 0-based.
+    window: ?[2]f64 = null,
     light: bool = false,
     cel: bool = false,
     flat: bool = false,
@@ -86,7 +88,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             eql(u8, arg, "--select") or eql(u8, arg, "--set") or eql(u8, arg, "--save") or
             eql(u8, arg, "--cut") or eql(u8, arg, "--add") or eql(u8, arg, "--fps") or
             eql(u8, arg, "--orbit") or eql(u8, arg, "--zoom") or eql(u8, arg, "--pan") or
-            eql(u8, arg, "--backdrop") or eql(u8, arg, "--bg-blur") or eql(u8, arg, "--profile"))
+            eql(u8, arg, "--backdrop") or eql(u8, arg, "--bg-blur") or eql(u8, arg, "--profile") or
+            eql(u8, arg, "--window"))
         {
             i += 1;
             if (i >= argv.len) return error.MissingArgumentValue;
@@ -100,6 +103,11 @@ fn parseArgs(argv: []const []const u8) !Args {
                     try std.fmt.parseFloat(f32, it.next() orelse return error.BadPose),
                 };
                 if (eql(u8, arg, "--orbit")) a.orbit = xy else a.pan = xy;
+            } else if (eql(u8, arg, "--window")) {
+                var it = std.mem.splitScalar(u8, v, ',');
+                var ends: [2]f64 = undefined;
+                for (&ends) |*e| e.* = try std.fmt.parseFloat(f64, it.next() orelse return error.BadWindow) - 1;
+                a.window = ends;
             } else if (eql(u8, arg, "--zoom")) {
                 a.zoom = try std.fmt.parseFloat(f32, v);
             } else if (eql(u8, arg, "--profile")) {
@@ -198,7 +206,7 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     const args = parseArgs(argv) catch |e| {
         std.debug.print(
-            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--screenshot OUT.png] [--size WxH]
+            \\usage: chemviewer [FILE] [--frame N] [--diff-ref N] [--window A,B] [--screenshot OUT.png] [--size WxH]
             \\                  [--ui-scale X] [--no-ui] [--light] [--dark] [--cel] [--flat] [--flat-pop] [--aero] [--glass] [--no-liquid]
             \\                  [--play] [--interpolate] [--fps N] [--atom-numbers]
             \\                  [--no-bg-pattern] [--backdrop none|cells|space] [--bg-blur K]
@@ -285,6 +293,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (args.no_bg_pattern) app.style.background_pattern = false;
     if (args.bg_blur) |b| app.style.background_blur = b;
+    app.timeline.initial = args.window;
     app.show_atom_numbers = args.atom_numbers;
     if (args.file) |f| app.openFile(f);
 
@@ -569,7 +578,7 @@ test {
     _ = @import("app/lasso.zig");
     _ = @import("app/drag.zig");
     _ = @import("app/messages.zig");
-    _ = @import("app/timeline.zig");
+    _ = @import("app/plot.zig");
     _ = @import("app/occlusion.zig");
 }
 
