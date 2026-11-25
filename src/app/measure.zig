@@ -104,12 +104,16 @@ pub fn bar(app: *App) void {
     var hint_buf: [160]u8 = undefined;
     if (app.dragHint(&hint_buf)) |hint| {
         ui.text("{s}", .{hint});
-        gestureHint(app, f.numbers);
+        gestureHint(app, f.numbers, false);
         return;
     }
+    // The room differs between selections.
+    if (hinted_len != sel.len) short_hint = null;
+    hinted_len = sel.len;
+    if (hintReplacesRow()) return gestureHint(app, f.numbers, true);
     if (sel.len == 0) {
         ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all.", .{});
-        gestureHint(app, f.numbers);
+        gestureHint(app, f.numbers, false);
         return;
     }
     if (sel.len > 4) {
@@ -118,7 +122,7 @@ pub fn bar(app: *App) void {
         ui.textDisabled("Ctrl+C copies them as XYZ", .{});
         c.igSameLine(0, fs * 1.5);
         const clear = c.igSmallButton("Clear");
-        gestureHint(app, f.numbers);
+        gestureHint(app, f.numbers, false);
         if (clear) app.deselect();
         return;
     }
@@ -163,15 +167,32 @@ pub fn bar(app: *App) void {
     }
     c.igSameLine(0, fs * 1.5);
     const clear = c.igSmallButton("Clear");
-    gestureHint(app, f.numbers);
+    gestureHint(app, f.numbers, false);
     if (clear) app.deselect();
     if (submitted) |edit| app.applyEdit(edit);
 }
 
-/// What an Alt-drag does with this selection, after the rest of the row:
-/// brighter while Alt is held, with the gesture going on marked. If there is
-/// no room, it is a tooltip.
-fn gestureHint(app: *App, numbers: []const u8) void {
+/// Where the hint was drawn shortened (null = it fitted), and for how many
+/// selected atoms.
+var short_hint: ?[2]c.ImVec2_c = null;
+var hinted_len: usize = 0;
+
+/// Whether the hint takes the row's place: it had no room after it, and Alt
+/// is held or the mouse is on its short form. Not while a value is typed or
+/// a button pressed.
+fn hintReplacesRow() bool {
+    const at = short_hint orelse return false;
+    if (c.igIsAnyItemActive()) return false;
+    if ((c.SDL_GetModState() & c.SDL_KMOD_ALT) != 0) return true;
+    return c.igIsWindowHovered(0) and c.igIsMouseHoveringRect(at[0], at[1], true);
+}
+
+/// What an Alt-drag does with this selection, after the rest of the row (or
+/// `alone` on it): brighter while Alt is held, with the gesture going on
+/// marked. Shortened if there is no room.
+fn gestureHint(app: *App, numbers: []const u8, alone: bool) void {
+    // The next frame has the same room; keep where the mouse is expected.
+    if (!alone) short_hint = null;
     const sel = app.selected();
     var base_buf: [16]u8 = undefined;
     var about_buf: [48]u8 = undefined;
@@ -205,15 +226,14 @@ fn gestureHint(app: *App, numbers: []const u8) void {
     const lead: [:0]const u8 = "Alt + drag";
     var width = c.igCalcTextSize(lead.ptr, null, false, -1).x;
     for (pieces[0..n]) |p| width += gap + c.igCalcTextSize(p.text.ptr, null, false, -1).x;
-    c.igSameLine(0, fs * 1.5);
-    c.igAlignTextToFramePadding();
-    if (c.igGetContentRegionAvail().x < width) {
-        if (alt) ui.text("Alt + drag (?)", .{}) else ui.textDisabled("Alt + drag (?)", .{});
-        if (c.igBeginItemTooltip()) {
-            for (pieces[0..n]) |p| ui.text("{s}", .{p.text});
-            c.igEndTooltip();
+    if (!alone) {
+        c.igSameLine(0, fs * 1.5);
+        c.igAlignTextToFramePadding();
+        if (c.igGetContentRegionAvail().x < width) {
+            ui.textDisabled("Alt + drag (?)", .{});
+            short_hint = .{ c.igGetItemRectMin(), c.igGetItemRectMax() };
+            return;
         }
-        return;
     }
     if (alt) ui.text("{s}", .{lead}) else ui.textDisabled("{s}", .{lead});
     for (pieces[0..n]) |p| {
