@@ -148,6 +148,7 @@ moves everything reachable from it *without passing through* the base
 (`geometry.beyond`), around the base; grabbing the base itself moves its
 molecule, around the base. With nothing selected, the grabbed atom's molecule
 moves about its centre. Twisting needs a base and another atom, for the axis.
+Only atoms can be grabbed: which end of a bond would move wasn't clear.
 A gesture without meaning is refused with a message, and doesn't turn the
 camera instead. An earlier rule made the first selected atom the base
 of any multi-selection. It was dropped because it left that atom behind when

@@ -1277,6 +1277,7 @@ fn beginDrag(app: *App, kind: drag_mod.Kind, x: f32, y: f32) void {
         // Dragging on doesn't turn the camera instead.
         app.aborted_button = app.drag_button;
         switch (e) {
+            error.NotAnAtom => app.refuse("Drag an atom, not a bond", .{}),
             error.NotSelected => app.refuse("Drag one of the selected atoms to move the selection", .{}),
             error.NeedsOneBase => app.refuse("To twist, select a single atom and drag another: its branch turns about the line between them", .{}),
             else => app.fail("Can't move that: {t}", .{e}),
@@ -1288,7 +1289,7 @@ fn beginDragInner(app: *App, kind: drag_mod.Kind, x: f32, y: f32) !void {
     const h = app.hitAt(x, y) orelse return;
     const handle = switch (h.target) {
         .atom => |a| a,
-        .bond => |pair| drag_mod.bondHandle(app.selected(), pair),
+        .bond => return error.NotAnAtom,
     };
     try app.startDrag(kind, handle);
 }
@@ -4104,6 +4105,26 @@ test "a refused Alt-drag says so and does nothing, not even turn the camera" {
         const said = t.app.messages.items();
         try expectEqual(@as(usize, if (case.said) 1 else 0), said.len);
         if (case.said) try expectEqual(.refusal, said[0].kind);
+    }
+}
+
+test "Alt-dragging a bond is refused" {
+    for ([_][]const u32{ &.{}, &.{0}, &.{ 0, 1 } }) |sel| {
+        for ([_]u8{ c.SDL_BUTTON_LEFT, c.SDL_BUTTON_MIDDLE, c.SDL_BUTTON_RIGHT }) |button| {
+            var t: TestApp = try .init(1);
+            defer t.deinit();
+            try t.openText("2\n\nC 0 0 0\nC 1.5 0 0\n");
+            try t.show(0);
+            t.app.fitCamera();
+            t.select(sel);
+            t.app.messages = .{};
+            const at = t.app.screenProjector().toScreen(.{ 0.75, 0, 0 }).?;
+            t.app.altPress(button, false, at.x, at.y);
+            try expect(t.app.drag == null);
+            try expectEqual(button, t.app.aborted_button.?);
+            try expectEqual(1, t.app.messages.items().len);
+            try std.testing.expectEqualStrings("Drag an atom, not a bond", t.app.messages.items()[0].text());
+        }
     }
 }
 

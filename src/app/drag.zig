@@ -39,15 +39,6 @@ pub fn check(kind: Kind, sel: []const u32, handle: u32) Refusal!void {
     if (kind == .twist and (sel.len != 1 or grabbed_selected)) return error.NeedsOneBase;
 }
 
-/// The atom that dragging a bond grabs: not the base, and one of the
-/// selected ones if there are several.
-pub fn bondHandle(sel: []const u32, bond: [2]u32) u32 {
-    const first_selected = std.mem.findScalar(u32, sel, bond[0]) != null;
-    const second_selected = std.mem.findScalar(u32, sel, bond[1]) != null;
-    const prefer_first = if (sel.len == 1) second_selected else first_selected and !second_selected;
-    return bond[if (prefer_first) 0 else 1];
-}
-
 pub const Drag = struct {
     kind: Kind,
     /// Base atom the group rotates around (null: rotate about the group centre).
@@ -243,14 +234,4 @@ test "what the buttons do with Alt" {
     try expectEqual(Kind.rotate, gesture(.left, true));
     try expectEqual(null, gesture(.middle, true));
     try expectEqual(null, gesture(.right, true));
-}
-
-test "the atom that dragging a bond grabs" {
-    const expectEqual = std.testing.expectEqual;
-    try expectEqual(8, bondHandle(&.{}, .{ 7, 8 }));
-    try expectEqual(8, bondHandle(&.{7}, .{ 7, 8 })); // not the base
-    try expectEqual(7, bondHandle(&.{8}, .{ 7, 8 }));
-    try expectEqual(7, bondHandle(&.{ 7, 9 }, .{ 7, 8 }));
-    try expectEqual(8, bondHandle(&.{ 8, 9 }, .{ 7, 8 }));
-    try expectEqual(8, bondHandle(&.{ 1, 2 }, .{ 7, 8 }));
 }
