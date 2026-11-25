@@ -15,6 +15,51 @@ pub const Scale = struct {
     }
 };
 
+/// Round values along a scale, for its axis.
+pub const Ticks = struct {
+    first: f64,
+    step: f64,
+    count: usize,
+    /// To tell them from each other.
+    decimals: usize,
+
+    /// At most `most` of them.
+    pub fn of(s: Scale, most: usize) Ticks {
+        const range = s.hi - s.lo;
+        // A flat line has its value.
+        if (!(range > 0) or most < 2) return .{ .first = s.lo, .step = 1, .count = 1, .decimals = 6 };
+        // The smallest round step that doesn't give too many. Each is at most
+        // twice the one before, so that there are two at least.
+        var p = std.math.pow(f64, 10, @floor(@log10(range / @as(f64, @floatFromInt(most)))) - 1);
+        for (0..5) |_| {
+            for ([_]f64{ 1, 2, 2.5, 5 }) |k| {
+                const step = k * p;
+                const first = @ceil(s.lo / step - 1e-9) * step;
+                // Too small a step for the numbers to have.
+                if (first + step == first) continue;
+                const n = @floor((s.hi - first) / step + 1e-9) + 1;
+                if (n > @as(f64, @floatFromInt(most))) continue;
+                const more: f64 = if (k == 2.5) 1 else 0;
+                const decimals: usize = @intFromFloat(std.math.clamp(more - @floor(@log10(step) + 1e-9), 0, 12));
+                return .{ .first = first, .step = step, .count = @intFromFloat(@max(n, 0)), .decimals = decimals };
+            }
+            p *= 10;
+        }
+        return .{ .first = s.lo, .step = 1, .count = 1, .decimals = 6 };
+    }
+
+    pub fn value(t: Ticks, i: usize) f64 {
+        const v = t.first + @as(f64, @floatFromInt(i)) * t.step;
+        return if (@abs(v) < t.step * 1e-6) 0 else v; // not -0 or 1e-17
+    }
+
+    pub fn print(t: Ticks, buf: []u8, i: usize) ![:0]u8 {
+        const v = t.value(i);
+        if (v != 0 and (@abs(v) >= 1e9 or t.step < 1e-9)) return std.fmt.bufPrintSentinel(buf, "{e:.3}", .{v}, 0);
+        return std.fmt.bufPrintSentinel(buf, "{d:.[1]}", .{ v, t.decimals }, 0);
+    }
+};
+
 pub const Envelope = struct {
     key: ?Key = null,
     /// Per column; min > max where no value is known.
@@ -147,6 +192,41 @@ test "equal values are a flat line, and no values none" {
     try testing.expectEqual(null, e.scale());
     const s: Scale = .{ .lo = -2, .hi = 2 };
     for ([_]f64{ -2, 0, 2, 6 }, [_]f32{ 0, 0.5, 1, 2 }) |v, want| try testing.expectEqual(want, s.height(v));
+}
+
+test "ticks are round, within the scale, not too many, and told apart" {
+    var prng: std.Random.DefaultPrng = .init(4);
+    const r = prng.random();
+    for (0..5000) |_| {
+        const size = std.math.pow(f64, 10, r.float(f64) * 14 - 7);
+        const at = (r.float(f64) - 0.5) * 1e5;
+        const s: Scale = .{ .lo = at, .hi = at + size };
+        const most = 2 + r.uintLessThan(usize, 5);
+        const t: Ticks = .of(s, most);
+        try testing.expect(t.count <= most);
+        // One value isn't a scale.
+        if (most >= 3) try testing.expect(t.count >= 2);
+        for (0..t.count) |i| {
+            const v = t.value(i);
+            try testing.expect(v >= s.lo - size * 1e-3 and v <= s.hi + size * 1e-3);
+            var a: [64]u8 = undefined;
+            var b: [64]u8 = undefined;
+            if (i > 0 and size > 1e-4) try testing.expect(!std.mem.eql(u8, try t.print(&a, i - 1), try t.print(&b, i)));
+        }
+    }
+    const Case = struct { Scale, usize, []const []const u8 };
+    for ([_]Case{
+        .{ .{ .lo = 0.0038, .hi = 0.9492 }, 3, &.{ "0.25", "0.50", "0.75" } },
+        .{ .{ .lo = -57024.466, .hi = -57010.146 }, 3, &.{ "-57020", "-57015" } },
+        .{ .{ .lo = -1, .hi = 1 }, 3, &.{ "-1", "0", "1" } },
+        .{ .{ .lo = 0, .hi = 176 }, 3, &.{ "0", "100" } },
+        .{ .{ .lo = -7, .hi = -7 }, 3, &.{"-7.000000"} },
+    }) |case| {
+        const t: Ticks = .of(case[0], case[1]);
+        try testing.expectEqual(case[2].len, t.count);
+        var buf: [64]u8 = undefined;
+        for (case[2], 0..) |want, i| try testing.expectEqualStrings(want, try t.print(&buf, i));
+    }
 }
 
 test "it is worked out again only when something changed" {

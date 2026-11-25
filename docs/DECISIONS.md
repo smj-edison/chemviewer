@@ -377,10 +377,11 @@ background stay still. A frame with another numbering leaves both as they are
 while diffing, instead of restarting the lock there (D21). The diff panel can show both frames at their
 file positions.
 
-### D27 — The timeline zooms like Blender's
-*Decided and implemented 2026-11-24.* The wheel alone zooms the plot at the mouse;
-Shift, a sideways swipe or a middle drag pans. Video editors differ here, so it
-follows Blender. Zooming, there and in the 3D view, goes by the hand (up is in) even
+### D27 — The timeline's zoom, scroll and scales
+*Decided and implemented 2026-11-24.* Ctrl+wheel zooms the plots at the mouse;
+Shift, a sideways swipe or a middle drag pans; the wheel alone scrolls through the
+plots. (For a while the wheel alone zoomed, as in Blender; with several plots it is
+needed for scrolling.) The frame axis and its marks stay in view. Zooming, there and in the 3D view, goes by the hand (up is in) even
 if scrolling is set to be natural; panning follows the setting. A strip, a slider and
 a button do everything without modifiers. While playing, the playhead runs to
 the middle and the plot then moves steadily under it, unless the user panned away.

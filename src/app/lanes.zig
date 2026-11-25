@@ -16,6 +16,16 @@ fn color(app: *const App, i: usize) u32 {
     return ui.rgba(rgb[0], rgb[1], rgb[2], 1);
 }
 
+/// What the lane's height stands for. Null if no value is known.
+pub fn scaleOf(lane: Lane) ?Scale {
+    if (lane.fitted) |s| return s;
+    const a = lane.source;
+    a.lock();
+    defer a.unlock();
+    const r = a.pyramid(lane.column).range(a.table.columns[lane.column].values.items, 0, a.table.rows);
+    return if (r.known()) .{ .lo = r.lo, .hi = r.hi } else null;
+}
+
 /// What is in view, as a scale. Null if nothing is known there.
 pub fn scaleInView(app: *App, lane: Lane) ?Scale {
     const a = lane.source;
@@ -59,14 +69,14 @@ pub fn draw(app: *App, dl: *c.ImDrawList, i: usize, axis: plot.Axis, top: f32, h
     const doubt = if (al.confirmed) "" else al.evidence(&words);
     if (whole.known()) {
         const scale: Scale = lane.fitted orelse .{ .lo = whole.lo, .hi = whole.hi };
+        plot.valueAxis(dl, scale, axis, top, h);
         c.ImDrawList_PushClipRect(dl, ui.v2(axis.x0 - 4, top), ui.v2(axis.x0 + axis.width + 4, top + h), true);
         curve(dl, lane, values, pyramid, al, scale, axis, n, top, h, color(app, i));
         c.ImDrawList_PopClipRect(dl);
-        const label = ui.printZ(&buf, "{s}: {s}{s}{s}{s}  {d:.4} to {d:.4}{s}  {s}{s}", .{
+        const label = ui.printZ(&buf, "{s}: {s}{s}{s}{s}{s}  {s}{s}", .{
             name,                                       col.name,
             if (col.unit != null) " (" else "",         col.unit orelse "",
-            if (col.unit != null) ")" else "",          scale.lo,
-            scale.hi,                                   if (lane.fitted != null) ", fitted" else "",
+            if (col.unit != null) ")" else "",          if (lane.fitted != null) "  fitted" else "",
             if (doubt.len > 0) "unconfirmed: " else "", doubt,
         }) catch "";
         ui.plotLabel(dl, axis.x0 + 6, top + 3, label_col, label);

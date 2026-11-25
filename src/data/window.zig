@@ -125,8 +125,8 @@ pub const Window = struct {
         return w.zoomed(at, w.span() / s, n);
     }
 
-    /// What the wheel does over the axis, with the mouse at `at`: zooms, up
-    /// being in, or with Shift or sideways pans.
+    /// What the wheel does over the axis, with the mouse at `at`: with Ctrl it
+    /// zooms, up being in, and with Shift or sideways it pans.
     pub fn wheeled(w: Window, at: f64, wheel: Wheel, n: usize) Window {
         // Swipes are never quite straight: the larger part counts.
         const sideways = @abs(wheel.x) > @abs(wheel.y);
@@ -135,7 +135,7 @@ pub const Window = struct {
             const by: f64 = if (sideways) wheel.x else -wheel.y;
             return w.panned(0.1 * w.span() * by, n);
         }
-        if (wheel.up == 0) return w;
+        if (!wheel.ctrl or wheel.up == 0) return w;
         return w.zoomed(at, std.math.pow(f64, 1.25, wheel.up), n);
     }
 
@@ -299,15 +299,16 @@ test "while playing, the playhead runs to the middle, and then the window moves 
     try testing.expectApproxEqAbs(999.5, x, 0.01);
 }
 
-test "the wheel zooms, pans with Shift or sideways, and never does both" {
+test "the wheel zooms with Ctrl, pans with Shift or sideways, and never does both" {
     const n = 1000;
     const w: Window = .between(400, 600, n);
     const at = 450;
     // Up is in, whichever way scrolling is set.
-    try testing.expect(w.wheeled(at, .{ .y = 1, .up = 1 }, n).span() < w.span());
-    try testing.expect(w.wheeled(at, .{ .y = -1, .up = 1 }, n).span() < w.span());
-    try testing.expect(w.wheeled(at, .{ .y = -1, .up = -1 }, n).span() > w.span());
     try testing.expect(w.wheeled(at, .{ .y = 1, .up = 1, .ctrl = true }, n).span() < w.span());
+    try testing.expect(w.wheeled(at, .{ .y = -1, .up = 1, .ctrl = true }, n).span() < w.span());
+    try testing.expect(w.wheeled(at, .{ .y = -1, .up = -1, .ctrl = true }, n).span() > w.span());
+    // Alone it scrolls the plots.
+    try testing.expectEqual(w, w.wheeled(at, .{ .y = 1, .up = 1 }, n));
     const Case = struct { Wheel, f64 };
     for ([_]Case{
         .{ .{ .y = -1, .up = -1, .shift = true }, 20 }, // on with the wheel down
@@ -323,7 +324,7 @@ test "the wheel zooms, pans with Shift or sideways, and never does both" {
         try testing.expectApproxEqAbs(w.span(), got.span(), 1e-9);
         try testing.expectApproxEqAbs(w.lo + case[1], got.lo, 1e-9);
     }
-    const drifting = w.wheeled(at, .{ .x = 0.3, .y = 1, .up = 1 }, n);
+    const drifting = w.wheeled(at, .{ .x = 0.3, .y = 1, .up = 1, .ctrl = true }, n);
     try testing.expectApproxEqAbs(at, drifting.lo + 0.25 * drifting.span(), 1e-9);
 }
 

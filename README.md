@@ -153,7 +153,8 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 | Middle drag / Shift + left or right drag | translate |
 | Wheel | zoom |
 | Right drag on the timeline | scrub one frame per pixel |
-| Wheel on the timeline | zoom at the mouse |
+| Wheel on the timeline | scroll the plots |
+| Ctrl + wheel on the timeline | zoom at the mouse |
 | Shift + wheel / middle drag on the timeline | pan |
 | Z | show every frame on the timeline |
 | Space | play / pause |

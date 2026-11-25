@@ -54,6 +54,18 @@ pub const State = struct {
         s.offered.clearRetainingCapacity();
     }
 
+    /// Don't offer this file any more.
+    fn withdraw(s: *State, app: *App, path: []const u8) void {
+        var i = s.offered.items.len;
+        while (i > 0) {
+            i -= 1;
+            const offer = s.offered.items[i];
+            // `path` may be the offer itself.
+            if (offer.ptr == path.ptr or !sameFile(app, offer, path)) continue;
+            app.gpa.free(s.offered.orderedRemove(i));
+        }
+    }
+
     pub fn reading(s: *State) bool {
         for (s.sources.items) |a| {
             a.lock();
@@ -105,7 +117,10 @@ pub fn attach(app: *App, path: []const u8) void {
     const name = std.fs.path.basename(path);
     if (app.doc == null) return app.refuse("Open a trajectory first, then its data", .{});
     const s = &app.data;
-    for (s.sources.items) |a| if (std.mem.eql(u8, a.path, path)) return app.refuse("{s} is attached already", .{name});
+    for (s.sources.items) |a| if (sameFile(app, a.path, path)) {
+        s.withdraw(app, path);
+        return app.refuse("{s} is attached already", .{name});
+    };
     const a = Attached.start(app.io, app.gpa, path) catch |e| return switch (e) {
         error.NotATable => app.refuse("{s} isn't a table with named columns", .{name}),
         else => app.fail("Could not attach {s}: {t}", .{ name, e }),
@@ -114,8 +129,17 @@ pub fn attach(app: *App, path: []const u8) void {
         a.deinit();
         return app.fail("Could not attach {s}: {t}", .{ name, e });
     };
+    s.withdraw(app, path);
     s.show_panel = true;
     app.inform("Attached {s}", .{name});
+}
+
+/// However the paths are written.
+fn sameFile(app: *App, a: []const u8, b: []const u8) bool {
+    if (std.mem.eql(u8, a, b)) return true;
+    const sa = Io.Dir.cwd().statFile(app.io, a, .{}) catch return false;
+    const sb = Io.Dir.cwd().statFile(app.io, b, .{}) catch return false;
+    return sa.inode == sb.inode and sa.size == sb.size and std.mem.eql(u8, std.fs.path.basename(a), std.fs.path.basename(b));
 }
 
 /// A file or folder was dropped on the window.
@@ -171,7 +195,10 @@ fn findData(app: *App, dir: Io.Dir, path: []const u8) !void {
         if (left == 0) break;
         const full = try std.fs.path.join(app.gpa, &.{ path, entry.name });
         errdefer app.gpa.free(full);
-        if (!isData(app, full)) {
+        const attached = for (s.sources.items) |a| {
+            if (sameFile(app, a.path, full)) break true;
+        } else false;
+        if (attached or !isData(app, full)) {
             app.gpa.free(full);
             continue;
         }
@@ -265,8 +292,12 @@ fn offers(app: *App) void {
         ui.text("{s}", .{std.fs.path.basename(path)});
     }
     if (c.igSmallButton("Attach all")) {
-        for (s.offered.items) |path| attach(app, path);
-        s.clearOffered(app.gpa);
+        // Taken out first: attaching withdraws offers.
+        while (s.offered.items.len > 0) {
+            const path = s.offered.orderedRemove(0);
+            defer app.gpa.free(path);
+            attach(app, path);
+        }
         return;
     }
     c.igSameLine(0, -1);
@@ -284,7 +315,12 @@ fn sourceTree(app: *App, a: *Attached) bool {
     defer a.unlock();
     var buf: [256]u8 = undefined;
     const label = ui.printZ(&buf, "{s}###source", .{std.fs.path.basename(a.path)}) catch return false;
-    if (!c.igTreeNodeEx_Str(label.ptr, c.ImGuiTreeNodeFlags_DefaultOpen | c.ImGuiTreeNodeFlags_Framed)) return false;
+    const open = c.igTreeNodeEx_Str(label.ptr, c.ImGuiTreeNodeFlags_DefaultOpen | c.ImGuiTreeNodeFlags_Framed | c.ImGuiTreeNodeFlags_AllowOverlap);
+    // At the right end of the header.
+    const button_w = c.igCalcTextSize("Remove", null, false, -1).x + 2 * c.igGetStyle().*.FramePadding.x;
+    c.igSameLine(c.igGetWindowWidth() - button_w - c.igGetStyle().*.WindowPadding.x - c.igGetStyle().*.ScrollbarSize, 0);
+    const remove = c.igSmallButton("Remove");
+    if (!open) return remove;
     defer c.igTreePop();
     const t = &a.table;
     switch (a.state) {
@@ -317,7 +353,7 @@ fn sourceTree(app: *App, a: *Attached) bool {
             if (std.mem.eql(u8, mg, g)) columnBox(app, a, m, member.name[g.len + 1 ..]);
         }
     }
-    return c.igSmallButton("Remove");
+    return remove;
 }
 
 /// Call with the source locked.

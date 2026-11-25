@@ -2209,7 +2209,8 @@ const help = .{
         .{ "PgUp / PgDn", "jump 5%" },
         .{ "Home / End", "first / last frame" },
         .{ "Right drag on the timeline", "scrub one frame per pixel" },
-        .{ "Wheel on the timeline", "zoom at the mouse" },
+        .{ "Wheel on the timeline", "scroll the plots" },
+        .{ "Ctrl + wheel on the timeline", "zoom at the mouse" },
         .{ "Shift + wheel, or middle drag, on the timeline", "pan" },
         .{ "Z", "show every frame on the timeline" },
     } },
@@ -3694,11 +3695,19 @@ test "data is attached, given lanes, removed, and goes with the file" {
     try s.toggleLane(TestApp.gpa, s.sources.items[0], 1);
     try expectEqual(1, s.lanes.items.len);
 
-    // A folder offers what it has, and attaches nothing.
+    // A folder offers what it has that isn't attached, and attaches nothing.
     data_mod.drop(&t.app, dir);
-    try expectEqual(2, s.offered.items.len);
+    try expectEqual(1, s.offered.items.len);
     try expectEqual(1, s.sources.items.len);
     try expect(t.app.leaving == null);
+    s.detach(0);
+    data_mod.drop(&t.app, dir);
+    try expectEqual(2, s.offered.items.len);
+    // Attached some other way, by another spelling: no longer offered.
+    const hills = try std.fmt.bufPrint(&path_buf, "{s}/./HILLS", .{dir});
+    data_mod.drop(&t.app, hills);
+    try expectEqual(1, s.offered.items.len);
+    try expect(std.mem.endsWith(u8, s.offered.items[0], "COLVAR"));
     s.detach(0);
     try expectEqual(0, s.sources.items.len);
     try expectEqual(0, s.lanes.items.len);

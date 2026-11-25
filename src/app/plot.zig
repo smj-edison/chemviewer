@@ -10,6 +10,7 @@ const lanes = @import("lanes.zig");
 const Window = cv.window.Window;
 const Envelope = cv.envelope.Envelope;
 const Scale = cv.envelope.Scale;
+const Ticks = cv.envelope.Ticks;
 
 pub const State = struct {
     window: Window = .{ .lo = 0, .hi = 0 },
@@ -98,27 +99,87 @@ fn isFitted(app: *const App) bool {
     return false;
 }
 
-pub const hint: [:0]const u8 = "drag: scrub   right drag: finely   wheel: zoom   Shift+wheel or middle drag: pan   Z: show all";
+pub const hint: [:0]const u8 = "drag: scrub   right drag: finely   Ctrl+wheel: zoom   Shift+wheel or middle drag: pan   Z: show all";
 
 /// The energy and the lanes.
 fn plotCount(app: *const App) usize {
     return @max(@intFromBool(app.data.show_energy) + app.data.lanes.items.len, 1);
 }
 
-/// Of each of them: smaller when there are many.
-fn plotHeight(app: *const App) f32 {
-    const fs = c.igGetFontSize();
-    const room = c.igGetMainViewport().*.Size.y * 0.5 / @as(f32, @floatFromInt(plotCount(app)));
-    return std.math.clamp(room, fs * 1.6, fs * 4.3);
+/// Of each of them.
+fn plotHeight() f32 {
+    return c.igGetFontSize() * 4.3;
 }
 
-/// The frame numbers under the plot.
+/// Of all of them together.
+fn plotsHeight(app: *const App) f32 {
+    return plotHeight() * @as(f32, @floatFromInt(plotCount(app)));
+}
+
+/// Of the part of them that is in view; the rest is scrolled to.
+fn viewHeight(app: *const App) f32 {
+    const most = @max(c.igGetMainViewport().*.Size.y * 0.5, plotHeight());
+    return @min(plotsHeight(app), most);
+}
+
+fn markSize() f32 {
+    return c.igGetFontSize() * 0.4;
+}
+
+/// Marks and frame numbers under the plots.
 fn axisHeight() f32 {
-    return c.igGetFontSize() * 1.2;
+    return c.igGetFontSize() * 1.2 + 2.5 * markSize();
 }
 
 pub fn height(app: *const App) f32 {
-    return plotHeight(app) * @as(f32, @floatFromInt(plotCount(app))) + axisHeight() + c.igGetStyle().*.ItemSpacing.y + c.igGetFrameHeight();
+    return viewHeight(app) + axisHeight() + c.igGetStyle().*.ItemSpacing.y + c.igGetFrameHeight();
+}
+
+/// How many values fit along a plot's axis.
+fn tickCount() usize {
+    return @intFromFloat(@max(plotHeight() / (c.igGetFontSize() * 1.4), 2));
+}
+
+fn ticksWidth(scale: Scale) f32 {
+    const t: Ticks = .of(scale, tickCount());
+    var widest: f32 = 0;
+    for (0..t.count) |i| {
+        var buf: [64]u8 = undefined;
+        const s = t.print(&buf, i) catch continue;
+        widest = @max(widest, c.igCalcTextSize(s.ptr, null, false, -1).x);
+    }
+    return widest;
+}
+
+/// Room left of the plots for their values.
+fn gutter(app: *App) f32 {
+    var widest: f32 = 0;
+    if (app.data.show_energy) if (app.timeline.scale()) |s| {
+        widest = ticksWidth(s);
+    };
+    for (app.data.lanes.items) |l| if (lanes.scaleOf(l)) |s| {
+        widest = @max(widest, ticksWidth(s));
+    };
+    // In steps, so that it seldom moves.
+    const fs = c.igGetFontSize();
+    return @ceil((widest + 0.8 * fs) / fs) * fs;
+}
+
+/// Round values left of a plot, and faint lines across it.
+pub fn valueAxis(dl: *c.ImDrawList, scale: Scale, axis: Axis, top: f32, h: f32) void {
+    const fs = c.igGetFontSize();
+    const t: Ticks = .of(scale, tickCount());
+    const col = c.igGetColorU32_Col(c.ImGuiCol_TextDisabled, 1);
+    const line = c.igGetColorU32_Col(c.ImGuiCol_Border, 0.7);
+    for (0..t.count) |i| {
+        var buf: [64]u8 = undefined;
+        const s = t.print(&buf, i) catch continue;
+        const y = yOf(t.value(i), scale, top, h, 4);
+        c.ImDrawList_AddLine(dl, ui.v2(axis.x0 - 0.3 * fs, y), ui.v2(axis.x0 + axis.width, y), line, 1, 0);
+        const size = c.igCalcTextSize(s.ptr, null, false, -1);
+        const ty = std.math.clamp(y - size.y / 2, top, @max(top + h - size.y, top));
+        c.ImDrawList_AddText_Vec2(dl, ui.v2(axis.x0 - 0.5 * fs - size.x, ty), col, s.ptr, null);
+    }
 }
 
 /// Where the frames are on screen.
@@ -196,22 +257,37 @@ fn plot(app: *App, d: *App.Document) void {
     const n = d.frameCount();
     const marks = app.session.marks(app.gpa) catch &.{};
     defer app.gpa.free(marks);
-    const dl = c.igGetWindowDrawList();
     const fs = c.igGetFontSize();
-    // The frames keep off the edges, so that the first and last can be seen.
-    const inset = fs * 0.4;
     const outer0 = c.igGetCursorScreenPos();
     const outer_w = @max(c.igGetContentRegionAvail().x, 1);
-    // Of one plot; they are above each other.
-    const h = plotHeight(app);
-    const all_h = h * @as(f32, @floatFromInt(plotCount(app)));
-    const p0 = ui.v2(outer0.x + inset, outer0.y);
-    const w = @max(outer_w - 2 * inset, 1);
+    const h = plotHeight();
+    const all_h = plotsHeight(app);
+    const view_h = viewHeight(app);
+    const bar_w = if (all_h > view_h + 0.5) c.igGetStyle().*.ScrollbarSize else 0;
+    // The frames keep off the edges, so that the first and last can be seen.
+    const inset = fs * 0.4;
+    const left = outer0.x + gutter(app) + inset;
+    const w = @max(outer_w - (left - outer0.x) - inset - bar_w, 1);
+    const outer1 = ui.v2(outer0.x + outer_w, outer0.y + view_h + axisHeight());
+    const outer_dl = c.igGetWindowDrawList();
+    c.ImDrawList_AddRectFilled(outer_dl, outer0, outer1, c.igGetColorU32_Col(c.ImGuiCol_FrameBg, 1), 3, 0);
+
+    // The frame axis, which stays in view, then the plots, which scroll.
+    const axis_top = outer0.y + view_h;
+    c.igSetCursorScreenPos(ui.v2(outer0.x, axis_top));
+    _ = c.igInvisibleButton("##axis", ui.v2(outer_w, axisHeight()), 0);
+    const on_axis = c.igIsItemHovered(0);
+    const axis_active = c.igIsItemActive();
+    c.igSetCursorScreenPos(outer0);
+    c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, 0);
+    defer c.igPopStyleColor(1);
+    _ = c.igBeginChild_Str("##plots", ui.v2(outer_w, view_h), 0, 0);
+    const dl = c.igGetWindowDrawList();
+    const p0 = ui.v2(left, c.igGetCursorScreenPos().y);
     const p1 = ui.v2(p0.x + w, p0.y + all_h);
-    const outer1 = ui.v2(outer0.x + outer_w, p1.y + axisHeight());
-    _ = c.igInvisibleButton("##energy", ui.v2(outer_w, all_h + axisHeight()), 0);
-    const hovered = c.igIsItemHovered(0);
-    const active = c.igIsItemActive();
+    _ = c.igInvisibleButton("##values", ui.v2(outer_w - bar_w, all_h), 0);
+    const hovered = c.igIsItemHovered(0) or on_axis;
+    const active = c.igIsItemActive() or axis_active;
     const mouse = c.igGetMousePos();
 
     // Pan and zoom first, so that everything below is drawn where it ends up.
@@ -229,9 +305,9 @@ fn plot(app: *App, d: *App.Document) void {
     }
     const axis: Axis = .{ .window = s.window, .x0 = p0.x, .width = w };
 
-    // Marks of edited frames are along the bottom.
-    const mark_size = fs * 0.4;
-    const in_marks = mouse.y >= p1.y - 2.5 * mark_size and mouse.y <= p1.y;
+    // Marks of edited frames are at the top of the axis.
+    const mark_size = markSize();
+    const in_marks = mouse.y >= axis_top and mouse.y <= axis_top + 2.5 * mark_size;
     const pointed: ?Mark = if (in_marks) markAt(marks, mouse.x, mark_size + 2, axis) else null;
     if (active and n > 0) {
         // Holding the button still isn't asking for the frame again (playback
@@ -246,10 +322,6 @@ fn plot(app: *App, d: *App.Document) void {
     const light = app.style.theme == .light;
     const accent = lineColor(app);
     const label_col = c.igGetColorU32_Col(c.ImGuiCol_TextDisabled, 1);
-    c.ImDrawList_AddRectFilled(dl, outer0, outer1, c.igGetColorU32_Col(c.ImGuiCol_FrameBg, 1), 3, 0);
-    c.ImDrawList_PushClipRect(dl, outer0, outer1, true);
-    defer c.ImDrawList_PopClipRect(dl);
-
     const scanned = d.stream.energiesScanned();
     const cols: usize = @intFromFloat(@max(w, 2));
     const env = &s.plot_env;
@@ -261,22 +333,18 @@ fn plot(app: *App, d: *App.Document) void {
     if (!app.data.show_energy) {
         if (app.data.lanes.items.len == 0) c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, "nothing shown (see Data)", null);
     } else if (s.scale()) |scale| {
-        c.ImDrawList_PushClipRect(dl, outer0, ui.v2(outer1.x, p0.y + h), true);
+        valueAxis(dl, scale, axis, p0.y, h);
+        c.ImDrawList_PushClipRect(dl, ui.v2(p0.x - inset, p0.y), ui.v2(p1.x + inset, p0.y + h), true);
         curve(dl, d, env, scale, axis, p0.y, h, 4, accent);
         c.ImDrawList_PopClipRect(dl);
-        var buf: [128]u8 = undefined;
-        // What the plot's height stands for.
-        const of = if (s.fitted != null) ", fitted" else "";
-        const label = (if (unit) |u|
-            ui.printZ(&buf, "E ({s})  {d:.6} to {d:.6}  (range {e:.3}{s})", .{ u, scale.lo, scale.hi, scale.hi - scale.lo, of })
-        else
-            ui.printZ(&buf, "E  {d:.6} to {d:.6}  (range {e:.3}{s})", .{ scale.lo, scale.hi, scale.hi - scale.lo, of })) catch "";
+        var buf: [64]u8 = undefined;
+        const of = if (s.fitted != null) "  fitted" else "";
+        const label = (if (unit) |u| ui.printZ(&buf, "E ({s}){s}", .{ u, of }) else ui.printZ(&buf, "E{s}", .{of})) catch "";
         ui.plotLabel(dl, p0.x + 6, p0.y + 3, label_col, label);
     } else {
         const msg: [:0]const u8 = if (scanned < n) "scanning energies..." else "no energies in this file";
         c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, msg.ptr, null);
     }
-    ticks(dl, axis, n, p1.y, label_col);
 
     // Diff reference marker and playhead.
     if (n > 1) {
@@ -286,7 +354,7 @@ fn plot(app: *App, d: *App.Document) void {
             c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), ui.rgba(rc[0], rc[1], rc[2], 1), 2, 0);
             const label_w = c.igCalcTextSize("ref", null, false, -1).x;
             const label_x = if (x + label_w + 8 > p1.x) x - label_w - 4 else x + 4;
-            c.ImDrawList_AddText_Vec2(dl, ui.v2(label_x, p1.y - fs - 3 * mark_size), c.igGetColorU32_Col(c.ImGuiCol_Text, 1), "ref", null);
+            c.ImDrawList_AddText_Vec2(dl, ui.v2(label_x, outer0.y + view_h - fs - 2), c.igGetColorU32_Col(c.ImGuiCol_Text, 1), "ref", null);
         };
         if (s.window.containsAt(head)) {
             const x = s.window.toX(head, axis.x0, axis.width);
@@ -295,22 +363,27 @@ fn plot(app: *App, d: *App.Document) void {
         if (scanned < n) {
             // Thin progress bar for the background energy scan.
             const t = @as(f32, @floatFromInt(scanned)) / @as(f32, @floatFromInt(n));
-            c.ImDrawList_AddLine(dl, ui.v2(p0.x, p1.y - 1), ui.v2(p0.x + t * w, p1.y - 1), accent, 2, 0);
+            c.ImDrawList_AddLine(dl, ui.v2(p0.x, p0.y + h - 1), ui.v2(p0.x + t * w, p0.y + h - 1), accent, 2, 0);
         }
     }
+    c.igEndChild();
+
+    ticks(outer_dl, axis, n, axis_top + 2.5 * mark_size, label_col);
     const mark_col = c.igGetColorU32_Col(c.ImGuiCol_Text, 1);
     for (marks) |m| {
         if (!s.window.contains(m.index)) continue;
         const x = axis.x(m.index);
-        const base = p1.y - 2;
+        const base = axis_top + 2.2 * mark_size;
         const top = ui.v2(x, base - 2 * mark_size);
-        const left = ui.v2(x - mark_size, base);
-        const right = ui.v2(x + mark_size, base);
+        const base_l = ui.v2(x - mark_size, base);
+        const base_r = ui.v2(x + mark_size, base);
         // Hollow once saved.
         if (m.unsaved) {
-            c.ImDrawList_AddTriangleFilled(dl, top, left, right, mark_col);
-        } else c.ImDrawList_AddTriangle(dl, top, left, right, mark_col, 1.5, 0);
+            c.ImDrawList_AddTriangleFilled(outer_dl, top, base_l, base_r, mark_col);
+        } else c.ImDrawList_AddTriangle(outer_dl, top, base_l, base_r, mark_col, 1.5, 0);
     }
+    // On to what is below, wherever the items above left off.
+    c.igSetCursorScreenPos(ui.v2(outer0.x, outer1.y + c.igGetStyle().*.ItemSpacing.y));
     if (hovered and n > 0 and s.pan_x == null) {
         const i = if (pointed) |m| m.index else axis.frameAt(mouse.x);
         if (c.igBeginTooltip()) {
