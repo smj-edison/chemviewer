@@ -121,6 +121,7 @@ something is picked up.
   Things." Make sure we have signifiers for standard things and progressive
   discoverability for others. Also make sure we avoid modes as much as
   reasonably possible.
+  *Report in `.scratch/ui-and-timeline/audit.md`; waiting for a pick.*
 - [x] Small visual glitch in Cel display style. If you look at the root where a bond
   joins with an atom, you can see a black halo around the bond, but it should appear
   to be a filled cylinder with the bond embedded inside of it.
