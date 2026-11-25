@@ -208,6 +208,9 @@ pub fn main(init: std.process.Init) !void {
     // The app ID (Wayland) and window class (X11) match packaging/chemviewer.desktop,
     // so the desktop shows its icon on the window.
     _ = c.SDL_SetAppMetadata("chemviewer", null, "chemviewer");
+    // Ctrl+C in the terminal and SIGTERM end the app; as quit events they would
+    // only bring up the question about unsaved edits.
+    _ = c.SDL_SetHint(c.SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer c.SDL_Quit();
 
@@ -295,6 +298,9 @@ pub fn main(init: std.process.Init) !void {
                 .light => lightImGuiColors(),
                 .dark => darkImGuiColors(),
             }
+            // No dimming: at a fractional display scale ImGui draws it
+            // anti-aliased, and asserts that it didn't.
+            for ([_]usize{ c.ImGuiCol_ModalWindowDimBg, c.ImGuiCol_NavWindowingDimBg }) |col| style.*.Colors[col].w = 0;
         }
 
         c.cvImGuiVulkanNewFrame();
