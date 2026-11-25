@@ -30,6 +30,9 @@ pub const saving = @import("saving.zig");
 pub const window = @import("data/window.zig");
 pub const envelope = @import("data/envelope.zig");
 pub const table = @import("data/table.zig");
+pub const pyramid = @import("data/pyramid.zig");
+pub const alignment = @import("data/align.zig");
+pub const attached = @import("data/attached.zig");
 
 pub const Frame = structure.Frame;
 pub const Vec3 = math.Vec3;
