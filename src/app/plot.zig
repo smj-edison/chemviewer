@@ -8,6 +8,7 @@ const ui = @import("ui.zig");
 const App = @import("App.zig");
 const Window = cv.window.Window;
 const Envelope = cv.envelope.Envelope;
+const Scale = cv.envelope.Scale;
 
 pub const State = struct {
     window: Window = .{ .lo = 0, .hi = 0 },
@@ -28,13 +29,31 @@ pub const State = struct {
     /// Wheel movement over the UI since the last frame.
     wheel: cv.window.Wheel = .{},
     plot_env: Envelope = .{},
+    /// Of the whole trajectory.
     strip_env: Envelope = .{},
+    /// The energy scale the user fitted (null = that of the whole trajectory).
+    fitted: ?Scale = null,
 
     const Part = enum { lo, hi, window };
 
     pub fn deinit(s: *State, gpa: std.mem.Allocator) void {
         s.plot_env.deinit(gpa);
         s.strip_env.deinit(gpa);
+    }
+
+    /// The energy scale changes only when the user fits it, so that a height
+    /// always means the same.
+    fn scale(s: *const State) ?Scale {
+        if (s.fitted) |f| return f;
+        // The strip is drawn later; it may still be another file's.
+        const of_run = if (s.strip_env.key) |k| k.document == s.document else false;
+        return if (of_run) s.strip_env.scale() else s.plot_env.scale();
+    }
+
+    /// Show every frame, and every energy.
+    pub fn fitAll(s: *State, n: usize) void {
+        s.window = .all(n);
+        s.fitted = null;
     }
 
     /// Keep the playhead in view. A new file starts with everything in view, or
@@ -45,6 +64,7 @@ pub const State = struct {
             s.document = app.documents_opened;
             s.window = if (s.initial) |r| .between(r[0], r[1], n) else .all(n);
             s.initial = null;
+            s.fitted = null;
             s.pan_x = null;
             s.grab = null;
         } else if (app.plot_drag == null and s.grab == null) {
@@ -213,16 +233,20 @@ fn plot(app: *App, d: *App.Document) void {
     const env = &s.plot_env;
     env.update(app.gpa, .{ .values = scanned, .document = app.documents_opened, .n = n, .window = s.window, .cols = cols }, d.stream);
     const unit = d.format.energyUnit();
-    if (env.known()) {
-        curve(dl, d, env, axis, p0.y, h, 4, accent);
+    if (s.scale()) |scale| {
+        c.ImDrawList_PushClipRect(dl, outer0, ui.v2(outer1.x, p1.y), true);
+        curve(dl, d, env, scale, axis, p0.y, h, 4, accent);
+        c.ImDrawList_PopClipRect(dl);
         var buf: [128]u8 = undefined;
+        // What the plot's height stands for.
+        const of = if (s.fitted != null) ", fitted" else "";
         const label = (if (unit) |u|
-            ui.printZ(&buf, "E ({s})  {d:.6} to {d:.6}  (range {e:.3})", .{ u, env.lo, env.hi, env.hi - env.lo })
+            ui.printZ(&buf, "E ({s})  {d:.6} to {d:.6}  (range {e:.3}{s})", .{ u, scale.lo, scale.hi, scale.hi - scale.lo, of })
         else
-            ui.printZ(&buf, "E  {d:.6} to {d:.6}  (range {e:.3})", .{ env.lo, env.hi, env.hi - env.lo })) catch "";
+            ui.printZ(&buf, "E  {d:.6} to {d:.6}  (range {e:.3}{s})", .{ scale.lo, scale.hi, scale.hi - scale.lo, of })) catch "";
         c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, label.ptr, null);
     } else {
-        const msg: [:0]const u8 = if (scanned < n) "scanning energies..." else if (s.window.isAll(n)) "no energies in this file" else "no energies here";
+        const msg: [:0]const u8 = if (scanned < n) "scanning energies..." else "no energies in this file";
         c.ImDrawList_AddText_Vec2(dl, ui.v2(p0.x + 6, p0.y + 3), label_col, msg.ptr, null);
     }
     ticks(dl, axis, n, p1.y, label_col);
@@ -284,7 +308,7 @@ fn headColor(app: *const App, light: bool) u32 {
 
 /// A line through the frames, or with more frames than pixel columns, a min/max
 /// envelope per column.
-fn curve(dl: *c.ImDrawList, d: *App.Document, env: *const Envelope, axis: Axis, top: f32, h: f32, pad: f32, col: u32) void {
+fn curve(dl: *c.ImDrawList, d: *App.Document, env: *const Envelope, scale: Scale, axis: Axis, top: f32, h: f32, pad: f32, col: u32) void {
     const range = axis.window.frames(d.frameCount());
     var prev: ?c.ImVec2_c = null;
     if (range[1] - range[0] <= env.min.len) {
@@ -293,7 +317,7 @@ fn curve(dl: *c.ImDrawList, d: *App.Document, env: *const Envelope, axis: Axis, 
                 prev = null;
                 continue;
             };
-            const at = ui.v2(axis.x(i), yOf(e, env, top, h, pad));
+            const at = ui.v2(axis.x(i), yOf(e, scale, top, h, pad));
             if (prev) |p| c.ImDrawList_AddLine(dl, p, at, col, 1, 0);
             // Single frames, once there is room for them.
             if (axis.window.span() * 8 < axis.width) c.ImDrawList_AddCircleFilled(dl, at, 2, col, 0);
@@ -307,8 +331,8 @@ fn curve(dl: *c.ImDrawList, d: *App.Document, env: *const Envelope, axis: Axis, 
             continue;
         }
         const x = axis.x0 + @as(f32, @floatFromInt(k)) + 0.5;
-        const ya = yOf(hi, env, top, h, pad);
-        const yb = yOf(lo, env, top, h, pad);
+        const ya = yOf(hi, scale, top, h, pad);
+        const yb = yOf(lo, scale, top, h, pad);
         c.ImDrawList_AddLine(dl, ui.v2(x, ya), ui.v2(x, yb + 1), col, 1, 0);
         const mid = ui.v2(x, (ya + yb) / 2);
         if (prev) |p| c.ImDrawList_AddLine(dl, p, mid, col, 1, 0);
@@ -316,8 +340,8 @@ fn curve(dl: *c.ImDrawList, d: *App.Document, env: *const Envelope, axis: Axis, 
     }
 }
 
-fn yOf(e: f64, env: *const Envelope, top: f32, h: f32, pad: f32) f32 {
-    return top + pad + (1 - env.height(e)) * (h - 2 * pad);
+fn yOf(e: f64, scale: Scale, top: f32, h: f32, pad: f32) f32 {
+    return top + pad + (1 - scale.height(e)) * (h - 2 * pad);
 }
 
 /// Frame numbers (1-based) at round places.
@@ -354,7 +378,8 @@ fn strip(app: *App, d: *App.Document) void {
     const fit_w = c.igCalcTextSize("Fit", null, false, -1).x + 2 * style.*.FramePadding.x;
     const inset = fs * 0.4;
     const outer0 = c.igGetCursorScreenPos();
-    const outer_w = @max(c.igGetContentRegionAvail().x - slider_w - fit_w - 2 * style.*.ItemSpacing.x, fs * 4);
+    const fit_e_w = c.igCalcTextSize("Fit E", null, false, -1).x + 2 * style.*.FramePadding.x;
+    const outer_w = @max(c.igGetContentRegionAvail().x - slider_w - fit_w - fit_e_w - 3 * style.*.ItemSpacing.x, fs * 4);
     const h = c.igGetFrameHeight();
     const outer1 = ui.v2(outer0.x + outer_w, outer0.y + h);
     _ = c.igInvisibleButton("##strip", ui.v2(outer_w, h), 0);
@@ -413,7 +438,7 @@ fn strip(app: *App, d: *App.Document) void {
     c.ImDrawList_PushClipRect(dl, outer0, outer1, true);
     const env = &s.strip_env;
     env.update(app.gpa, .{ .values = d.stream.energiesScanned(), .document = app.documents_opened, .n = n, .window = whole.window, .cols = @intFromFloat(@max(whole.width, 2)) }, d.stream);
-    if (env.known()) curve(dl, d, env, whole, outer0.y, h, 3, lineColor(app));
+    if (env.scale()) |scale| curve(dl, d, env, scale, whole, outer0.y, h, 3, lineColor(app));
     const cover = c.igGetColorU32_Col(c.ImGuiCol_WindowBg, 0.65);
     c.ImDrawList_AddRectFilled(dl, outer0, ui.v2(x_lo, outer1.y), cover, 0, 0);
     c.ImDrawList_AddRectFilled(dl, ui.v2(x_hi, outer0.y), outer1, cover, 0, 0);
@@ -439,6 +464,9 @@ fn strip(app: *App, d: *App.Document) void {
     }
     ui.tooltip("Zoom in around the playhead, or the middle if it is out of view.");
     c.igSameLine(0, -1);
-    if (c.igButton("Fit", ui.v2(fit_w, 0))) s.window = .all(n);
-    ui.tooltip("Show every frame (Z).");
+    if (c.igButton("Fit E", ui.v2(fit_e_w, 0))) s.fitted = s.plot_env.scale();
+    ui.tooltip("Fit the energy scale to what is in view now. It stays so until Fit.");
+    c.igSameLine(0, -1);
+    if (c.igButton("Fit", ui.v2(fit_w, 0))) s.fitAll(n);
+    ui.tooltip("Show every frame, and every energy (Z).");
 }

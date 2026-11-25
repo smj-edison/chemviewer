@@ -969,7 +969,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
                 c.SDLK_END => app.keyFrame(n - 1, held),
                 c.SDLK_F => app.fitCamera(),
                 c.SDLK_Z => if ((ev.key.mod & c.SDL_KMOD_CTRL) == 0) {
-                    app.timeline.window = .all(n);
+                    app.timeline.fitAll(n);
                 },
                 else => {},
             }

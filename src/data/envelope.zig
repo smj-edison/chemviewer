@@ -4,6 +4,17 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Window = @import("window.zig").Window;
 
+/// What the height of a plot stands for.
+pub const Scale = struct {
+    lo: f64,
+    hi: f64,
+
+    /// Where `v` is: 0 at the bottom, 1 at the top, beyond them off the plot.
+    pub fn height(s: Scale, v: f64) f32 {
+        return if (s.hi > s.lo) @floatCast((v - s.lo) / (s.hi - s.lo)) else 0.5;
+    }
+};
+
 pub const Envelope = struct {
     key: ?Key = null,
     /// Per column; min > max where no value is known.
@@ -33,9 +44,8 @@ pub const Envelope = struct {
         return e.lo <= e.hi;
     }
 
-    /// Where `v` is between the lowest (0) and the highest (1).
-    pub fn height(e: Envelope, v: f64) f32 {
-        return if (e.hi > e.lo) @floatCast((v - e.lo) / (e.hi - e.lo)) else 0.5;
+    pub fn scale(e: Envelope) ?Scale {
+        return if (e.known()) .{ .lo = e.lo, .hi = e.hi } else null;
     }
 
     /// Out of memory, it is empty.
@@ -131,9 +141,12 @@ test "equal values are a flat line, and no values none" {
     defer e.deinit(testing.allocator);
     e.update(testing.allocator, .{ .values = 0, .document = 0, .n = 100, .window = .between(10, 40, 100), .cols = 10 }, &flat);
     try testing.expect(e.known());
-    try testing.expectEqual(0.5, e.height(-7));
+    try testing.expectEqual(0.5, e.scale().?.height(-7));
     e.update(testing.allocator, .{ .values = 0, .document = 0, .n = 100, .window = .between(60, 90, 100), .cols = 10 }, &flat);
     try testing.expect(!e.known());
+    try testing.expectEqual(null, e.scale());
+    const s: Scale = .{ .lo = -2, .hi = 2 };
+    for ([_]f64{ -2, 0, 2, 6 }, [_]f32{ 0, 0.5, 1, 2 }) |v, want| try testing.expectEqual(want, s.height(v));
 }
 
 test "it is worked out again only when something changed" {

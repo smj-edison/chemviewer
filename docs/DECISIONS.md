@@ -384,5 +384,8 @@ follows Blender. Zooming, there and in the 3D view, goes by the hand (up is in) 
 if scrolling is set to be natural; panning follows the setting. A strip, a slider and
 a button do everything without modifiers. While playing, the playhead runs to
 the middle and the plot then moves steadily under it, unless the user panned away.
-By hand, the plot moves only as far as needed. The window's arithmetic, including
+By hand, the plot moves only as far as needed.
+Only atom positions are ever interpolated, to make trajectories easier to watch;
+values aren't. A value scale is that of the whole run and changes only when the user
+fits it, so a height always means the same value. The window's arithmetic, including
 the wheel, is in `data/window.zig`.

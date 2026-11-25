@@ -21,4 +21,6 @@ src/data/window.zig (arithmetic, wheel, following), src/data/envelope.zig (per-c
 
 The following, two-frame, wheel and flat-line tests were written before the code they test, and failed to compile or failed without it; the rest of the window and envelope tests came with their code. Mouse gestures on the strip and the bar's hint have no tests; the user tried the wheel, zooming a 492,963-frame file, and following.
 
-Left: smoothing the energy scale as the plot moves; 8 lanes of a million points at the display rate (11).
+After the review: the energy scale is the whole run's, and changes only by Fit E (the user: values are delicate, only atoms interpolate).
+
+Left: 8 lanes of a million points at the display rate (11).
