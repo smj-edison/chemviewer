@@ -89,7 +89,9 @@ Lanes
 - At most a left and a right y axis, coloured like their series.
 - The panel resizes (up to about two thirds of the window) and scrolls; lanes have
   their own height and collapse. The energy plot is the first lane.
-- Ctrl+wheel zooms at the cursor, wheel scrolls, Shift+wheel and middle drag pan, an
+- The wheel zooms at the cursor, as in Blender (revised 2026-11-24; was Ctrl+wheel),
+  up is in; lanes scroll by the scroll bar, or the wheel over their names. While
+  playing, the plot moves steadily under the playhead. Shift+wheel and middle drag pan, an
   overview strip shows the window (drag its edges), and a key fits. Left drag
   scrubs, right drag scrubs finely.
 - Lines, or points for HILLS, switchable.

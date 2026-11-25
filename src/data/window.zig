@@ -21,7 +21,10 @@ pub const Window = struct {
     }
 
     pub fn contains(w: Window, frame: usize) bool {
-        const f: f64 = @floatFromInt(frame);
+        return w.containsAt(@floatFromInt(frame));
+    }
+
+    pub fn containsAt(w: Window, f: f64) bool {
         return f >= w.lo and f <= w.hi;
     }
 
@@ -55,11 +58,31 @@ pub const Window = struct {
         return (Window{ .lo = w.lo + by, .hi = w.hi + by }).fitted(n);
     }
 
-    /// The playhead went from frame `was` to `now`: keep it in view. While
-    /// playing, not if the user has panned away from it.
-    pub fn following(w: Window, was: usize, now: usize, playing: bool, n: usize) Window {
-        if (was == now or (playing and !w.contains(was))) return w;
-        return w.revealing(now, n);
+    /// The playhead went from `was` to `now`: keep it in view. While playing it
+    /// runs to the middle, and from there the window moves steadily under it;
+    /// not if the user has panned away from it. Otherwise the window moves only
+    /// as far as needed, or to where the playhead jumped.
+    pub fn following(w: Window, was: f64, now: f64, playing: bool, n: usize) Window {
+        if (was == now) return w;
+        const half = w.span() / 2;
+        if (playing) {
+            if (!w.containsAt(was)) return w;
+            const jumped = now < was or now - was > half;
+            if (jumped) return if (w.containsAt(now)) w else w.centred(now, n);
+            const past = now - (w.lo + half);
+            return if (past > 0) w.panned(@min(now - was, past), n) else w;
+        }
+        if (now > w.hi + half or now < w.lo - half) return w.centred(now, n);
+        const margin = w.span() * 0.1;
+        const over = now - (w.hi - margin);
+        const under = (w.lo + margin) - now;
+        if (now > was and over > 0) return w.panned(over, n);
+        if (now < was and under > 0) return w.panned(-under, n);
+        return w;
+    }
+
+    fn centred(w: Window, at: f64, n: usize) Window {
+        return w.panned(at - (w.lo + w.hi) / 2, n);
     }
 
     /// Move one end; the other stays.
@@ -69,16 +92,6 @@ pub const Window = struct {
 
     pub fn withHi(w: Window, hi: f64, n: usize) Window {
         return .{ .lo = w.lo, .hi = std.math.clamp(hi, @min(w.lo + @min(1, last(n)), last(n)), last(n)) };
-    }
-
-    /// Moved so that `frame` is in it, a tenth from the end it came in by.
-    pub fn revealing(w: Window, frame: usize, n: usize) Window {
-        if (w.contains(frame)) return w;
-        const f: f64 = @floatFromInt(frame);
-        const margin = w.span() * 0.1;
-        // Going on to the right, most of what comes next is in view.
-        const lo = if (f > w.hi) f - margin else f - w.span() + margin;
-        return (Window{ .lo = lo, .hi = lo + w.span() }).fitted(n);
     }
 
     /// How far it is zoomed in: 0 = everything, 1 = two frames. Each step
@@ -162,7 +175,7 @@ test "whatever is done to a window, it stays within the trajectory and shows two
                 3 => w.withLo(x, n),
                 4 => w.withHi(x, n),
                 5 => w.atLevel(r.float(f64) * 1.2 - 0.1, x, n),
-                6 => w.revealing(if (n == 0) 0 else r.uintLessThan(usize, n), n),
+                6 => w.following(r.float(f64) * end, r.float(f64) * end, r.boolean(), n),
                 else => .between(x, r.float(f64) * end, n),
             };
             try expectSound(w, n);
@@ -217,24 +230,59 @@ test "every frame is at its own pixel and found there once zoomed in enough" {
     try testing.expectEqual(250_200, w.frameAt(5000, 10, 1000));
 }
 
-test "a frame that is revealed is in view, with most of what comes next" {
-    const w: Window = .between(100, 200, 1000);
-    try testing.expectEqual(w, w.revealing(200, 1000));
-    const on = w.revealing(201, 1000);
-    try testing.expect(on.contains(201) and on.contains(280) and on.span() == 100);
-    const back = w.revealing(99, 1000);
-    try testing.expect(back.contains(99) and back.contains(20) and back.span() == 100);
-    try testing.expectEqual(Window{ .lo = 899, .hi = 999 }, w.revealing(999, 1000));
+test "while playing, the playhead runs to the middle, and then the window moves steadily under it" {
+    const n = 1000;
+    var w: Window = .between(100, 200, n);
+    var was: f64 = 100;
+    var x = w.toX(was, 0, 1000);
+    while (was < 999) {
+        const now = @min(was + 0.37, 999);
+        const next = w.following(was, now, true, n);
+        const next_x = next.toX(now, 0, 1000);
+        // It never jumps, neither the window nor the playhead on screen.
+        try testing.expect(next.lo >= w.lo and next.lo - w.lo < 0.38);
+        try testing.expect(next_x >= x - 0.01 and next_x - x < 3.8);
+        try testing.expectApproxEqAbs(100, next.span(), 1e-6);
+        if (now > 151 and next.hi < 999) try testing.expectApproxEqAbs(500, next_x, 5);
+        w = next;
+        was = now;
+        x = next_x;
+    }
+    // At the end there is nothing left to scroll to, and it runs on.
+    try testing.expectApproxEqAbs(999, w.hi, 1e-6);
+    try testing.expectApproxEqAbs(999.5, x, 0.01);
 }
 
-test "the playhead is followed, unless the user panned away while playing" {
+test "a playhead past the middle stays at its place on screen" {
     const w: Window = .between(100, 200, 1000);
-    try testing.expectEqual(w, w.following(150, 151, true, 1000));
-    try testing.expect(w.following(200, 201, true, 1000).contains(201));
-    try testing.expectEqual(w, w.following(500, 501, true, 1000)); // panned away
-    try testing.expect(w.following(99, 100, true, 1000).contains(100)); // it comes into view
-    try testing.expect(w.following(500, 501, false, 1000).contains(501)); // a key
-    try testing.expectEqual(w, w.following(500, 500, false, 1000)); // panned, at rest
+    const next = w.following(180, 181, true, 1000);
+    try testing.expectEqual(Window{ .lo = 101, .hi = 201 }, next);
+}
+
+test "the playhead isn't followed when the user panned away while playing" {
+    const w: Window = .between(100, 200, 1000);
+    try testing.expectEqual(w, w.following(500, 501, true, 1000));
+    try testing.expectEqual(w, w.following(99.5, 99.9, true, 1000));
+    try testing.expect(w.following(99, 100, true, 1000).containsAt(100)); // it comes into view
+    // A loop starts over, in view.
+    const end: Window = .between(899, 999, 1000);
+    try testing.expectEqual(Window{ .lo = 0, .hi = 100 }, end.following(999, 0, true, 1000));
+}
+
+test "steps at rest scroll only as far as needed, and jumps go there" {
+    const w: Window = .between(100, 200, 1000);
+    try testing.expectEqual(w, w.following(150, 151, false, 1000));
+    try testing.expectEqual(w, w.following(500, 500, false, 1000)); // panned
+    var at = w;
+    for (150..400) |i| {
+        const next = at.following(@floatFromInt(i), @floatFromInt(i + 1), false, 1000);
+        try testing.expect(next.lo - at.lo <= 1);
+        try testing.expect(next.contains(i + 1));
+        at = next;
+    }
+    try testing.expect(at.contains(409)); // some of what comes next
+    const far = w.following(150, 700, false, 1000);
+    try testing.expectEqual(Window{ .lo = 650, .hi = 750 }, far);
 }
 
 test "the zoom level goes from everything to two frames, and back to the same window" {

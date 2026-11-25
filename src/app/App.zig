@@ -672,7 +672,7 @@ fn keepFrame(app: *App, slot: cv.display.DisplayedGeometry.Slot, want: ?usize) v
 }
 
 /// How far the drawn atoms are from the shown step to the next.
-fn blendTime(app: *const App) f32 {
+pub fn blendTime(app: *const App) f32 {
     return if (app.nextReady()) app.interp_t else 0;
 }
 
@@ -934,9 +934,13 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
                 app.camera.dragZoom(m.yrel);
             }
         },
-        c.SDL_EVENT_MOUSE_WHEEL => if (!want_mouse) app.camera.zoom(ev.wheel.y) else {
+        c.SDL_EVENT_MOUSE_WHEEL => {
+            // Zooming goes by the hand: up is in, natural scrolling or not.
+            const up = if (ev.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -ev.wheel.y else ev.wheel.y;
+            if (!want_mouse) return app.camera.zoom(up);
             app.timeline.wheel[0] += ev.wheel.x;
             app.timeline.wheel[1] += ev.wheel.y;
+            app.timeline.zoom += up;
         },
         c.SDL_EVENT_KEY_DOWN => {
             if (app.leaving != null) {
@@ -1922,6 +1926,7 @@ pub fn drawUi(app: *App) void {
     const timeline_h = timeline_mod.height();
     timeline_mod.draw(app, timeline_h);
     app.timeline.wheel = .{ 0, 0 };
+    app.timeline.zoom = 0;
     if (app.show_inspector) app.inspector(timeline_h);
     if (app.show_diff) app.diffPanel();
     if (app.show_help) app.helpWindow();
@@ -2200,7 +2205,7 @@ const help = .{
         .{ "PgUp / PgDn", "jump 5%" },
         .{ "Home / End", "first / last frame" },
         .{ "Right drag on the timeline", "scrub one frame per pixel" },
-        .{ "Ctrl + wheel on the timeline", "zoom at the mouse" },
+        .{ "Wheel on the timeline", "zoom at the mouse" },
         .{ "Shift + wheel, or middle drag, on the timeline", "pan" },
         .{ "Z", "show every frame on the timeline" },
     } },

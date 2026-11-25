@@ -149,5 +149,7 @@ something is picked up.
   probably also need a zoom feature. I have a feeling taking navgation ideas
   from video editors would be a good start.
   *Spec and tickets in `.scratch/ui-and-timeline/`; waiting for review.*
+- [ ] Right dragging up and down in the molecule view is reversed.
+  *Asked for in conversation, 2026-11-24; for later. Now up is closer.*
 - [ ] Saving as an ASE trajectory (.traj), as well as XYZ.
   *Asked for in conversation, 2026-11-24; for later.*

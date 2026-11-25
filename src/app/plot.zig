@@ -16,7 +16,7 @@ pub const State = struct {
     /// Window of the next file that is opened, in frames.
     initial: ?[2]f64 = null,
     /// Where the playhead was, to follow it.
-    last_current: usize = 0,
+    last_head: f64 = 0,
     /// Middle button pan: where the mouse was.
     pan_x: ?f32 = null,
     /// What of the strip is being dragged, and where the mouse was.
@@ -25,6 +25,8 @@ pub const State = struct {
     hovered: bool = false,
     /// Wheel movement over the UI since the last frame.
     wheel: [2]f32 = .{ 0, 0 },
+    /// Its vertical part, up positive even if scrolling is set to be natural.
+    zoom: f32 = 0,
     plot_env: Envelope = .{},
     strip_env: Envelope = .{},
 
@@ -44,12 +46,21 @@ pub const State = struct {
             s.initial = null;
             s.pan_x = null;
             s.grab = null;
-        } else s.window = s.window.following(s.last_current, d.current, app.playing, n);
-        s.last_current = d.current;
+        } else if (app.plot_drag == null) {
+            // Not while scrubbing: the plot would run away under the mouse.
+            s.window = s.window.following(s.last_head, playhead(app, d), app.playing, n);
+        }
+        s.last_head = playhead(app, d);
     }
 };
 
-pub const hint: [:0]const u8 = "drag: scrub   right drag: finely   Ctrl+wheel: zoom   Shift+wheel or middle drag: pan   Z: fit";
+/// Where the playhead is, in frames: between two while a blend plays.
+fn playhead(app: *const App, d: *const App.Document) f64 {
+    const t: f64 = if (app.playing) app.blendTime() else 0;
+    return @as(f64, @floatFromInt(d.current)) + t;
+}
+
+pub const hint: [:0]const u8 = "drag: scrub   right drag: finely   wheel: zoom   Shift+wheel or middle drag: pan   Z: fit";
 
 fn plotHeight() f32 {
     return c.igGetFontSize() * 4.3;
@@ -131,10 +142,13 @@ fn wheel(s: *State, axis: Axis, n: usize) void {
     const ctrl = (mods & c.SDL_KMOD_CTRL) != 0;
     const shift = (mods & c.SDL_KMOD_SHIFT) != 0;
     const at = axis.window.fromX(c.igGetMousePos().x, axis.x0, axis.width);
-    if (ctrl and s.wheel[1] != 0) s.window = s.window.zoomed(at, std.math.pow(f64, 1.25, s.wheel[1]), n);
+    // Up zooms in, by the way the fingers or the wheel went.
+    if (!shift and @abs(s.wheel[1]) >= @abs(s.wheel[0]) and s.zoom != 0) s.window = s.window.zoomed(at, std.math.pow(f64, 1.25, s.zoom), n);
     // Sideways, as touchpads do, pans without Shift.
     const sideways = if (shift and s.wheel[0] == 0) -s.wheel[1] else s.wheel[0];
-    if (!ctrl and sideways != 0) s.window = s.window.panned(0.1 * s.window.span() * @as(f64, sideways), n);
+    // Swiping up and down is never quite straight.
+    const straight = shift or @abs(s.wheel[0]) > @abs(s.wheel[1]);
+    if (!ctrl and straight and sideways != 0) s.window = s.window.panned(0.1 * s.window.span() * @as(f64, sideways), n);
 }
 
 fn plot(app: *App, d: *App.Document) void {
@@ -223,8 +237,9 @@ fn plot(app: *App, d: *App.Document) void {
             const label_x = if (x + label_w + 8 > p1.x) x - label_w - 4 else x + 4;
             c.ImDrawList_AddText_Vec2(dl, ui.v2(label_x, p1.y - fs - 3 * mark_size), c.igGetColorU32_Col(c.ImGuiCol_Text, 1), "ref", null);
         };
-        if (s.window.contains(d.current)) {
-            const x = axis.x(d.current);
+        const head = playhead(app, d);
+        if (s.window.containsAt(head)) {
+            const x = s.window.toX(head, axis.x0, axis.width);
             c.ImDrawList_AddLine(dl, ui.v2(x, p0.y), ui.v2(x, p1.y), headColor(app, light), 2, 0);
         }
         if (scanned < n) {
