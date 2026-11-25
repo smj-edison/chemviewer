@@ -126,10 +126,12 @@ something is picked up.
   to be a filled cylinder with the bond embedded inside of it.
   *Done: a bond's outline is not drawn over its own two atoms, and an atom's
   outline no longer pokes through bonds that enter from the side.*
-- [ ] Adjust mouse buttons with Alt. Alt + Left should translate, Alt + Right should
+- [x] Adjust mouse buttons with Alt. Alt + Left should translate, Alt + Right should
   rotate along the bond axis, and Alt + Center should rotate around the center atom.
   Also, when a single atom is selected, it should have a tooltip in the bar above
   the timeline where it describes what mouse button does what operation.
+  *Done (D17): the bar shows the hint for every selection. Messages are at the
+  bottom right and fade; refusals and errors are marked and last longer.*
 - [ ] Design discussion: I'd like to be able to have multiple values plotted in
   the timeline, both overlayed on one timeline, and with multiple timelines. I'd
   like to be able to ingest data from PLUMED log files, ASE dynamics logs, and

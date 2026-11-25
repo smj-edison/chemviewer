@@ -1,12 +1,11 @@
-//! Alt-drag fragment manipulation (GaussView-style): the usual mouse
-//! gestures, but applied to a group of atoms instead of the camera.
+//! Alt-drag: the mouse moves a group of atoms instead of the camera. With
+//! exactly one atom selected, that atom is the base.
 //!
-//!   Alt + left drag        rotate: the grabbed atom follows the cursor on a
-//!                          sphere around the base atom (or a trackball
-//!                          rotation about the group centre if there is no base)
-//!   Alt + right drag       twist about the base→grabbed axis (or the view axis)
-//!   Alt + middle drag,     translate in the view plane
-//!   Alt + Shift + left/right
+//!   Alt + left drag        translate in the view plane
+//!   Alt + right drag       twist about the line from the base to the grabbed atom
+//!   Alt + middle drag,     rotate: the grabbed atom follows the cursor on a
+//!   Alt + Shift + left     sphere around the base (without a base, a trackball
+//!                          rotation about the group's centre)
 //!
 //! Positions are always recomputed from the snapshot taken when the drag
 //! started, so there is no drift.
@@ -17,7 +16,37 @@ const Vec3 = math.Vec3;
 const Quat = math.Quat;
 const Allocator = std.mem.Allocator;
 
-pub const Kind = enum { rotate, twist, translate };
+pub const Kind = enum { translate, twist, rotate };
+
+pub const Button = enum { left, middle, right };
+
+/// What dragging with Alt and this button does (null = nothing).
+pub fn gesture(button: Button, shift: bool) ?Kind {
+    return switch (button) {
+        .left => if (shift) .rotate else .translate,
+        .middle => if (shift) null else .rotate,
+        .right => if (shift) null else .twist,
+    };
+}
+
+pub const Refusal = error{ NeedsOneBase, NotSelected };
+
+/// Refuse a gesture that has no meaning with this selection.
+pub fn check(kind: Kind, sel: []const u32, handle: u32) Refusal!void {
+    const grabbed_selected = std.mem.findScalar(u32, sel, handle) != null;
+    if (sel.len > 1 and !grabbed_selected) return error.NotSelected;
+    // The axis runs from the base to another atom.
+    if (kind == .twist and (sel.len != 1 or grabbed_selected)) return error.NeedsOneBase;
+}
+
+/// The atom that dragging a bond grabs: not the base, and one of the
+/// selected ones if there are several.
+pub fn bondHandle(sel: []const u32, bond: [2]u32) u32 {
+    const first_selected = std.mem.findScalar(u32, sel, bond[0]) != null;
+    const second_selected = std.mem.findScalar(u32, sel, bond[1]) != null;
+    const prefer_first = if (sel.len == 1) second_selected else first_selected and !second_selected;
+    return bond[if (prefer_first) 0 else 1];
+}
 
 pub const Drag = struct {
     kind: Kind,
@@ -65,21 +94,20 @@ pub const Choice = struct {
 };
 
 /// Decide what an Alt-drag on `handle` moves:
-///   - grabbing a selected atom moves the whole selection as one rigid body
-///     about its centre (a single selected atom brings its molecule);
-///   - with exactly one atom selected (the base), grabbing an unselected atom
-///     moves the branch reachable from it without passing through the base
-///     (`geometry.beyond`), around the base;
-///   - otherwise the grabbed atom's molecule moves about its centre.
-/// Grabbing something selected never leaves part of the selection behind
-/// (e.g. after a paste, which selects the pasted atoms).
-pub fn chooseGroup(gpa: Allocator, graph: cv.geometry.Graph, sel: []const u32, handle: u32) !Choice {
-    if (std.mem.indexOfScalar(u32, sel, handle) != null) {
-        if (sel.len == 1) return .{ .group = try molecule(gpa, graph, handle), .pivot = null };
-        return .{ .group = try gpa.dupe(u32, sel), .pivot = null };
-    }
-    if (sel.len == 1) return .{ .group = try cv.geometry.beyond(graph, gpa, handle, sel[0]), .pivot = sel[0] };
-    return .{ .group = try molecule(gpa, graph, handle), .pivot = null };
+///   - with several atoms selected, all of them as one rigid body about their
+///     centre, if one of them is grabbed;
+///   - with exactly one atom selected (the base), grabbing another moves the
+///     branch reachable from it without passing through the base
+///     (`geometry.beyond`), around the base; grabbing the base moves its
+///     molecule, around the base;
+///   - with nothing selected, the grabbed atom's molecule, about its centre.
+/// Refuses what `check` does.
+pub fn chooseGroup(gpa: Allocator, graph: cv.geometry.Graph, kind: Kind, sel: []const u32, handle: u32) !Choice {
+    try check(kind, sel, handle);
+    if (sel.len > 1) return .{ .group = try gpa.dupe(u32, sel), .pivot = null };
+    const base = if (sel.len == 1) sel[0] else return .{ .group = try molecule(gpa, graph, handle), .pivot = null };
+    if (handle == base) return .{ .group = try molecule(gpa, graph, handle), .pivot = base };
+    return .{ .group = try cv.geometry.beyond(graph, gpa, handle, base), .pivot = base };
 }
 
 fn molecule(gpa: Allocator, graph: cv.geometry.Graph, atom: u32) ![]u32 {
@@ -177,18 +205,52 @@ test "what an Alt-drag moves" {
         // Grab a selected atom of a multi-selection (e.g. a paste): all of it, about its centre.
         .{ .sel = &.{ 5, 6 }, .handle = 5, .group = &.{ 5, 6 }, .pivot = null },
         .{ .sel = &.{ 1, 3, 4 }, .handle = 3, .group = &.{ 1, 3, 4 }, .pivot = null },
-        // Grab the single selected atom: its molecule about its centre.
-        .{ .sel = &.{2}, .handle = 2, .group = &.{ 0, 1, 2, 3, 4 }, .pivot = null },
-        // Grab an unselected atom with several selected: its molecule.
-        .{ .sel = &.{ 0, 1 }, .handle = 6, .group = &.{ 5, 6 }, .pivot = null },
+        // Grab the base: its molecule, around it.
+        .{ .sel = &.{2}, .handle = 2, .group = &.{ 0, 1, 2, 3, 4 }, .pivot = 2 },
         // Nothing selected: the whole molecule about its centre.
         .{ .sel = &.{}, .handle = 2, .group = &.{ 0, 1, 2, 3, 4 }, .pivot = null },
     };
-    for (cases) |cs| {
-        const ch = try chooseGroup(gpa, g, cs.sel, cs.handle);
+    for (cases) |cs| for ([_]Kind{ .translate, .rotate }) |kind| {
+        const ch = try chooseGroup(gpa, g, kind, cs.sel, cs.handle);
         defer gpa.free(ch.group);
         std.mem.sort(u32, ch.group, {}, std.sort.asc(u32));
         try std.testing.expectEqualSlices(u32, cs.group, ch.group);
         try std.testing.expectEqual(cs.pivot, ch.pivot);
+    };
+    // Twisting needs a base and another atom, and moves the branch.
+    for (cases) |cs| {
+        const twisted = chooseGroup(gpa, g, .twist, cs.sel, cs.handle);
+        if (cs.sel.len != 1 or cs.handle == cs.sel[0]) {
+            try std.testing.expectError(error.NeedsOneBase, twisted);
+            continue;
+        }
+        const ch = try twisted;
+        defer gpa.free(ch.group);
+        std.mem.sort(u32, ch.group, {}, std.sort.asc(u32));
+        try std.testing.expectEqualSlices(u32, cs.group, ch.group);
     }
+    // An unselected atom with several selected: nothing moves.
+    for ([_]Kind{ .translate, .rotate, .twist }) |kind| {
+        try std.testing.expectError(error.NotSelected, chooseGroup(gpa, g, kind, &.{ 0, 1 }, 6));
+    }
+}
+
+test "what the buttons do with Alt" {
+    const expectEqual = std.testing.expectEqual;
+    try expectEqual(Kind.translate, gesture(.left, false));
+    try expectEqual(Kind.twist, gesture(.right, false));
+    try expectEqual(Kind.rotate, gesture(.middle, false));
+    try expectEqual(Kind.rotate, gesture(.left, true));
+    try expectEqual(null, gesture(.middle, true));
+    try expectEqual(null, gesture(.right, true));
+}
+
+test "the atom that dragging a bond grabs" {
+    const expectEqual = std.testing.expectEqual;
+    try expectEqual(8, bondHandle(&.{}, .{ 7, 8 }));
+    try expectEqual(8, bondHandle(&.{7}, .{ 7, 8 })); // not the base
+    try expectEqual(7, bondHandle(&.{8}, .{ 7, 8 }));
+    try expectEqual(7, bondHandle(&.{ 7, 9 }, .{ 7, 8 }));
+    try expectEqual(8, bondHandle(&.{ 8, 9 }, .{ 7, 8 }));
+    try expectEqual(8, bondHandle(&.{ 1, 2 }, .{ 7, 8 }));
 }

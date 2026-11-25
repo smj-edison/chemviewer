@@ -282,7 +282,8 @@ pub fn main(init: std.process.Init) !void {
     while (!app.quit_requested) {
         var ev: c.SDL_Event = undefined;
         const idle = !app.playing and app.isSettled() and startup.phase == .done;
-        if (idle and c.SDL_WaitEventTimeout(&ev, 100)) handleEvent(&app, &ev);
+        const wait_ms: i32 = if (app.messages.fading(app.seconds())) 16 else 100;
+        if (idle and c.SDL_WaitEventTimeout(&ev, wait_ms)) handleEvent(&app, &ev);
         while (c.SDL_PollEvent(&ev)) handleEvent(&app, &ev);
 
         app.update();
@@ -547,6 +548,7 @@ test {
     _ = @import("app/measure.zig");
     _ = @import("app/lasso.zig");
     _ = @import("app/drag.zig");
+    _ = @import("app/messages.zig");
     _ = @import("app/occlusion.zig");
 }
 

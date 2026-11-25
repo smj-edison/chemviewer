@@ -5,6 +5,7 @@ const c = @import("c");
 const cv = @import("chemviewer");
 const ui = @import("ui.zig");
 const App = @import("App.zig");
+const drag = @import("drag.zig");
 const geom = cv.geometry;
 const occlusion = @import("occlusion.zig");
 
@@ -103,10 +104,12 @@ pub fn bar(app: *App) void {
     var hint_buf: [160]u8 = undefined;
     if (app.dragHint(&hint_buf)) |hint| {
         ui.text("{s}", .{hint});
+        gestureHint(app, f.numbers);
         return;
     }
     if (sel.len == 0) {
-        ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all. Alt+drag: move the selection, or a group around a single selected atom. Ctrl+C: copy XYZ.", .{});
+        ui.textDisabled("Click atoms to select; Ctrl+drag: lasso; Ctrl+A: molecule, then all.", .{});
+        gestureHint(app, f.numbers);
         return;
     }
     if (sel.len > 4) {
@@ -114,7 +117,9 @@ pub fn bar(app: *App) void {
         c.igSameLine(0, fs);
         ui.textDisabled("Ctrl+C copies them as XYZ", .{});
         c.igSameLine(0, fs * 1.5);
-        if (c.igSmallButton("Clear")) app.deselect();
+        const clear = c.igSmallButton("Clear");
+        gestureHint(app, f.numbers);
+        if (clear) app.deselect();
         return;
     }
     var lb: [128]u8 = undefined;
@@ -157,8 +162,78 @@ pub fn bar(app: *App) void {
         },
     }
     c.igSameLine(0, fs * 1.5);
-    if (c.igSmallButton("Clear")) app.deselect();
+    const clear = c.igSmallButton("Clear");
+    gestureHint(app, f.numbers);
+    if (clear) app.deselect();
     if (submitted) |edit| app.applyEdit(edit);
+}
+
+/// What an Alt-drag does with this selection, after the rest of the row:
+/// brighter while Alt is held, with the gesture going on marked. If there is
+/// no room, it is a tooltip.
+fn gestureHint(app: *App, numbers: []const u8) void {
+    const sel = app.selected();
+    var base_buf: [16]u8 = undefined;
+    var about_buf: [48]u8 = undefined;
+    const Piece = struct { kind: drag.Kind, text: [:0]const u8 };
+    var pieces: [3]Piece = undefined;
+    var n: usize = 0;
+    pieces[n] = .{ .kind = .translate, .text = switch (sel.len) {
+        0 => "left: move molecule",
+        1 => "left: move branch",
+        else => "left: move selection",
+    } };
+    n += 1;
+    if (sel.len == 1) {
+        pieces[n] = .{ .kind = .twist, .text = "right: twist branch" };
+        n += 1;
+    }
+    pieces[n] = .{ .kind = .rotate, .text = switch (sel.len) {
+        0 => "middle or Shift+left: rotate molecule",
+        1 => ui.printZ(&about_buf, "middle or Shift+left: rotate about {s}", .{atomLabel(&base_buf, numbers, sel[0])}) catch return,
+        else => "middle or Shift+left: rotate selection",
+    } };
+    n += 1;
+
+    const mods = c.SDL_GetModState();
+    const alt = (mods & c.SDL_KMOD_ALT) != 0;
+    const shift = (mods & c.SDL_KMOD_SHIFT) != 0;
+    const going_on: ?drag.Kind = if (app.drag) |d| d.kind else null;
+
+    const fs = c.igGetFontSize();
+    const gap = fs * 0.9;
+    const lead: [:0]const u8 = "Alt + drag";
+    var width = c.igCalcTextSize(lead.ptr, null, false, -1).x;
+    for (pieces[0..n]) |p| width += gap + c.igCalcTextSize(p.text.ptr, null, false, -1).x;
+    c.igSameLine(0, fs * 1.5);
+    c.igAlignTextToFramePadding();
+    if (c.igGetContentRegionAvail().x < width) {
+        if (alt) ui.text("Alt + drag (?)", .{}) else ui.textDisabled("Alt + drag (?)", .{});
+        if (c.igBeginItemTooltip()) {
+            for (pieces[0..n]) |p| ui.text("{s}", .{p.text});
+            c.igEndTooltip();
+        }
+        return;
+    }
+    if (alt) ui.text("{s}", .{lead}) else ui.textDisabled("{s}", .{lead});
+    for (pieces[0..n]) |p| {
+        c.igSameLine(0, gap);
+        if (going_on == p.kind) {
+            const ac = app.style.theme.accent();
+            const oa = app.style.theme.onAccent();
+            const at = c.igGetCursorScreenPos();
+            const size = c.igCalcTextSize(p.text.ptr, null, false, -1);
+            const y = at.y + c.igGetStyle().*.FramePadding.y;
+            c.ImDrawList_AddRectFilled(c.igGetWindowDrawList(), ui.v2(at.x - 4, y - 1), ui.v2(at.x + size.x + 4, y + size.y + 1), ui.rgba(ac[0], ac[1], ac[2], 1), 3, 0);
+            c.igPushStyleColor_U32(c.ImGuiCol_Text, ui.rgba(oa[0], oa[1], oa[2], 1));
+            ui.text("{s}", .{p.text});
+            c.igPopStyleColor(1);
+        } else if (going_on == null and alt and (!shift or p.kind == .rotate)) {
+            ui.text("{s}", .{p.text});
+        } else {
+            ui.textDisabled("{s}", .{p.text});
+        }
+    }
 }
 
 /// Degree and radian fields for the same angle; either can be edited. Returns

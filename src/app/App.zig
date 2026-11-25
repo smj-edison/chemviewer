@@ -12,6 +12,7 @@ const timeline = @import("timeline.zig");
 const measure = @import("measure.zig");
 const lasso = @import("lasso.zig");
 const drag_mod = @import("drag.zig");
+const messages_mod = @import("messages.zig");
 const Frame = cv.Frame;
 const Vec3 = cv.math.Vec3;
 
@@ -87,8 +88,7 @@ settings_path: ?[]u8 = null,
 layout_font_size: f32 = 0,
 quit_requested: bool = false,
 
-status_buf: [512]u8 = undefined,
-status_len: usize = 0,
+messages: messages_mod.Messages = .{},
 
 /// Path delivered by the (possibly off-thread) SDL file dialog callback.
 dialog_path: [4096]u8 = undefined,
@@ -137,14 +137,31 @@ fn deinitState(app: *App) void {
     app.lasso_points.deinit(app.gpa);
 }
 
-pub fn setStatus(app: *App, comptime fmt: []const u8, args: anytype) void {
-    const s = std.fmt.bufPrint(&app.status_buf, fmt, args) catch app.status_buf[0..];
-    app.status_len = s.len;
+/// Say what was done.
+pub fn inform(app: *App, comptime fmt: []const u8, args: anytype) void {
+    app.say(.info, fmt, args);
+}
+
+/// Say why what the user asked for isn't possible.
+pub fn refuse(app: *App, comptime fmt: []const u8, args: anytype) void {
+    app.say(.refusal, fmt, args);
+}
+
+/// Say what went wrong.
+pub fn fail(app: *App, comptime fmt: []const u8, args: anytype) void {
+    app.say(.failure, fmt, args);
+}
+
+fn say(app: *App, kind: messages_mod.Kind, comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, fmt, args) catch buf[0..];
+    app.messages.add(kind, app.seconds(), s);
     std.log.info("{s}", .{s});
 }
 
-pub fn status(app: *const App) []const u8 {
-    return app.status_buf[0..app.status_len];
+/// The time, for messages.
+pub fn seconds(app: *const App) f64 {
+    return @as(f64, @floatFromInt(Io.Timestamp.now(app.io, .awake).nanoseconds)) / std.time.ns_per_s;
 }
 
 // ------------------------------------------------------------ documents
@@ -177,7 +194,7 @@ pub fn closeDocument(app: *App) void {
 pub fn openFile(app: *App, path: []const u8) void {
     app.endDrag(false);
     app.openFileInner(path) catch |e| {
-        app.setStatus("Could not open {s}: {t}", .{ std.fs.path.basename(path), e });
+        app.fail("Could not open {s}: {t}", .{ std.fs.path.basename(path), e });
     };
 }
 
@@ -206,7 +223,7 @@ fn install(app: *App, opened: cv.source.Opened, path: []const u8) !void {
     app.closeDocument();
     app.documents_opened += 1;
     app.doc = .{ .path = owned_path, .format = opened.format, .source = src, .stream = stream };
-    app.setStatus("Opened {s} ({s}, {d} frame{s})", .{
+    app.inform("Opened {s} ({s}, {d} frame{s})", .{
         std.fs.path.basename(path),             opened.format.label(), src.frameCount(),
         if (src.frameCount() == 1) "" else "s",
     });
@@ -220,7 +237,7 @@ fn install(app: *App, opened: cv.source.Opened, path: []const u8) !void {
 /// Copy the selected atoms (or the whole frame if nothing is selected) to
 /// the clipboard as XYZ, with provenance in the comment line.
 pub fn copyXyz(app: *App) void {
-    app.copyXyzInner() catch |e| app.setStatus("Copy failed: {t}", .{e});
+    app.copyXyzInner() catch |e| app.fail("Copy failed: {t}", .{e});
 }
 
 fn copyXyzInner(app: *App) !void {
@@ -230,7 +247,7 @@ fn copyXyzInner(app: *App) !void {
     defer app.gpa.free(text);
     try setClipboardText(text);
     const n = if (app.selected().len == 0) f.len() else app.selected().len;
-    app.setStatus("Copied {d} atom{s} as XYZ", .{ n, if (n == 1) "" else "s" });
+    app.inform("Copied {d} atom{s} as XYZ", .{ n, if (n == 1) "" else "s" });
 }
 
 /// What `copyXyz` copies. Owned by the caller.
@@ -313,7 +330,7 @@ fn setClipboardText(bytes: []const u8) !void {
 /// `as_new`, open it as a new structure instead.
 pub fn pasteXyz(app: *App, as_new: bool) void {
     app.endDrag(false);
-    app.pasteXyzInner(as_new) catch |e| app.setStatus("Nothing pasteable on the clipboard ({t})", .{e});
+    app.pasteXyzInner(as_new) catch |e| app.refuse("Nothing pasteable on the clipboard ({t})", .{e});
 }
 
 fn pasteXyzInner(app: *App, as_new: bool) !void {
@@ -329,7 +346,7 @@ fn pasteXyzInner(app: *App, as_new: bool) !void {
         return app.appendFragment(opened.source.memory[0]);
     }
     try app.install(opened, "clipboard.xyz");
-    app.setStatus("Pasted {d} atom{s} from the clipboard", .{
+    app.inform("Pasted {d} atom{s} from the clipboard", .{
         opened.source.memory[0].len(), if (opened.source.memory[0].len() == 1) "" else "s",
     });
 }
@@ -358,7 +375,7 @@ fn appendFragment(app: *App, frag: Frame) !void {
     defer gpa.free(pasted);
     for (pasted, first..) |*atom, i| atom.* = @intCast(i);
     try edit.append(frag, offset);
-    if (!try app.commitRenumbering(&edit, pasted)) return app.setStatus("No atoms to paste", .{});
+    if (!try app.commitRenumbering(&edit, pasted)) return app.refuse("No atoms to paste", .{});
     // Re-frame if any pasted atom is off-screen. The background stays put in
     // the world, so it doesn't turn if frames were followed before.
     const sp = app.screenProjector();
@@ -367,7 +384,7 @@ fn appendFragment(app: *App, frag: Frame) !void {
         if (app.boundingSphere()) |s| app.camera.reframe(s.center, s.radius);
         break;
     }
-    app.setStatus("Pasted {d} atom{s} as a fragment{s}", .{
+    app.inform("Pasted {d} atom{s} as a fragment{s}", .{
         frag.len(), if (frag.len() == 1) "" else "s", if (offset[0] != 0 or offset[1] != 0 or offset[2] != 0) " (moved beside the structure)" else "",
     });
 }
@@ -516,7 +533,7 @@ pub fn refresh(app: *App) void {
     app.scene_key = key;
     app.rebuildScene() catch |e| {
         app.scene_key = null; // try again
-        app.setStatus("Scene build failed: {t}", .{e});
+        app.fail("Scene build failed: {t}", .{e});
     };
 }
 
@@ -543,8 +560,8 @@ fn takeFrame(app: *App, index: usize) ?Frame {
     return if (got == .ready) got.ready else null;
 }
 
-/// Names the frames that newly couldn't be read, in one message since the
-/// status line only shows the latest.
+/// Names the frames that newly couldn't be read, in one message since only
+/// a few fit.
 fn reportFailures(app: *App, d: *Document) void {
     const first = d.stream.takeFailure() orelse return;
     var buf: [128]u8 = undefined;
@@ -556,8 +573,8 @@ fn reportFailures(app: *App, d: *Document) void {
         } else w.print(", {d}", .{f.index + 1}) catch {};
     }
     const list = w.buffered();
-    if (more > 0) return app.setStatus("Could not read frames {d}{s} and {d} more: {t}", .{ first.index + 1, list, more, first.err });
-    app.setStatus("Could not read frame{s} {d}{s}: {t}", .{ if (list.len > 0) "s" else "", first.index + 1, list, first.err });
+    if (more > 0) return app.fail("Could not read frames {d}{s} and {d} more: {t}", .{ first.index + 1, list, more, first.err });
+    app.fail("Could not read frame{s} {d}{s}: {t}", .{ if (list.len > 0) "s" else "", first.index + 1, list, first.err });
 }
 
 fn advancePlayback(app: *App) void {
@@ -694,7 +711,7 @@ pub fn setReference(app: *App) void {
     const index = d.display.real.index;
     const was_locked = if (app.diff) |df| df.was_locked else app.lock_rotation;
     const new = cv.diff.Diff.init(app.gpa, index, f, app.session.origins(index), was_locked) catch |e|
-        return app.setStatus("Can't set the reference: {t}", .{e});
+        return app.fail("Can't set the reference: {t}", .{e});
     if (app.diff) |*old| old.deinit(app.gpa);
     app.diff = new;
     app.diffs_started += 1;
@@ -803,17 +820,7 @@ pub fn handleEvent(app: *App, ev: *const c.SDL_Event, want_mouse: bool, want_key
             if (want_mouse) return;
             const mods0 = c.SDL_GetModState();
             if ((mods0 & c.SDL_KMOD_ALT) != 0 and app.drag == null) {
-                // Shift with any button translates, as for the camera.
-                const shift0 = (mods0 & c.SDL_KMOD_SHIFT) != 0;
-                const kind: drag_mod.Kind = switch (ev.button.button) {
-                    c.SDL_BUTTON_LEFT => if (shift0) .translate else .rotate,
-                    c.SDL_BUTTON_MIDDLE => .translate,
-                    c.SDL_BUTTON_RIGHT => if (shift0) .translate else .twist,
-                    else => return,
-                };
-                app.drag_button = ev.button.button;
-                app.beginDrag(kind, ev.button.x, ev.button.y);
-                return;
+                return app.altPress(ev.button.button, (mods0 & c.SDL_KMOD_SHIFT) != 0, ev.button.x, ev.button.y);
             }
             if (ev.button.button != c.SDL_BUTTON_LEFT) return;
             app.press = .{ .moved = 0 };
@@ -978,7 +985,7 @@ fn cutBond(app: *App, a: u32, b: u32) void {
 /// `beginGesture` and `endGesture`, which makes one selection step of it.
 fn beginGesture(app: *App) ?cv.picks.Snapshot {
     return app.picks.snapshot(app.gpa) catch |e| {
-        app.setStatus("Can't change the selection: {t}", .{e});
+        app.fail("Can't change the selection: {t}", .{e});
         return null;
     };
 }
@@ -987,7 +994,7 @@ fn endGesture(app: *App, before: *cv.picks.Snapshot) void {
     defer before.deinit(app.gpa);
     app.session.recordSelection(&app.picks, before.*) catch |e| {
         app.picks.restoreSnapshot(before);
-        app.setStatus("Can't change the selection: {t}", .{e});
+        app.fail("Can't change the selection: {t}", .{e});
     };
 }
 
@@ -1012,10 +1019,10 @@ pub fn isCut(app: *const App, a: u32, b: u32) bool {
 pub fn toggleCutPair(app: *App, a: u32, b: u32) void {
     const key = pairKey(a, b);
     if (app.picks.cuts.remove(key)) {
-        app.setStatus("Restored bond", .{});
+        app.inform("Restored bond", .{});
     } else {
         app.picks.cuts.put(app.gpa, key, {}) catch return;
-        app.setStatus("Cut bond: ignored when moving groups and selecting molecules", .{});
+        app.inform("Cut bond: ignored when moving groups and selecting molecules", .{});
     }
 }
 
@@ -1042,7 +1049,7 @@ pub fn expandSelection(app: *App) void {
     defer app.endGesture(&step);
     if (app.picks.selection.items.len == 0) return app.selectAll();
     const gpa = app.gpa;
-    var graph = app.drawnGraph() catch |e| return app.setStatus("Bond search failed: {t}", .{e});
+    var graph = app.drawnGraph() catch |e| return app.fail("Bond search failed: {t}", .{e});
     defer graph.deinit(gpa);
     const mask = gpa.alloc(bool, f.len()) catch return;
     defer gpa.free(mask);
@@ -1058,7 +1065,7 @@ pub fn expandSelection(app: *App) void {
         };
     }
     if (app.picks.selection.items.len == before) return app.selectAll();
-    app.setStatus("Selected {d} atoms (whole molecules); Ctrl+A again selects all", .{app.picks.selection.items.len});
+    app.inform("Selected {d} atoms (whole molecules); Ctrl+A again selects all", .{app.picks.selection.items.len});
 }
 
 /// Add (or, with Ctrl+Shift, remove) every atom whose projection lies
@@ -1095,7 +1102,7 @@ fn applyLasso(app: *App) void {
             changed += 1;
         };
     }
-    app.setStatus("{s} {d} atom{s} ({d} selected)", .{
+    app.inform("{s} {d} atom{s} ({d} selected)", .{
         if (app.lasso_remove) "Deselected" else "Selected", changed, if (changed == 1) "" else "s", app.picks.selection.items.len,
     });
 }
@@ -1119,7 +1126,7 @@ fn bonds(app: *App) []const cv.bonds.Bond {
 
 fn bondsOf(app: *App, atoms: *cv.display.BondedAtoms) []const cv.bonds.Bond {
     return atoms.bonds(app.gpa, app.bond_params) catch |e| {
-        app.setStatus("Bond search failed: {t}", .{e});
+        app.fail("Bond search failed: {t}", .{e});
         app.scene_key = null; // drawn without; try again
         return &.{};
     };
@@ -1266,26 +1273,52 @@ pub fn cameraAxes(app: *const App) [3]Vec3 {
 
 /// Start an Alt-drag on the atom under (x, y). See drag.zig for the gestures.
 fn beginDrag(app: *App, kind: drag_mod.Kind, x: f32, y: f32) void {
-    app.beginDragInner(kind, x, y) catch |e| app.setStatus("Can't move that: {t}", .{e});
+    app.beginDragInner(kind, x, y) catch |e| {
+        // Dragging on doesn't turn the camera instead.
+        app.aborted_button = app.drag_button;
+        switch (e) {
+            error.NotSelected => app.refuse("Drag one of the selected atoms to move the selection", .{}),
+            error.NeedsOneBase => app.refuse("To twist, select a single atom and drag another: its branch turns about the line between them", .{}),
+            else => app.fail("Can't move that: {t}", .{e}),
+        }
+    };
 }
 
 fn beginDragInner(app: *App, kind: drag_mod.Kind, x: f32, y: f32) !void {
     const h = app.hitAt(x, y) orelse return;
     const handle = switch (h.target) {
         .atom => |a| a,
-        .bond => |pair| pair[1],
+        .bond => |pair| drag_mod.bondHandle(app.selected(), pair),
     };
     try app.startDrag(kind, handle);
 }
 
+/// A mouse button went down with Alt held.
+fn altPress(app: *App, sdl_button: u8, shift: bool, x: f32, y: f32) void {
+    const button: drag_mod.Button = switch (sdl_button) {
+        c.SDL_BUTTON_LEFT => .left,
+        c.SDL_BUTTON_MIDDLE => .middle,
+        c.SDL_BUTTON_RIGHT => .right,
+        else => return,
+    };
+    app.drag_button = sdl_button;
+    const kind = drag_mod.gesture(button, shift) orelse {
+        app.aborted_button = sdl_button;
+        return;
+    };
+    app.beginDrag(kind, x, y);
+}
+
 fn startDrag(app: *App, kind: drag_mod.Kind, handle: u32) !void {
     const gpa = app.gpa;
+    // A refused gesture doesn't pause playback.
+    try drag_mod.check(kind, app.selected(), handle);
     var edit = try app.beginEdit();
     errdefer edit.deinit();
     const f = edit.atoms;
     var graph = try app.drawnGraph();
     defer graph.deinit(gpa);
-    const choice = try drag_mod.chooseGroup(gpa, graph, app.selected(), handle);
+    const choice = try drag_mod.chooseGroup(gpa, graph, kind, app.selected(), handle);
     const pivot = choice.pivot;
     const group = choice.group;
     errdefer gpa.free(group);
@@ -1366,9 +1399,9 @@ fn endDrag(app: *App, commit: bool) void {
     if (!commit) app.aborted_button = app.drag_button;
     if (commit and dr.moved) {
         if (app.commitEdit(&edit)) |changed| {
-            if (changed) app.setStatus("Moved {d} atom{s} (Ctrl+Z undoes)", .{ dr.group.len, if (dr.group.len == 1) "" else "s" });
+            if (changed) app.inform("Moved {d} atom{s} (Ctrl+Z undoes)", .{ dr.group.len, if (dr.group.len == 1) "" else "s" });
             return;
-        } else |e| app.setStatus("Move failed: {t}", .{e});
+        } else |e| app.fail("Move failed: {t}", .{e});
     }
 }
 
@@ -1401,7 +1434,7 @@ pub const Edit = union(enum) {
 
 /// Change the selected internal coordinate of the current frame.
 pub fn applyEdit(app: *App, edit: Edit) void {
-    app.applyEditInner(edit) catch |e| app.setStatus("Edit failed: {t}", .{e});
+    app.applyEditInner(edit) catch |e| app.fail("Edit failed: {t}", .{e});
 }
 
 fn applyEditInner(app: *App, edit: Edit) !void {
@@ -1417,7 +1450,7 @@ fn applyEditInner(app: *App, edit: Edit) !void {
         .angle => |v| if (sel.len == 3) try cv.geometry.setAngle(gpa, p, graph, sel[0], sel[1], sel[2], v, app.edit_mode),
         .dihedral => |v| if (sel.len == 4) try cv.geometry.setDihedral(gpa, p, graph, sel[0], sel[1], sel[2], sel[3], v, app.edit_mode),
     }
-    if (!try app.commitEdit(&tx)) app.setStatus("Nothing to change", .{});
+    if (!try app.commitEdit(&tx)) app.refuse("Nothing to change", .{});
 }
 
 /// Get ready to change or save the shown frame: abort a drag, and pause playback on
@@ -1517,20 +1550,20 @@ fn showSessionChange(app: *App, index: usize) void {
 
 /// Delete the selected atoms from the current frame (undoable).
 pub fn deleteSelection(app: *App) void {
-    app.deleteSelectionInner() catch |e| app.setStatus("Delete failed: {t}", .{e});
+    app.deleteSelectionInner() catch |e| app.fail("Delete failed: {t}", .{e});
 }
 
 fn deleteSelectionInner(app: *App) !void {
     const gpa = app.gpa;
     app.endDrag(false);
-    if (app.selected().len == 0) return app.setStatus("Select atoms to delete", .{});
+    if (app.selected().len == 0) return app.refuse("Select atoms to delete", .{});
     var edit = try app.beginEdit();
     defer edit.deinit();
     const sel = app.selected();
     const n = sel.len;
     // Landing on another step may have run out of memory and dropped it.
-    if (n == 0) return app.setStatus("Select atoms to delete", .{});
-    if (n >= edit.atoms.len()) return app.setStatus("Can't delete every atom", .{});
+    if (n == 0) return app.refuse("Select atoms to delete", .{});
+    if (n >= edit.atoms.len()) return app.refuse("Can't delete every atom", .{});
 
     const remove = try gpa.alloc(bool, edit.atoms.len());
     defer gpa.free(remove);
@@ -1538,29 +1571,29 @@ fn deleteSelectionInner(app: *App) !void {
     for (sel) |i| remove[i] = true;
     try edit.delete(remove);
     if (!try app.commitRenumbering(&edit, &.{})) unreachable; // atoms were removed
-    app.setStatus("Deleted {d} atom{s} (Ctrl+Z undoes)", .{ n, if (n == 1) "" else "s" });
+    app.inform("Deleted {d} atom{s} (Ctrl+Z undoes)", .{ n, if (n == 1) "" else "s" });
 }
 
 pub fn undo(app: *App) void {
     app.endDrag(false);
-    const crossed = app.session.undo(&app.picks) catch |e| return app.setStatus("Undo failed: {t}", .{e});
+    const crossed = app.session.undo(&app.picks) catch |e| return app.fail("Undo failed: {t}", .{e});
     switch (crossed orelse return) {
-        .selection => app.setStatus("Undid a change of selection or cuts", .{}),
+        .selection => app.inform("Undid a change of selection or cuts", .{}),
         .geometry => |g| {
             app.jumpToChange(g.index, g.kept, g.side);
-            app.setStatus("Undid the last change to frame {d}", .{g.index + 1});
+            app.inform("Undid the last change to frame {d}", .{g.index + 1});
         },
     }
 }
 
 pub fn redo(app: *App) void {
     app.endDrag(false);
-    const crossed = app.session.redo(&app.picks) catch |e| return app.setStatus("Redo failed: {t}", .{e});
+    const crossed = app.session.redo(&app.picks) catch |e| return app.fail("Redo failed: {t}", .{e});
     switch (crossed orelse return) {
-        .selection => app.setStatus("Redid a change of selection or cuts", .{}),
+        .selection => app.inform("Redid a change of selection or cuts", .{}),
         .geometry => |g| {
             app.jumpToChange(g.index, g.kept, g.side);
-            app.setStatus("Redid the change to frame {d}", .{g.index + 1});
+            app.inform("Redid the change to frame {d}", .{g.index + 1});
         },
     }
 }
@@ -1611,14 +1644,14 @@ pub fn revertFrame(app: *App) void {
     // The frame it is offered for, even if a blend is nearer to the next step.
     if (!app.session.isEdited(d.display.real.index)) return;
     app.playing = false;
-    app.revertShown() catch |e| return app.setStatus("Revert failed: {t}", .{e});
+    app.revertShown() catch |e| return app.fail("Revert failed: {t}", .{e});
     app.interp_t = 0;
     app.followRotationLock();
     app.unlockRotation();
     app.showSessionChange(d.display.real.index);
     // The frame asked for may be another one that can't be read.
     app.moveTo(d.display.real.index);
-    app.setStatus("Reverted frame {d} to the file (Ctrl+Z undoes)", .{d.display.real.index + 1});
+    app.inform("Reverted frame {d} to the file (Ctrl+Z undoes)", .{d.display.real.index + 1});
 }
 
 /// The shown frame, which is edited, to its file frame in the session.
@@ -1658,10 +1691,10 @@ fn saveCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filter:
 /// Write the shown frame (including edits) as XYZ, through std.Io.
 pub fn saveFrame(app: *App, path: []const u8) void {
     app.saveFrameInner(path) catch |e| {
-        app.setStatus("Could not save {s}: {t}", .{ std.fs.path.basename(path), e });
+        app.fail("Could not save {s}: {t}", .{ std.fs.path.basename(path), e });
         return;
     };
-    app.setStatus("Saved {s}", .{std.fs.path.basename(path)});
+    app.inform("Saved {s}", .{std.fs.path.basename(path)});
 }
 
 fn saveFrameInner(app: *App, path: []const u8) !void {
@@ -1692,6 +1725,7 @@ pub fn drawUi(app: *App) void {
     timeline.draw(app, timeline_h);
     if (app.show_inspector) app.inspector(timeline_h);
     if (app.show_diff) app.diffPanel();
+    app.drawMessages(timeline_h);
 }
 
 fn menuBar(app: *App) void {
@@ -1750,9 +1784,52 @@ fn menuBar(app: *App) void {
         }
         c.igEndMenu();
     }
-    if (app.status_len > 0) {
-        c.igSameLine(0, 24);
-        ui.textDisabled("{s}", .{app.status()});
+}
+
+/// Messages, newest at the bottom, at the view's bottom right. They take no
+/// clicks.
+fn drawMessages(app: *App, timeline_h: f32) void {
+    const now = app.seconds();
+    app.messages.expire(now);
+    const vp = c.igGetMainViewport();
+    const fs = c.igGetFontSize();
+    const pad = fs * 0.6;
+    const mark = fs * 1.4; // room for the mark of a problem
+    const dl = c.igGetForegroundDrawList_Nil();
+    const right = vp.*.WorkPos.x + vp.*.WorkSize.x - pad;
+    var bottom = vp.*.WorkPos.y + vp.*.WorkSize.y - timeline_h - pad;
+    const wrap = @max(@min(fs * 32, vp.*.WorkSize.x - 4 * pad - mark), fs * 8);
+    const light = app.style.theme == .light;
+    var i = app.messages.items().len;
+    while (i > 0) {
+        i -= 1;
+        const m = &app.messages.items()[i];
+        const alpha = m.opacity(now);
+        const text = m.text();
+        const end = text.ptr + text.len;
+        const size = c.igCalcTextSize(text.ptr, end, false, wrap);
+        const indent: f32 = if (m.kind == .info) 0 else mark;
+        const p0 = ui.v2(right - size.x - 2 * pad - indent, bottom - size.y - 2 * pad);
+        const p1 = ui.v2(right, bottom);
+        var bg = c.igGetStyle().*.Colors[c.ImGuiCol_PopupBg];
+        bg.w = alpha;
+        c.ImDrawList_AddRectFilled(dl, p0, p1, c.igGetColorU32_Vec4(bg), pad / 2, 0);
+        const col = switch (m.kind) {
+            .info => c.igGetColorU32_Col(c.ImGuiCol_Border, alpha),
+            .refusal => if (light) ui.rgba(0.60, 0.36, 0.0, alpha) else ui.rgba(1.0, 0.75, 0.25, alpha),
+            .failure => if (light) ui.rgba(0.75, 0.10, 0.10, alpha) else ui.rgba(1.0, 0.50, 0.45, alpha),
+        };
+        c.ImDrawList_AddRect(dl, p0, p1, col, pad / 2, if (m.kind == .info) 1 else 2, 0);
+        if (m.kind != .info) {
+            const at = ui.v2(p0.x + pad + fs * 0.45, p0.y + pad + fs * 0.5);
+            c.ImDrawList_AddCircleFilled(dl, at, fs * 0.5, col, 0);
+            const sign: [:0]const u8 = if (m.kind == .failure) "x" else "!";
+            const ss = c.igCalcTextSize(sign.ptr, null, false, -1);
+            c.ImDrawList_AddText_Vec2(dl, ui.v2(at.x - ss.x / 2, at.y - ss.y / 2), c.igGetColorU32_Vec4(bg), sign.ptr, null);
+        }
+        const text_col = c.igGetColorU32_Col(c.ImGuiCol_Text, alpha);
+        c.ImDrawList_AddText_FontPtr(dl, c.igGetFont(), fs, ui.v2(p0.x + pad + indent, p0.y + pad), text_col, text.ptr, end, wrap, null);
+        bottom = p0.y - pad / 2;
     }
 }
 
@@ -1886,9 +1963,9 @@ const help = .{
         .{ "N", "show / hide atom numbers" },
     } },
     .{ "Editing", .{
-        .{ "Alt + left drag", "on a selected atom: rotate the selection; with one base atom selected, on another atom: swing its branch around the base" },
-        .{ "Alt + right drag", "twist the group about the base-grabbed axis" },
-        .{ "Alt + middle drag, or Alt + Shift + left or right drag", "translate the group" },
+        .{ "Alt + left drag", "move the selection; with one base atom selected, the branch beyond it; with nothing selected, a molecule" },
+        .{ "Alt + right drag", "twist the branch about the line from the base to the grabbed atom" },
+        .{ "Alt + middle drag, or Alt + Shift + left drag", "rotate about the base, else about the centre" },
         .{ "Double-click a bond", "cut / restore it (until you leave the frame)" },
         .{ "Delete / Backspace", "delete the selected atoms" },
         .{ "Ctrl+Z", "undo the last edit, selection or cut" },
@@ -1936,7 +2013,7 @@ fn saveSettings(app: *App) void {
     var w: Io.Writer = .fixed(&buf);
     app.settings.write(&w) catch return;
     Io.Dir.cwd().writeFile(app.io, .{ .sub_path = path, .data = w.buffered() }) catch |e|
-        app.setStatus("Could not save settings: {t}", .{e});
+        app.fail("Could not save settings: {t}", .{e});
 }
 
 /// Element key: a colour swatch and count per element present, in Hill
@@ -3998,6 +4075,61 @@ test "after a completed drag, the button turns the camera as usual" {
     const view = t.app.camera;
     leftButton(&t, .move, true);
     try expect(!std.meta.eql(view, t.app.camera));
+}
+
+test "a refused Alt-drag says so and does nothing, not even turn the camera" {
+    const Case = struct { sel: []const u32, button: u8, shift: bool = false, said: bool = true };
+    for ([_]Case{
+        .{ .sel = &.{ 0, 2 }, .button = c.SDL_BUTTON_LEFT },
+        .{ .sel = &.{ 0, 2 }, .button = c.SDL_BUTTON_MIDDLE },
+        .{ .sel = &.{ 0, 2 }, .button = c.SDL_BUTTON_RIGHT },
+        .{ .sel = &.{ 0, 1 }, .button = c.SDL_BUTTON_RIGHT },
+        .{ .sel = &.{1}, .button = c.SDL_BUTTON_RIGHT },
+        .{ .sel = &.{}, .button = c.SDL_BUTTON_RIGHT },
+        // Not gestures.
+        .{ .sel = &.{1}, .button = c.SDL_BUTTON_RIGHT, .shift = true, .said = false },
+        .{ .sel = &.{1}, .button = c.SDL_BUTTON_MIDDLE, .shift = true, .said = false },
+    }) |case| {
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.openRow(2);
+        t.select(case.sel);
+        t.app.messages = .{};
+        t.app.playing = true;
+        const at = t.app.screenProjector().toScreen(t.app.drawnPositions().?[1]).?;
+        t.app.altPress(case.button, case.shift, at.x, at.y);
+        try expect(t.app.drag == null);
+        try expect(t.app.playing);
+        try expectEqual(case.button, t.app.aborted_button.?);
+        const said = t.app.messages.items();
+        try expectEqual(@as(usize, if (case.said) 1 else 0), said.len);
+        if (case.said) try expectEqual(.refusal, said[0].kind);
+    }
+}
+
+test "the buttons of an Alt-drag, and what moves" {
+    const Case = struct { sel: []const u32, button: u8, shift: bool = false, kind: drag_mod.Kind, pivot: ?u32 = null };
+    for ([_]Case{
+        .{ .sel = &.{}, .button = c.SDL_BUTTON_LEFT, .kind = .translate },
+        .{ .sel = &.{ 0, 1 }, .button = c.SDL_BUTTON_LEFT, .kind = .translate },
+        .{ .sel = &.{ 0, 1 }, .button = c.SDL_BUTTON_MIDDLE, .kind = .rotate },
+        .{ .sel = &.{0}, .button = c.SDL_BUTTON_LEFT, .kind = .translate, .pivot = 0 },
+        .{ .sel = &.{0}, .button = c.SDL_BUTTON_RIGHT, .kind = .twist, .pivot = 0 },
+        .{ .sel = &.{0}, .button = c.SDL_BUTTON_LEFT, .shift = true, .kind = .rotate, .pivot = 0 },
+        .{ .sel = &.{1}, .button = c.SDL_BUTTON_MIDDLE, .kind = .rotate, .pivot = 1 },
+    }) |case| {
+        var t: TestApp = try .init(1);
+        defer t.deinit();
+        try t.openRow(1);
+        t.select(case.sel);
+        const at = t.app.screenProjector().toScreen(t.app.drawnPositions().?[1]).?;
+        t.app.altPress(case.button, case.shift, at.x, at.y);
+        const drag = t.app.drag orelse return error.TestUnexpectedResult;
+        try expectEqual(1, drag.handle);
+        try expectEqual(case.kind, drag.kind);
+        try expectEqual(case.pivot, drag.pivot);
+        try expectEqual(@as(usize, if (case.sel.len == 2) 2 else 1), drag.group.len);
+    }
 }
 
 test "Alt-drag works in a diff overlay" {

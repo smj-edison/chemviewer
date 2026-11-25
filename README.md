@@ -30,12 +30,13 @@ ImGui (via cimgui) doing the heavy lifting.
   XYZ, with the source in the comment line. Ctrl+V pastes XYZ, bare
   `El x y z` lines, or a Gaussian/ORCA input into the current structure as a
   new fragment (Ctrl+Shift+V opens it as a new structure instead).
-- **Drag fragments (GaussView-style Alt).** Alt+drag a selected atom to move
-  the whole selection (rotate about its centre, twist, translate). With a
-  single base atom selected, Alt+drag any other atom and the branch beyond the
-  base swings around it, with the grabbed atom following the cursor. Alt+right
-  drag twists; Alt+middle (or Alt+Shift+left/right) drag translates. With nothing
-  selected the grabbed atom's molecule moves. Each drag is one undoable edit;
+- **Drag fragments with Alt.** Alt+left drag moves, Alt+right twists, and
+  Alt+middle (or Alt+Shift+left) rotates. With a single base atom selected, drag
+  any other atom: the branch beyond the base moves, twists about the line
+  from the base to that atom, or swings around the base with the atom following
+  the cursor. With several selected, drag one of them to move or rotate them
+  all; with nothing selected, the grabbed atom's molecule. The bar above
+  the timeline says what each button does. Each drag is one undoable edit;
   Esc cancels, and so does anything that changes the frame under it.
 - **Undo and redo.** Edits, selections and cuts are undone one gesture at a time.
   Edits jump to the frame they were on; selections and cuts stay on yours.
@@ -138,9 +139,9 @@ zig-out/bin/chemviewer ring.xyz --add ligand.xyz --cut 4,5 --select 1,2 --set 2.
 |---|---|
 | Left click | select / deselect an atom; empty space: clear selection |
 | Double-click a bond | cut / restore it (until you leave the frame) |
-| Alt + left drag | on a selected atom: rotate the selection about its centre; with one base atom selected, on another atom: swing its branch around the base |
-| Alt + right drag | twist the group about the base→grabbed axis |
-| Alt + middle drag / Alt + Shift + left or right drag | translate the group |
+| Alt + left drag | move the selection; with one base atom selected, the branch beyond it; with nothing selected, a molecule |
+| Alt + right drag | twist the branch about the line from the base to the grabbed atom |
+| Alt + middle drag / Alt + Shift + left drag | rotate about the base, else about the centre |
 | Ctrl + left drag | lasso: add atoms inside (including hidden ones) |
 | Ctrl + Shift + left drag | lasso: remove atoms inside |
 | Left drag | rotate |
